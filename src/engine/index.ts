@@ -46,6 +46,10 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
   );
 
   let loadoutSent = false;
+  // The arena locks the loadout once a game/round is active ("Cannot change
+  // loadout mid-game"). Loadout is chosen ONCE per connection; this guards
+  // against any later send attempt (e.g. a slow Brain reply mid-round).
+  let loadoutLocked = false;
   let pendingPlan: LoadoutPlan | null = null;
   let fallbackLoadout = chooseFallbackLoadout({});
   let selectionTimer: NodeJS.Timeout | null = null;
@@ -94,7 +98,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
   // --- helpers ---------------------------------------------------------------
 
   function sendLoadout(sel: { weapon: Weapon; stats: SelectLoadoutMsg["stats"]; fallback_behavior: SelectLoadoutMsg["fallback_behavior"] }): void {
-    if (loadoutSent) return;
+    if (loadoutSent || loadoutLocked) return;
     const msg: SelectLoadoutMsg = {
       type: "select_loadout",
       weapon: sel.weapon,
@@ -217,7 +221,9 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
 
   socket.on("connected", (msg: ConnectedMsg) => {
     gs.applyConnected(msg);
+    // Fresh connection = a new selection window opens.
     loadoutSent = false;
+    loadoutLocked = false;
     confirmedWeapon = null;
     log.info(
       { botId: msg.bot_id, grid: msg.grid_size, weapons: msg.available_weapons.length },
@@ -230,6 +236,8 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
   socket.on("loadout_confirmed", (msg: LoadoutConfirmedMsg) => {
     gs.setConfirmedAttackRange(msg.computed.attack_range);
     confirmedWeapon = msg.weapon;
+    // The server has accepted and locked our loadout for this session.
+    loadoutLocked = true;
     log.info(
       { weapon: msg.weapon, maxHp: msg.computed.max_hp, range: msg.computed.attack_range },
       "loadout confirmed",
@@ -249,15 +257,16 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
   socket.on("round_start", (msg: RoundStartMsg) => {
     gs.applyRoundStart(msg);
     controller.onRoundStart();
-    loadoutSent = false;
-    pendingPlan = null;
     resetRoundTracking();
     log.info(
       { round: msg.round_number, modifier: msg.round_modifier, bots: msg.bots_in_round },
       "round start",
     );
     void refreshTerrain();
-    void requestLoadout(msg.round_modifier, msg.round_number);
+    // NOTE: do NOT re-select the loadout here. The arena locks it once the game
+    // is active ("Cannot change loadout mid-game"); loadout is chosen once at
+    // connect (using the latest learning insights). The Brain's per-round
+    // strategy still updates via snapshots; only the weapon/stats stay fixed.
   });
 
   socket.on("tick", (msg: TickMsg) => {

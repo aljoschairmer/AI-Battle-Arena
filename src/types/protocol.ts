@@ -24,7 +24,14 @@ export type Weapon =
   | "staff"
   | "grapple";
 
-export type FallbackBehavior = "aggressive" | "defensive" | "balanced";
+// Server-side autonomous behaviour applied when the bot sends no action for a
+// tick. These are the exact values the arena accepts in select_loadout.
+export type FallbackBehavior =
+  | "aggressive"
+  | "defensive"
+  | "opportunistic"
+  | "territorial"
+  | "hunter";
 
 export interface StatBlock {
   hp: number;
@@ -224,6 +231,19 @@ export type NearbyEntity =
   | NearbyBurnField
   | NearbyHazard;
 
+/**
+ * Navigation hint the server sends in `tick.hints` when no enemy is inside the
+ * fog. Points toward the nearest ~3 bots and the nearest pickup of each type.
+ * `direction` is a normalized [x, y] vector (col, row axes); `distance` is in
+ * world units (≈ tiles × cell_size).
+ */
+export interface NavHint {
+  hint_type: "bot" | "pickup";
+  direction: [number, number];
+  distance: number;
+  pickup_type?: string;
+}
+
 export interface TickMsg {
   type: "tick";
   tick: number;
@@ -233,6 +253,8 @@ export interface TickMsg {
   nearby_mines: number;
   nearby_entities: NearbyEntity[];
   safe_zone: SafeZone;
+  /** Present only when no enemy is visible in the fog. */
+  hints?: NavHint[];
 }
 
 export interface KillMsg {
@@ -347,7 +369,10 @@ export interface MoveToAction extends BaseAction {
 export interface AttackAction extends BaseAction {
   action: "attack";
   target: string;
+  /** Bow only: spend a charged shot. */
   charged?: boolean;
+  /** Staff only: place the delayed AoE/burn field at this grid tile. */
+  target_position?: GridVec;
 }
 export interface DodgeAction extends BaseAction {
   action: "dodge";

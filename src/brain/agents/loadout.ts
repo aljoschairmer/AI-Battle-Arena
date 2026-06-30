@@ -59,7 +59,15 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       "4. our_lifetime_stats — kd_ratio < 1.0: add 2 pts to hp+defense; bots_in_arena > 8: add 1 pt to hp (more chaos = more punishment).",
       "5. leaderboard_top — if top-3 ELO bots in lobby all use same weapon type, pick its counter.",
       "",
-      "Respond ONLY with JSON: {weapon, stats:{hp,speed,attack,defense}, fallback_behavior, reasoning}. Stats must be integers 1-10 summing to 20.",
+      "",
+      "fallback_behavior steers the bot autonomously when it misses a tick — pick the one that fits the weapon/stats:",
+      "- aggressive: chase and trade (sword/grapple, high attack).",
+      "- defensive: hold and survive (shield, high hp/defense).",
+      "- opportunistic: poke and pick fights when favourable (staff, balanced).",
+      "- territorial: hold a position/range and zone control (bow/spear).",
+      "- hunter: hunt the weakest/closest target (daggers, high speed).",
+      "",
+      "Respond ONLY with JSON: {weapon, stats:{hp,speed,attack,defense}, fallback_behavior, reasoning}. Stats must be integers 1-10 summing to 20. fallback_behavior MUST be one of: aggressive, defensive, opportunistic, territorial, hunter.",
     ].join("\n");
   }
 
