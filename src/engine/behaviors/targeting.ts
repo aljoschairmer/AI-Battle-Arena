@@ -1,0 +1,85 @@
+import type { NearbyBot } from "../../types/protocol";
+import { dist } from "../../shared/geometry";
+import type { DecisionContext } from "./context";
+
+/**
+ * Target selection. Scores visible enemies by killability and strategic value,
+ * honouring the Brain's directive (preferred target / avoid list / objective).
+ *
+ * Higher score = better target. Pure function of the current frame so it's
+ * cheap to run every tick.
+ */
+export function selectTarget(ctx: DecisionContext): NearbyBot | null {
+  const { gs, directive } = ctx;
+  const me = gs.position;
+  const enemies = gs.enemies();
+  if (enemies.length === 0) return null;
+
+  // Honour an explicit kill order from the Brain if that bot is in view.
+  if (directive.primaryTargetId) {
+    const preferred = enemies.find((e) => e.bot_id === directive.primaryTargetId);
+    if (preferred) return preferred;
+  }
+
+  const avoid = new Set(directive.avoidTargetIds);
+  let best: NearbyBot | null = null;
+  let bestScore = -Infinity;
+
+  for (const e of enemies) {
+    if (avoid.has(e.bot_id)) continue;
+    const score = scoreEnemy(ctx, e, dist(me, e.position));
+    if (score > bestScore) {
+      bestScore = score;
+      best = e;
+    }
+  }
+  // If everything is on the avoid list, fall back to nearest so we still fight.
+  return best ?? gs.nearestEnemy();
+}
+
+function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): number {
+  const { directive } = ctx;
+  const hpFrac = e.max_hp > 0 ? e.hp / e.max_hp : 1;
+
+  let score = 0;
+  // Prefer low-HP, finishable targets.
+  score += (1 - hpFrac) * 60;
+  // Prefer closer targets (less travel, more uptime).
+  score += Math.max(0, 30 - distance * 3);
+  // Reward exploitable openings.
+  if (e.rear_exposed) score += 20;
+  if (e.is_stunned) score += 25;
+  if (e.near_impact_surface) score += 10; // good shove candidate
+  if (!e.has_los) score -= 15; // can't shoot through walls
+  if (!e.can_attack) score += 8; // safer to approach
+
+  // Objective-driven biases.
+  if (directive.objective === "engage_weakest") score += (1 - hpFrac) * 40;
+  if (directive.objective === "survive") score -= distance * 2; // only fight what's on top of us
+
+  // Aggression dials up willingness to take on healthier targets.
+  score += directive.aggression * 10 - e.threat_score * 0.15;
+
+  return score;
+}
+
+/** Centroid of clustered enemies — good aim point for AoE / gravity well. */
+export function enemyCluster(ctx: DecisionContext, withinTiles = 4): [number, number] | null {
+  const enemies = ctx.gs.enemies();
+  if (enemies.length < 2) return null;
+  const me = ctx.gs.position;
+  const near = enemies.filter((e) => dist(me, e.position) <= ctx.gs.fogRadius);
+  if (near.length < 2) return null;
+
+  let sx = 0;
+  let sy = 0;
+  for (const e of near) {
+    sx += e.position[0];
+    sy += e.position[1];
+  }
+  const cx = Math.round(sx / near.length);
+  const cy = Math.round(sy / near.length);
+  // Only worth it if at least two enemies sit close to the centroid.
+  const clustered = near.filter((e) => dist([cx, cy], e.position) <= withinTiles).length;
+  return clustered >= 2 ? [cx, cy] : null;
+}

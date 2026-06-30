@@ -1,0 +1,62 @@
+import { z } from "zod";
+
+/** Shared zod enums/objects for agent outputs. */
+
+export const WeaponEnum = z.enum([
+  "sword",
+  "bow",
+  "daggers",
+  "shield",
+  "spear",
+  "staff",
+  "grapple",
+]);
+
+export const PostureEnum = z.enum(["aggressive", "balanced", "defensive", "retreat"]);
+
+export const ObjectiveEnum = z.enum([
+  "hunt_bounty",
+  "engage_weakest",
+  "control_center",
+  "farm_pickups",
+  "survive",
+  "free_for_all",
+]);
+
+export const FallbackBehaviorEnum = z.enum(["aggressive", "defensive", "balanced"]);
+
+export const StatBlockSchema = z.object({
+  hp: z.number(),
+  speed: z.number(),
+  attack: z.number(),
+  defense: z.number(),
+});
+
+export const LoadoutOutputSchema = z.object({
+  weapon: WeaponEnum,
+  stats: StatBlockSchema,
+  fallback_behavior: FallbackBehaviorEnum,
+  reasoning: z.string().max(500).default(""),
+});
+export type LoadoutOutput = z.infer<typeof LoadoutOutputSchema>;
+
+export const StrategyOutputSchema = z.object({
+  posture: PostureEnum,
+  objective: ObjectiveEnum,
+  primaryTargetId: z.string().nullable().default(null),
+  avoidTargetIds: z.array(z.string()).max(8).default([]),
+  hpRetreatFraction: z.number().min(0).max(1).default(0.3),
+  aggression: z.number().min(0).max(1).default(0.6),
+  reasoning: z.string().max(500).default(""),
+});
+export type StrategyOutput = z.infer<typeof StrategyOutputSchema>;
+
+export const TacticOutputSchema = z.object({
+  posture: PostureEnum,
+  primaryTargetId: z.string().nullable().default(null),
+  avoidTargetIds: z.array(z.string()).max(8).default([]),
+  hpRetreatFraction: z.number().min(0).max(1).default(0.3),
+  aggression: z.number().min(0).max(1).default(0.6),
+  reasoning: z.string().max(400).default(""),
+});
+export type TacticOutput = z.infer<typeof TacticOutputSchema>;

@@ -1,0 +1,43 @@
+{
+  "name": "ai-battle-arena-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "High-performance multi-agent TypeScript bot for AI Battle Arena (arena.angel-serv.com). Deterministic real-time engine + LLM strategy brain, decoupled over Redis.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "dev:engine": "cross-env ROLE=engine tsx watch src/main.ts",
+    "dev:brain": "cross-env ROLE=brain tsx watch src/main.ts",
+    "dev:all": "cross-env ROLE=all tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "start:engine": "cross-env ROLE=engine node dist/main.js",
+    "start:brain": "cross-env ROLE=brain node dist/main.js",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "keygen": "tsx scripts/generate-key.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "test": "tsx scripts/smoke.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "https-proxy-agent": "^9.1.0",
+    "ioredis": "^5.4.1",
+    "pino": "^9.5.0",
+    "undici": "^8.5.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/ws": "^8.5.13",
+    "cross-env": "^7.0.3",
+    "pino-pretty": "^11.3.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

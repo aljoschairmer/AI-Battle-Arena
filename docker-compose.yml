@@ -1,0 +1,59 @@
+# Production-style topology: Redis backbone with the Engine and Brain split into
+# separate, independently-scalable processes. The Engine never blocks on the
+# Brain — they only talk over Redis pub/sub + KV.
+#
+#   cp .env.example .env   # then set ARENA_API_KEY and OPENROUTER_API_KEY
+#   docker compose up --build
+#
+# Run a pure deterministic bot (no LLM cost): leave OPENROUTER_API_KEY empty and
+# `docker compose up redis engine`.
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  engine:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      ROLE: engine
+      BUS: redis
+      REDIS_URL: redis://redis:6379
+      ARENA_API_KEY: ${ARENA_API_KEY}
+      ARENA_HTTP_BASE: ${ARENA_HTTP_BASE:-https://arena.angel-serv.com}
+      ARENA_WS_URL: ${ARENA_WS_URL:-wss://arena.angel-serv.com/ws/bot}
+      BOT_NAME: ${BOT_NAME:-NeuralReaper}
+      BOT_COLOR: ${BOT_COLOR:-#00d4ff}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+
+  brain:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      ROLE: brain
+      BUS: redis
+      REDIS_URL: redis://redis:6379
+      ARENA_HTTP_BASE: ${ARENA_HTTP_BASE:-https://arena.angel-serv.com}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_MODEL_STRATEGIST: ${OPENROUTER_MODEL_STRATEGIST:-anthropic/claude-3.5-sonnet}
+      OPENROUTER_MODEL_LOADOUT: ${OPENROUTER_MODEL_LOADOUT:-anthropic/claude-3.5-sonnet}
+      OPENROUTER_MODEL_TACTICIAN: ${OPENROUTER_MODEL_TACTICIAN:-openai/gpt-4o-mini}
+      TACTICIAN_INTERVAL_MS: ${TACTICIAN_INTERVAL_MS:-2500}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-8000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
