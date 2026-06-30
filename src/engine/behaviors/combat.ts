@@ -33,8 +33,8 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
   const profile = profileFor(self.weapon);
   const inRange = d <= range + 0.5;
 
-  // --- Spear: never charge a braced enemy — wait them out ---
-  if (self.weapon === "spear" && target.brace_ready && d <= range + 1) {
+  // --- Spear: never charge a braced enemy — wait them out (Tuner-toggleable) ---
+  if (ctx.policy.spearBraceWait && self.weapon === "spear" && target.brace_ready && d <= range + 1) {
     // Don't attack into a brace — shove to disrupt if adjacent, otherwise wait
     if (d <= 1.5 && !self.weapon_ready) {
       return shove(tick, target.bot_id);
@@ -44,16 +44,17 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
 
   if (inRange) {
     if (self.weapon_ready) {
-      // Bow: fire charged shot whenever ready — it always deals more damage.
-      const charged = profile.usesCharge && self.charged_shot_ready;
+      // Bow: fire charged shot whenever ready (Tuner can disable to fire faster/uncharged).
+      const charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
 
       // Staff: if we can hit multiple enemies, try gravity well first to cluster them
       if (self.weapon === "staff") {
         const gwAction = tryGravityWell(ctx);
         if (gwAction) return gwAction;
         // Place the delayed AoE/burn field on the enemy cluster centroid (to catch
-        // several bots) or directly on the target's tile for a single foe.
-        const aoe = enemyCluster(ctx, 2) ?? target.position;
+        // several bots) or — since the field is delayed — where this target is
+        // heading rather than where it stands now (target leading).
+        const aoe = enemyCluster(ctx, 2) ?? gs.predictEnemyPos(target, ctx.policy.leadTicks);
         return attackAt(tick, target.bot_id, aoe);
       }
 
@@ -108,9 +109,9 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
     }
   }
 
-  // Universal grapple-to-target for melee weapons: close the gap
+  // Universal grapple-to-target for melee weapons: close the gap (LLM-tunable threshold).
   if (!profile.ranged && self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
-    if (d > range + 1.5 && d <= 12 && target.has_los) {
+    if (d > range + ctx.policy.grappleCloseMinGap && d <= 12 && target.has_los) {
       return grappleTarget(tick, target.bot_id);
     }
   }
@@ -142,6 +143,7 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
  * enemy cluster centroid.
  */
 function tryGravityWell(ctx: DecisionContext): ClientAction | null {
+  if (!ctx.policy.staffGravityWell) return null;
   const { gs, tick } = ctx;
   // Only fire if we have the gravity well item active (indicated by a gravity_well pickup entity)
   const hasGravityWell = gs.entities.some(

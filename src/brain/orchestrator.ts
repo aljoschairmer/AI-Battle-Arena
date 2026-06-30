@@ -10,13 +10,20 @@ import {
   type LearningInsights,
   type RoundOutcome,
 } from "../shared/memory";
-import type { Directive, GameSnapshot, LoadoutPlan, LoadoutRequest } from "../types/internal";
-import { DEFAULT_DIRECTIVE } from "../types/internal";
+import type {
+  Directive,
+  EnginePolicy,
+  GameSnapshot,
+  LoadoutPlan,
+  LoadoutRequest,
+} from "../types/internal";
+import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../types/internal";
 import type { LeaderboardEntry } from "../types/protocol";
 import { AnalystAgent } from "./agents/analyst";
 import { LoadoutAgent } from "./agents/loadout";
 import { StrategistAgent } from "./agents/strategist";
 import { TacticianAgent } from "./agents/tactician";
+import { TunerAgent } from "./agents/tuner";
 import type { StrategyOutput, TacticOutput } from "./agents/schemas";
 
 const log = child("brain");
@@ -57,6 +64,7 @@ export class Orchestrator {
   private readonly strategist = new StrategistAgent();
   private readonly tactician = new TacticianAgent();
   private readonly analyst = new AnalystAgent();
+  private readonly tuner = new TunerAgent();
 
   private directive: Directive = { ...DEFAULT_DIRECTIVE };
   private version = 0;
@@ -66,6 +74,8 @@ export class Orchestrator {
   private strategistBusy = false;
   private tacticianBusy = false;
   private analystBusy = false;
+  private tunerBusy = false;
+  private policy: EnginePolicy = { ...DEFAULT_POLICY };
 
   private readonly weaponSeen = new Map<string, number>();
   private meta: MetaCache = { leaderboardTop: [], bounties: [], fetchedAt: 0 };
@@ -94,6 +104,13 @@ export class Orchestrator {
     if (savedInsights) {
       this.insights = savedInsights;
       log.info({ lessons: this.insights.lessons.length, round: this.insights.analysedThroughRound }, "restored learning insights");
+    }
+
+    // Restore the live tuning policy so learned knobs survive a restart.
+    const savedPolicy = await this.bus.getKV<EnginePolicy>(Keys.currentPolicy);
+    if (savedPolicy) {
+      this.policy = savedPolicy;
+      log.info({ v: savedPolicy.version }, "restored tuning policy");
     }
 
     this.unsubs.push(
@@ -244,9 +261,17 @@ export class Orchestrator {
       "round outcome recorded",
     );
 
-    // Run the Analyst only when we have enough data (≥2 rounds) and it's not already running.
-    if (this.roundHistory.size() < 2 || this.analystBusy) return;
+    // Need a couple of rounds of evidence before learning/tuning.
+    if (this.roundHistory.size() < 2) return;
 
+    // Run the two post-round agents in parallel: the Analyst updates strategic
+    // insights; the Tuner rewrites the engine's live behaviour policy.
+    await Promise.all([this.runAnalyst(outcome), this.runTuner(outcome)]);
+  }
+
+  /** Analyst: distil strategic lessons from recent rounds into insights. */
+  private async runAnalyst(outcome: RoundOutcome): Promise<void> {
+    if (this.analystBusy) return;
     this.analystBusy = true;
     try {
       const summary = this.roundHistory.summary();
@@ -271,6 +296,36 @@ export class Orchestrator {
       }
     } finally {
       this.analystBusy = false;
+    }
+  }
+
+  /**
+   * Tuner: the agentic control loop. Rewrites the engine's behaviour policy live
+   * based on how the fight is going, then pushes it to the Engine over the bus —
+   * the bot re-tunes itself mid-session with no restart.
+   */
+  private async runTuner(outcome: RoundOutcome): Promise<void> {
+    if (this.tunerBusy) return;
+    this.tunerBusy = true;
+    try {
+      const s = this.roundHistory.summary();
+      const patch = await this.tuner.run({
+        current: this.policy,
+        recentRounds: this.roundHistory.recent(6),
+        historySummary: { rounds: s.rounds, wins: s.wins, totalKills: s.totalKills, totalDeaths: s.totalDeaths },
+        insights: this.insights,
+      });
+      if (patch) {
+        this.policy = mergePolicy(this.policy, { ...patch, source: "tuner" });
+        await this.bus.publish(Channels.policy, this.policy);
+        await this.bus.setKV(Keys.currentPolicy, this.policy);
+        log.info(
+          { v: this.policy.version, dodge: this.policy.dodgeEagerness, kite: this.policy.kiteRangeBias, why: this.policy.reasoning },
+          "tuning policy updated (live)",
+        );
+      }
+    } finally {
+      this.tunerBusy = false;
     }
   }
 

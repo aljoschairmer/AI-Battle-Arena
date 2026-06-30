@@ -31,7 +31,7 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
   //    actually contracting (target_radius < current radius) and we're close to
   //    the current edge.
   const zoneShrinking = self.zone_target_radius < self.zone_radius;
-  if (zoneShrinking && self.distance_to_zone_edge >= 0 && self.distance_to_zone_edge <= 5) {
+  if (zoneShrinking && self.distance_to_zone_edge >= 0 && self.distance_to_zone_edge <= ctx.policy.zoneEdgeMargin) {
     return moveTo(tick, self.zone_target_center);
   }
 
@@ -103,10 +103,13 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   // when the enemy has more HP or is part of a cluster.
   const meleePressure = enemies.some((e) => e.can_attack && dist(me, e.position) <= 1.6);
 
+  // dodgeEagerness (0..1, LLM-tunable) gates how twitchy we are. A charged shot
+  // is always worth dodging; lesser threats only trip the dodge as eagerness rises.
+  const eager = ctx.policy.dodgeEagerness;
   let trigger = false;
   if (chargedIncoming) trigger = true;
-  else if (highChargeBow) trigger = true;
-  else if (justHit || meleePressure) trigger = true;
+  else if (highChargeBow && eager >= 0.3) trigger = true;
+  else if ((justHit || meleePressure) && eager >= 0.5) trigger = true;
   if (!trigger) return null;
 
   const ref: NearbyBot | null = chargedIncoming ?? highChargeBow ?? nearestAttacker(ctx) ?? gs.nearestEnemy();
@@ -118,12 +121,23 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
 
   const perp = perpendicularStep(me, ref.position);
   const away = stepAwayFrom(me, ref.position);
-  // Try both perpendicular directions, then straight away — pick first safe one.
   const perpNeg: GridVec = [-perp[0] as number, -perp[1] as number];
+  // Of the safe dodge directions, pick the one whose 2-tile landing sits in the
+  // least dangerous tile (threat field) — don't dodge out of one bow's line
+  // straight into another enemy's range.
+  const field = gs.threatField();
+  let bestDir: GridVec | null = null;
+  let bestDanger = Number.POSITIVE_INFINITY;
   for (const dir of [perp, perpNeg, away]) {
-    if (isDodgeWorthwhile(ctx, dir)) return dodge(tick, dir);
+    if (!isDodgeWorthwhile(ctx, dir)) continue;
+    const landing = project(me, dir, 2, gs.gridSize);
+    const dgr = field.danger(landing[0], landing[1]);
+    if (dgr < bestDanger) {
+      bestDanger = dgr;
+      bestDir = dir;
+    }
   }
-  return null;
+  return bestDir ? dodge(tick, bestDir) : null;
 }
 
 /**
@@ -149,7 +163,12 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
     return moveTo(tick, health.position);
   }
 
-  // Kite: move away from nearest threat using wall-aware steps, biased toward zone center.
+  // Kite down the threat gradient: step toward the least dangerous adjacent tile
+  // (accounts for ALL enemies + zone + hazards, not just the nearest one).
+  const fieldStep = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+  if (fieldStep) return move(tick, fieldStep);
+
+  // Fallback: blend away-from-nearest with toward-centre when the field is flat.
   const threat = gs.nearestEnemy();
   if (threat) {
     const away = gs.stepAwayFrom(threat.position);
@@ -159,6 +178,25 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
     if (step) return move(tick, step);
   }
   return moveTo(tick, self.zone_center);
+}
+
+/**
+ * Tactical disengage: when the controller has picked a target but the trade is
+ * unfavourable (outnumbered / out-DPS'd), step toward safer ground instead of
+ * committing — but ONLY if our current tile is actually dangerous AND a strictly
+ * safer step exists. If we're cornered (already at a local danger minimum) we
+ * return null and let the combat layer fight, since fleeing wouldn't help.
+ */
+export function tacticalDisengage(ctx: DecisionContext): ClientAction | null {
+  const { gs, tick } = ctx;
+  const me = gs.position;
+  const field = gs.threatField();
+  if (field.danger(me[0], me[1]) < 1) return null;
+  const step = field.safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+  if (step) return move(tick, step);
+  const safe = field.safestTileWithin(me, 4, (c, r) => gs.isPassable(c, r));
+  if (safe[0] !== me[0] || safe[1] !== me[1]) return moveTo(tick, safe);
+  return null;
 }
 
 // --- helpers ---------------------------------------------------------------

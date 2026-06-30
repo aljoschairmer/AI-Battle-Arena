@@ -58,6 +58,117 @@ export const DEFAULT_DIRECTIVE: Directive = {
   source: "fallback",
 };
 
+/**
+ * Runtime-tunable behaviour policy: the knobs that used to be hardcoded
+ * constants in the engine's behaviours. The LLM Tuner agent rewrites these live
+ * (over the bus, mirrored to Redis KV) so the bot can be re-tuned WITHOUT a
+ * restart — the deterministic controller reads the latest values every tick.
+ */
+export interface EnginePolicy {
+  version: number;
+  ts: number;
+  /** 0..1 — how readily to spend the 30-tick dodge (low = hoard it). */
+  dodgeEagerness: number;
+  /** -3..+3 tiles added to a ranged weapon's preferred fighting distance. */
+  kiteRangeBias: number;
+  /** Grapple-close to a melee target when the gap exceeds range + this (tiles). */
+  grappleCloseMinGap: number;
+  /** Target-scoring weights. */
+  targetLowHpWeight: number;
+  targetCloseWeight: number;
+  targetThreatAversion: number;
+  /** Max tiles to detour for an uncontested pickup. */
+  pickupDetourMax: number;
+  /** Drift to the next zone centre when within this many tiles of the edge. */
+  zoneEdgeMargin: number;
+  /** Mine behaviour while being chased. */
+  mineWhenChased: boolean;
+  mineChaseRange: number;
+  mineCooldownTicks: number;
+  /** Engage only when the estimated trade advantage is at least this (-1..1). */
+  minTradeAdvantage: number;
+  /** Ticks ahead to lead a moving target when aiming/intercepting (0..8). */
+  leadTicks: number;
+  /** Tuner-controlled BASELINE aggression (0..1); the Tactician layers a delta on top. */
+  aggression: number;
+  /** Tuner-controlled baseline posture (used when no live tactical posture is set). */
+  posture: Posture;
+  /** Per-weapon tactic toggles the Tuner can flip. */
+  bowAlwaysCharge: boolean; // bow: always spend a charged shot when ready
+  daggerFlank: boolean; // daggers: reposition behind targets for the backstab bonus
+  spearBraceWait: boolean; // spear: wait out a braced enemy instead of charging in
+  staffGravityWell: boolean; // staff/grapple: deploy gravity wells to cluster enemies
+  reasoning: string;
+  source: string;
+}
+
+export const DEFAULT_POLICY: EnginePolicy = {
+  version: 0,
+  ts: 0,
+  dodgeEagerness: 0.5,
+  kiteRangeBias: 0,
+  grappleCloseMinGap: 1.5,
+  targetLowHpWeight: 60,
+  targetCloseWeight: 2,
+  targetThreatAversion: 30,
+  pickupDetourMax: 6,
+  zoneEdgeMargin: 5,
+  mineWhenChased: true,
+  mineChaseRange: 4,
+  mineCooldownTicks: 15,
+  minTradeAdvantage: -0.1,
+  leadTicks: 3,
+  aggression: 0.55,
+  posture: "balanced",
+  bowAlwaysCharge: true,
+  daggerFlank: true,
+  spearBraceWait: true,
+  staffGravityWell: true,
+  reasoning: "default tuning",
+  source: "default",
+};
+
+const POSTURES: Posture[] = ["aggressive", "balanced", "defensive", "retreat"];
+const asBool = (v: boolean | undefined, fallback: boolean): boolean =>
+  typeof v === "boolean" ? v : fallback;
+
+const clampNum = (v: number | undefined, lo: number, hi: number, fallback: number): number =>
+  typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
+
+/**
+ * Merge a (possibly partial, possibly LLM-produced) patch onto a base policy,
+ * clamping every field to a safe range so a bad LLM value can never brick the
+ * bot. Bumps the version so the Engine's newest-wins filter works.
+ */
+export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): EnginePolicy {
+  return {
+    version: base.version + 1,
+    ts: Date.now(),
+    dodgeEagerness: clampNum(patch.dodgeEagerness, 0, 1, base.dodgeEagerness),
+    kiteRangeBias: clampNum(patch.kiteRangeBias, -3, 3, base.kiteRangeBias),
+    grappleCloseMinGap: clampNum(patch.grappleCloseMinGap, 0.5, 8, base.grappleCloseMinGap),
+    targetLowHpWeight: clampNum(patch.targetLowHpWeight, 0, 150, base.targetLowHpWeight),
+    targetCloseWeight: clampNum(patch.targetCloseWeight, 0, 10, base.targetCloseWeight),
+    targetThreatAversion: clampNum(patch.targetThreatAversion, 0, 120, base.targetThreatAversion),
+    pickupDetourMax: clampNum(patch.pickupDetourMax, 0, 20, base.pickupDetourMax),
+    zoneEdgeMargin: clampNum(patch.zoneEdgeMargin, 0, 20, base.zoneEdgeMargin),
+    mineWhenChased:
+      typeof patch.mineWhenChased === "boolean" ? patch.mineWhenChased : base.mineWhenChased,
+    mineChaseRange: clampNum(patch.mineChaseRange, 1, 10, base.mineChaseRange),
+    mineCooldownTicks: clampNum(patch.mineCooldownTicks, 5, 100, base.mineCooldownTicks),
+    minTradeAdvantage: clampNum(patch.minTradeAdvantage, -1, 1, base.minTradeAdvantage),
+    leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
+    aggression: clampNum(patch.aggression, 0, 1, base.aggression),
+    posture: patch.posture && POSTURES.includes(patch.posture) ? patch.posture : base.posture,
+    bowAlwaysCharge: asBool(patch.bowAlwaysCharge, base.bowAlwaysCharge),
+    daggerFlank: asBool(patch.daggerFlank, base.daggerFlank),
+    spearBraceWait: asBool(patch.spearBraceWait, base.spearBraceWait),
+    staffGravityWell: asBool(patch.staffGravityWell, base.staffGravityWell),
+    reasoning: typeof patch.reasoning === "string" ? patch.reasoning.slice(0, 300) : base.reasoning,
+    source: typeof patch.source === "string" ? patch.source : "tuner",
+  };
+}
+
 /** A chosen loadout plus rationale, produced by the loadout agent. */
 export interface LoadoutPlan extends LoadoutSelection {
   reasoning: string;

@@ -1,13 +1,14 @@
 import type { ClientAction } from "../types/protocol";
-import type { Directive } from "../types/internal";
-import { DEFAULT_DIRECTIVE } from "../types/internal";
+import type { Directive, EnginePolicy } from "../types/internal";
+import { DEFAULT_DIRECTIVE, DEFAULT_POLICY } from "../types/internal";
 import { dist } from "../shared/geometry";
 import type { GameState } from "./gameState";
 import { combatBehavior, gravityWellBehavior } from "./behaviors/combat";
+import { shouldEngage } from "./combatMath";
 import { idle, placeMine } from "./behaviors/context";
 import { defaultReposition, grabPickup, positionForCombat } from "./behaviors/movement";
 import { selectTarget } from "./behaviors/targeting";
-import { emergencyDodge, retreatAndHeal, survivalBehavior } from "./behaviors/survival";
+import { emergencyDodge, retreatAndHeal, survivalBehavior, tacticalDisengage } from "./behaviors/survival";
 
 /**
  * The reactive controller: deterministic, allocation-light, runs every tick in
@@ -27,6 +28,7 @@ import { emergencyDodge, retreatAndHeal, survivalBehavior } from "./behaviors/su
  */
 export class Controller {
   private directive: Directive = { ...DEFAULT_DIRECTIVE };
+  private policy: EnginePolicy = { ...DEFAULT_POLICY };
   private minesPlacedThisRound = 0;
   private lastMineTick = -1000;
 
@@ -36,6 +38,15 @@ export class Controller {
 
   getDirective(): Directive {
     return this.directive;
+  }
+
+  /** Apply a live tuning policy from the LLM Tuner (no restart required). */
+  setPolicy(p: EnginePolicy): void {
+    this.policy = p;
+  }
+
+  getPolicy(): EnginePolicy {
+    return this.policy;
   }
 
   onRoundStart(): void {
@@ -51,7 +62,7 @@ export class Controller {
     if (!self || !self.is_alive || gs.isRespawning) return idle(tick);
     if (self.stun_ticks > 0) return idle(tick);
 
-    const ctx = { gs, directive: this.directive, tick };
+    const ctx = { gs, directive: this.resolveDirective(), policy: this.policy, tick };
 
     // 2. Environmental survival (outside zone / on hazard).
     const survive = survivalBehavior(ctx);
@@ -75,9 +86,15 @@ export class Controller {
     const gw = gravityWellBehavior(ctx);
     if (gw) return gw;
 
-    // 7. Engage the best target.
+    // 7. Engage the best target — unless the trade looks lost and we aren't
+    //    pinned to it, in which case disengage toward safer ground.
     const target = selectTarget(ctx);
     if (target) {
+      const forced = this.directive.primaryTargetId === target.bot_id;
+      if (!forced && !shouldEngage(ctx, target)) {
+        const bail = tacticalDisengage(ctx);
+        if (bail) return bail;
+      }
       const combat = combatBehavior(ctx, target);
       if (combat) return combat;
       return positionForCombat(ctx, target);
@@ -92,6 +109,26 @@ export class Controller {
   }
 
   /**
+   * Resolve the posture/aggression the behaviours actually use, combining the
+   * Tuner's slow learned BASELINE (policy) with the Tactician's fast tactical
+   * intent (directive):
+   *   - aggression = policy baseline + the directive's deviation from default,
+   *     so the Tactician nudges around whatever the Tuner has learned.
+   *   - posture = the live tactical posture when the brain set one, else the
+   *     Tuner's baseline posture (which also drives the deterministic-only bot).
+   */
+  private resolveDirective(): Directive {
+    const d = this.directive;
+    const p = this.policy;
+    const brainSet = d.source === "strategist" || d.source === "tactician";
+    const aggression = Math.max(
+      0,
+      Math.min(1, p.aggression + (d.aggression - DEFAULT_DIRECTIVE.aggression)),
+    );
+    return { ...d, aggression, posture: brainSet ? d.posture : p.posture };
+  }
+
+  /**
    * Place a mine only when:
    * - An enemy is right behind us (≤2.2 tiles)
    * - We have charges remaining and the cooldown has elapsed
@@ -101,13 +138,14 @@ export class Controller {
    */
   private maybeDropMine(gs: GameState, retreatingNow: boolean): ClientAction | null {
     if (!retreatingNow) return null;
+    if (!this.policy.mineWhenChased) return null;
     const self = gs.self;
     if (!self) return null;
     if (this.minesPlacedThisRound >= 6) return null;
-    if (gs.tick - this.lastMineTick < 15) return null;
+    if (gs.tick - this.lastMineTick < this.policy.mineCooldownTicks) return null;
 
     const me = gs.position;
-    const chaser = gs.enemies().find((e) => dist(me, e.position) <= 4);
+    const chaser = gs.enemies().find((e) => dist(me, e.position) <= this.policy.mineChaseRange);
     if (!chaser) return null;
 
     this.minesPlacedThisRound += 1;

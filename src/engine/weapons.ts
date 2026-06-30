@@ -22,16 +22,19 @@ export interface WeaponProfile {
   brace: boolean; // spear can brace against chargers
   /** Score for loadout selection heuristics (higher = generally stronger pick). */
   metaScore: number;
+  /** Rough damage-per-second estimate for an enemy of this weapon (used when we
+   * don't know their exact stats) — drives the trade evaluator and threat map. */
+  estDps: number;
 }
 
 export const WEAPONS: Record<Weapon, WeaponProfile> = {
-  sword: { weapon: "sword", ranged: false, baseRange: 1, preferredRange: 1, usesCharge: false, aoe: false, backstab: false, brace: false, metaScore: 0.78 },
-  daggers: { weapon: "daggers", ranged: false, baseRange: 1, preferredRange: 1, usesCharge: false, aoe: false, backstab: true, brace: false, metaScore: 0.74 },
-  shield: { weapon: "shield", ranged: false, baseRange: 1, preferredRange: 1, usesCharge: false, aoe: false, backstab: false, brace: false, metaScore: 0.7 },
-  spear: { weapon: "spear", ranged: false, baseRange: 2, preferredRange: 2, usesCharge: false, aoe: false, backstab: false, brace: true, metaScore: 0.72 },
-  bow: { weapon: "bow", ranged: true, baseRange: 7, preferredRange: 6, usesCharge: true, aoe: false, backstab: false, brace: false, metaScore: 0.82 },
-  staff: { weapon: "staff", ranged: true, baseRange: 5, preferredRange: 5, usesCharge: false, aoe: true, backstab: false, brace: false, metaScore: 0.76 },
-  grapple: { weapon: "grapple", ranged: true, baseRange: 12, preferredRange: 8, usesCharge: false, aoe: false, backstab: false, brace: false, metaScore: 0.65 },
+  sword: { weapon: "sword", ranged: false, baseRange: 1, preferredRange: 1, usesCharge: false, aoe: false, backstab: false, brace: false, metaScore: 0.78, estDps: 30 },
+  daggers: { weapon: "daggers", ranged: false, baseRange: 1, preferredRange: 1, usesCharge: false, aoe: false, backstab: true, brace: false, metaScore: 0.74, estDps: 36 },
+  shield: { weapon: "shield", ranged: false, baseRange: 1, preferredRange: 1, usesCharge: false, aoe: false, backstab: false, brace: false, metaScore: 0.7, estDps: 16 },
+  spear: { weapon: "spear", ranged: false, baseRange: 2, preferredRange: 2, usesCharge: false, aoe: false, backstab: false, brace: true, metaScore: 0.72, estDps: 26 },
+  bow: { weapon: "bow", ranged: true, baseRange: 7, preferredRange: 6, usesCharge: true, aoe: false, backstab: false, brace: false, metaScore: 0.82, estDps: 28 },
+  staff: { weapon: "staff", ranged: true, baseRange: 5, preferredRange: 5, usesCharge: false, aoe: true, backstab: false, brace: false, metaScore: 0.76, estDps: 24 },
+  grapple: { weapon: "grapple", ranged: true, baseRange: 12, preferredRange: 8, usesCharge: false, aoe: false, backstab: false, brace: false, metaScore: 0.65, estDps: 20 },
 };
 
 export function profileFor(weapon: Weapon): WeaponProfile {

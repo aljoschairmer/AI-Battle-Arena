@@ -20,20 +20,23 @@ export function positionForCombat(ctx: DecisionContext, target: NearbyBot): Clie
   const me = gs.position;
   const d = dist(me, target.position);
   const profile = profileFor(self.weapon);
+  // Intercept where the target is heading, not where it was (target leading).
+  const lead = gs.predictEnemyPos(target, ctx.policy.leadTicks);
 
   if (!profile.ranged) {
-    // Daggers: try to get behind the target for backstab bonus
-    if (self.weapon === "daggers" && !target.rear_exposed) {
+    // Daggers: try to get behind the target for backstab bonus (Tuner-toggleable)
+    if (ctx.policy.daggerFlank && self.weapon === "daggers" && !target.rear_exposed) {
       const behind = flankingPosition(me, target.position);
       if (behind && gs.isPassable(behind[0], behind[1])) {
         return moveTo(tick, behind);
       }
     }
-    return moveTo(tick, target.position);
+    return moveTo(tick, lead);
   }
 
   const range = gs.effectiveAttackRange();
-  const preferred = Math.min(profile.preferredRange, range);
+  // kiteRangeBias (LLM-tunable): + holds further out, − fights closer.
+  const preferred = Math.max(1, Math.min(profile.preferredRange + ctx.policy.kiteRangeBias, range));
 
   // Too close — back off to open the gap (kite), wall-aware.
   if (d < preferred - 0.5) {
@@ -43,9 +46,9 @@ export function positionForCombat(ctx: DecisionContext, target: NearbyBot): Clie
     if (step) return move(tick, step);
   }
 
-  // Too far — advance to get into firing range.
+  // Too far — advance to get into firing range (toward the lead point).
   if (d > range + 0.25) {
-    return moveTo(tick, target.position);
+    return moveTo(tick, lead);
   }
 
   // In the sweet spot — strafe perpendicular to be a harder target.
@@ -93,8 +96,9 @@ export function grabPickup(ctx: DecisionContext): ClientAction | null {
   if (pickups.length === 0) return null;
 
   const burning = gs.hasNegativeEffect();
-  // Flat detour budget regardless of aggression — being alive to fight is always worth a small detour.
-  const maxDetour = burning ? 10 : directive.posture === "defensive" || directive.posture === "retreat" ? 8 : 6;
+  // Detour budget anchored on the LLM-tunable base, widened when burning or playing safe.
+  const base = ctx.policy.pickupDetourMax;
+  const maxDetour = burning ? base + 4 : directive.posture === "defensive" || directive.posture === "retreat" ? base + 2 : base;
 
   let best: NearbyPickup | null = null;
   let bestScore = -Infinity;
@@ -103,7 +107,7 @@ export function grabPickup(ctx: DecisionContext): ClientAction | null {
     const d = dist(me, p.position);
     // When burning, only prioritize health; otherwise use detour budget
     const isHealth = /health|hp|heal/i.test(p.pickup_type);
-    const effectiveMax = burning && isHealth ? 10 : maxDetour;
+    const effectiveMax = burning && isHealth ? base + 4 : maxDetour;
     if (d > effectiveMax) continue;
     if (enemyControls(gs.enemies(), p.position)) continue;
     const score = pickupScore(p.pickup_type) * 10 - d;
