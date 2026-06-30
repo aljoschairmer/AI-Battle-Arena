@@ -23,7 +23,13 @@ export const ObjectiveEnum = z.enum([
   "free_for_all",
 ]);
 
-export const FallbackBehaviorEnum = z.enum(["aggressive", "defensive", "balanced"]);
+export const FallbackBehaviorEnum = z.enum([
+  "aggressive",
+  "defensive",
+  "opportunistic",
+  "territorial",
+  "hunter",
+]);
 
 export const StatBlockSchema = z.object({
   hp: z.number(),

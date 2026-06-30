@@ -3,6 +3,7 @@ import type {
   GridVec,
   LobbyMsg,
   NearbyBot,
+  NavHint,
   NearbyBurnField,
   NearbyEntity,
   NearbyPickup,
@@ -43,6 +44,8 @@ export class GameState {
   self: SelfState | null = null;
   entities: NearbyEntity[] = [];
   nearbyMines = 0;
+  /** Server navigation hints; populated only when no enemy is in fog. */
+  hints: NavHint[] = [];
   lastSeenEnemies: Record<string, { position: GridVec; tick: number }> = {};
 
   /** Weapons seen on opponents in the pre-round lobby (available before round_start). */
@@ -113,6 +116,7 @@ export class GameState {
     this.self = msg.your_state;
     this.entities = msg.nearby_entities ?? [];
     this.nearbyMines = msg.nearby_mines ?? 0;
+    this.hints = msg.hints ?? [];
     if (this.self?.is_alive) this.isRespawning = false;
     this.updateSeenEnemies();
   }

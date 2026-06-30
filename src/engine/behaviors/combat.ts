@@ -1,7 +1,7 @@
 import type { ClientAction, NearbyBot } from "../../types/protocol";
 import { dist, stepAwayFrom } from "../../shared/geometry";
 import { profileFor } from "../weapons";
-import { type DecisionContext, attack, grappleTarget, grappleTo, gravityWell, move, shove } from "./context";
+import { type DecisionContext, attack, attackAt, grappleTarget, grappleTo, gravityWell, move, shove } from "./context";
 import { enemyCluster } from "./targeting";
 
 /**
@@ -51,6 +51,10 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
       if (self.weapon === "staff") {
         const gwAction = tryGravityWell(ctx);
         if (gwAction) return gwAction;
+        // Place the delayed AoE/burn field on the enemy cluster centroid (to catch
+        // several bots) or directly on the target's tile for a single foe.
+        const aoe = enemyCluster(ctx, 2) ?? target.position;
+        return attackAt(tick, target.bot_id, aoe);
       }
 
       // Shield: bash disrupted targets for bonus damage

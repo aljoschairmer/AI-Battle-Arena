@@ -37,6 +37,11 @@ export function attack(tick: number, target: string, charged = false): ClientAct
     : { type: "action", tick, action: "attack", target };
 }
 
+/** Staff AoE: place the delayed burn field at a grid tile (still references a target). */
+export function attackAt(tick: number, target: string, target_position: GridVec): ClientAction {
+  return { type: "action", tick, action: "attack", target, target_position };
+}
+
 export function dodge(tick: number, direction: GridVec): ClientAction {
   return { type: "action", tick, action: "dodge", direction };
 }

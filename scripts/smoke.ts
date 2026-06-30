@@ -160,10 +160,13 @@ async function run(): Promise<void> {
 
   console.log("\nchooseFallbackLoadout");
   {
+    const validFallbacks = ["aggressive", "defensive", "opportunistic", "territorial", "hunter"];
     const lo = chooseFallbackLoadout({ modifier: "hazard_storm" });
     const s = lo.stats;
     check("valid weapon", ["sword", "bow", "daggers", "shield", "spear", "staff", "grapple"].includes(lo.weapon));
     check("stats sum to 20", s.hp + s.speed + s.attack + s.defense === 20, s);
+    // Gap 1: fallback_behavior must be one of the 5 server-accepted values (never "balanced").
+    check(`fallback_behavior is a valid server value (${lo.fallback_behavior})`, validFallbacks.includes(lo.fallback_behavior), lo.fallback_behavior);
   }
 
   console.log("\nController decisions");
@@ -223,6 +226,32 @@ async function run(): Promise<void> {
     gs7.applyTick(tickFrom(self({ stun_ticks: 3 }), [enemy()]));
     const a7 = ctl.decide(gs7);
     check("stunned -> idle", a7.action === "idle", a7);
+
+    // 8. Gap 2: staff in range -> attack with target_position (AoE placement).
+    const gs8 = freshGameState();
+    gs8.setConfirmedAttackRange(5);
+    gs8.applyTick(
+      tickFrom(self({ weapon: "staff", grapple_charges: 0 }), [enemy({ position: [54, 50] })]),
+    );
+    const a8 = ctl.decide(gs8);
+    check("staff in range -> attack", a8.action === "attack", a8);
+    check(
+      "staff attack carries target_position (AoE)",
+      a8.action === "attack" && Array.isArray((a8 as { target_position?: unknown }).target_position),
+      a8,
+    );
+
+    // 9. Gap 3: no enemies in fog + server bot-hint -> move toward the hint.
+    const gs9 = freshGameState();
+    gs9.applyTick(tickFrom(self({ position: [50, 50] }), [])); // no entities
+    gs9.hints = [{ hint_type: "bot", direction: [1, 0], distance: 200 }];
+    const a9 = ctl.decide(gs9);
+    check("nav hint -> move_to", a9.action === "move_to", a9);
+    check(
+      "nav hint -> moves toward the hinted direction (+col)",
+      a9.action === "move_to" && (a9 as { target_position: [number, number] }).target_position[0] > 50,
+      a9,
+    );
   }
 
   console.log("\nMemoryBus");

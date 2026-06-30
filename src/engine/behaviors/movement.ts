@@ -1,5 +1,6 @@
 import type { ClientAction, GridVec, NearbyBot, NearbyPickup } from "../../types/protocol";
 import {
+  clampToGrid,
   dist,
   perpendicularStep,
   toUnitStep,
@@ -143,11 +144,43 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   const loot = seekPickup(ctx);
   if (loot) return loot;
 
+  // Follow the server's nav hints (only sent when no enemy is in fog) toward the
+  // nearest bot to start a fight — far better than blind patrol.
+  const hinted = followHint(ctx);
+  if (hinted) return hinted;
+
   // Nothing to loot either — patrol the zone to find enemies.
   const zoneCenter =
     self.zone_target_radius < self.zone_radius ? self.zone_target_center : self.zone_center;
   const patrolTarget = patrolPoint(gs, tick, zoneCenter);
   return moveTo(tick, patrolTarget);
+}
+
+/**
+ * Follow the server's navigation hints. The arena sends `tick.hints` only when
+ * no enemy is inside our fog — directions to the nearest few bots and the
+ * nearest pickup of each type. We head toward the closest bot (to re-engage) or,
+ * failing that, the closest hinted pickup. `direction` is a normalized vector;
+ * we project a grid target a few tiles along it and let the server pathfind.
+ */
+export function followHint(ctx: DecisionContext): ClientAction | null {
+  const { gs, tick } = ctx;
+  const hints = gs.hints;
+  if (!hints || hints.length === 0) return null;
+
+  const bots = hints
+    .filter((h) => h.hint_type === "bot")
+    .sort((a, b) => a.distance - b.distance);
+  const chosen = bots[0] ?? [...hints].sort((a, b) => a.distance - b.distance)[0];
+  if (!chosen) return null;
+
+  const cell = gs.cellSize || 20;
+  const reach = Math.min(10, Math.max(3, Math.round(chosen.distance / cell)));
+  const target = clampToGrid(
+    [gs.position[0] + chosen.direction[0] * reach, gs.position[1] + chosen.direction[1] * reach],
+    gs.gridSize,
+  );
+  return moveTo(tick, target);
 }
 
 /**

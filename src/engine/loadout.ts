@@ -1,6 +1,21 @@
-import type { LoadoutSelection, Weapon } from "../types/protocol";
+import type { FallbackBehavior, LoadoutSelection, Weapon } from "../types/protocol";
 import { normalizeStats } from "../shared/stats";
 import { DEFAULT_STATS, WEAPONS } from "./weapons";
+
+/**
+ * Server-side autonomous behaviour best matched to each weapon's playstyle, used
+ * when the bot misses a tick. All values are from the arena's accepted set
+ * (aggressive | defensive | opportunistic | territorial | hunter).
+ */
+const WEAPON_FALLBACK: Record<Weapon, FallbackBehavior> = {
+  sword: "aggressive",
+  daggers: "hunter", // chase and finish
+  shield: "defensive",
+  spear: "territorial", // hold ground / brace
+  bow: "territorial", // keep range, hold a line
+  staff: "opportunistic", // poke clusters, play the field
+  grapple: "aggressive",
+};
 
 /**
  * Deterministic loadout chooser used as the Brain-independent fallback. Picks a
@@ -31,7 +46,7 @@ export function chooseFallbackLoadout(opts: {
   return {
     weapon,
     stats,
-    fallback_behavior: "defensive",
+    fallback_behavior: WEAPON_FALLBACK[weapon] ?? "defensive",
   };
 }
 
