@@ -43,9 +43,12 @@ export class ArenaSocket extends EventEmitter {
   private readonly bucket = new TokenBucket(6, 20);
   private droppedSinceLastWarn = 0;
 
+  private warnedUpgradeBlocked = false;
+
   constructor(
     private readonly wsUrl: string,
     private readonly apiKey: string,
+    private readonly origin: string = "",
   ) {
     super();
   }
@@ -78,6 +81,14 @@ export class ArenaSocket extends EventEmitter {
       // Honour HTTPS_PROXY when set (corporate proxies / sandboxed egress).
       // `ws` does not read proxy env vars on its own.
       agent: wsProxyAgent(this.wsUrl),
+      // Present a browser-like handshake. Some edge stacks (and CDNs that emit
+      // `Vary: Origin`) only complete the upgrade for requests that carry an
+      // Origin and a real User-Agent — `ws` sends neither by default.
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ai-battle-arena-bot/1.0",
+        ...(this.origin ? { Origin: this.origin } : {}),
+      },
     });
     this.ws = ws;
 
@@ -99,6 +110,21 @@ export class ArenaSocket extends EventEmitter {
 
     ws.on("error", (err: Error) => {
       log.warn({ err: err.message }, "websocket error");
+      // A plain HTTP status (not 101) on the handshake means an intermediary ate
+      // the upgrade. Emit an actionable, one-time diagnostic instead of letting
+      // the user stare at a cryptic reconnect loop.
+      if (!this.warnedUpgradeBlocked && /Unexpected server response: \d+/.test(err.message)) {
+        this.warnedUpgradeBlocked = true;
+        log.error(
+          { hint: err.message },
+          "WebSocket upgrade was refused (got a plain HTTP response instead of 101 Switching " +
+            "Protocols). This is almost always a TLS-inspecting corporate proxy (e.g. Zscaler) " +
+            "that does not forward WebSocket upgrades. Fixes: (1) exempt arena.angel-serv.com " +
+            "from SSL inspection / add it to the do-not-decrypt list, (2) run the bot on a " +
+            "network without WebSocket-blocking inspection (e.g. a cloud VM), or (3) set " +
+            "HTTPS_PROXY to a proxy that tunnels WebSockets. REST features are unaffected.",
+        );
+      }
       // 'close' fires after 'error'; reconnect is handled there.
     });
 

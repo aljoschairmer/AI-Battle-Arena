@@ -36,7 +36,7 @@ export interface EngineHandle {
 export async function startEngine(bus: Bus): Promise<EngineHandle> {
   const gs = new GameState();
   const controller = new Controller();
-  const socket = new ArenaSocket(config.arena.wsUrl, config.arena.apiKey);
+  const socket = new ArenaSocket(config.arena.wsUrl, config.arena.apiKey, config.arena.wsOrigin);
 
   let loadoutSent = false;
   let pendingPlan: LoadoutPlan | null = null;

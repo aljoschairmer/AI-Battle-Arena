@@ -212,15 +212,30 @@ All via env (see `.env.example`). Highlights:
 
 ## Troubleshooting
 
-**`websocket error: Unexpected server response: 200` and constant reconnects.**
+**`websocket error: Unexpected server response: 200` and constant reconnects (Zscaler / corporate proxy).**
 The arena bot endpoint is a real WebSocket (`wss://…/ws/bot?key=…`) — verified: with a valid key the
-origin returns the `Upgrade: websocket` handshake. If you see `200` instead of `101`, you're behind a
-proxy that **MITMs HTTPS but doesn't tunnel WebSocket upgrades** (some corporate egress proxies and
-sandboxed CI environments do this). The bot is proxy-aware via `HTTPS_PROXY`/`NO_PROXY` (it wires the
-proxy into both `ws` and `fetch`), but a proxy that refuses WS upgrades simply cannot carry the
-connection. Fixes: run the bot on a network path with direct egress to `arena.angel-serv.com:443`, or
-use a proxy that supports HTTP `CONNECT` WebSocket tunneling. REST features (leaderboard, bounties,
-key generation) work through ordinary proxies regardless.
+origin returns the `Upgrade: websocket` handshake. A `200` instead of `101` means an intermediary ate
+the upgrade. By far the most common cause is a **TLS-inspecting corporate proxy (e.g. Zscaler)**: it
+decrypts HTTPS (which is why you also need its root CA — see the Docker note below) but does **not**
+forward WebSocket upgrades, so it answers the handshake itself with a plain `200`. REST calls
+(leaderboard, bounties, key generation, the LLM brain) still work because they're ordinary HTTPS.
+
+What the bot already does to help: it sends a browser-like `Origin`/`User-Agent` on the handshake
+(some CDNs only upgrade with one — the arena emits `Vary: Origin`), it routes `ws` **and** `fetch`
+through `HTTPS_PROXY`/`NO_PROXY` when set, and it prints a one-time, explicit diagnostic instead of a
+silent reconnect loop.
+
+How to actually fix it (in order of preference):
+1. **Exempt `arena.angel-serv.com` from SSL inspection** (add it to your proxy's do-not-decrypt /
+   bypass list). This is the real fix for Zscaler and lets the upgrade pass through untouched.
+2. **Run the bot off the inspected network** — a cloud VM, or a host with a split-tunnel to the arena.
+3. **Point `HTTPS_PROXY` at a proxy that tunnels WebSockets** (HTTP `CONNECT`), and add internal hosts
+   (e.g. `redis`) to `NO_PROXY`.
+
+**Docker + corporate root CA.** The `Dockerfile` installs `ZscalerRootCertificate-2048-SHA256.crt`
+into the system trust store and sets `NODE_EXTRA_CA_CERTS`, so Node trusts the proxy's intercepted
+TLS. If your proxy uses a different root CA, drop its `.crt` in the repo root and update the two
+`COPY` lines (or remove them entirely when not behind an inspecting proxy).
 
 **Loadout rejected / never confirmed.** Stats must be integers in `[1,10]` summing to `20`; the bot
 normalises this automatically (`src/shared/stats.ts`), so this usually means a stale `ARENA_API_KEY`.

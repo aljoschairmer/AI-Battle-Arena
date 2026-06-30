@@ -27,14 +27,19 @@ function int(name: string, fallback: number): number {
 
 const role = RoleSchema.parse(str("ROLE", "all"));
 const bus = BusSchema.parse(str("BUS", "memory"));
+const arenaHttpBase = str("ARENA_HTTP_BASE", "https://arena.angel-serv.com").replace(/\/$/, "");
 
 export const config = {
   role,
   bus,
 
   arena: {
-    httpBase: str("ARENA_HTTP_BASE", "https://arena.angel-serv.com").replace(/\/$/, ""),
+    httpBase: arenaHttpBase,
     wsUrl: str("ARENA_WS_URL", "wss://arena.angel-serv.com/ws/bot"),
+    // Some edge/proxy stacks only perform the WebSocket upgrade when a browser-like
+    // Origin is present (the arena responds with `Vary: Origin`). Default to the
+    // HTTP origin; override with ARENA_WS_ORIGIN if needed.
+    wsOrigin: str("ARENA_WS_ORIGIN", arenaHttpBase),
     apiKey: str("ARENA_API_KEY"),
     botName: str("BOT_NAME", "NeuralReaper"),
     botColor: str("BOT_COLOR", "#00d4ff"),
