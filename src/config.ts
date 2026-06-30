@@ -50,9 +50,9 @@ export const config = {
     siteUrl: str("OPENROUTER_SITE_URL", "https://arena.angel-serv.com"),
     appName: str("OPENROUTER_APP_NAME", "ai-battle-arena-bot"),
     models: {
-      strategist: str("OPENROUTER_MODEL_STRATEGIST", "anthropic/claude-3.5-sonnet"),
-      loadout: str("OPENROUTER_MODEL_LOADOUT", "anthropic/claude-3.5-sonnet"),
-      tactician: str("OPENROUTER_MODEL_TACTICIAN", "openai/gpt-4o-mini"),
+      strategist: str("OPENROUTER_MODEL_STRATEGIST", "anthropic/claude-sonnet-4.6"),
+      loadout: str("OPENROUTER_MODEL_LOADOUT", "anthropic/claude-sonnet-4.6"),
+      tactician: str("OPENROUTER_MODEL_TACTICIAN", "anthropic/claude-haiku-4.5"),
     },
     tacticianIntervalMs: int("TACTICIAN_INTERVAL_MS", 2500),
     timeoutMs: int("LLM_TIMEOUT_MS", 8000),

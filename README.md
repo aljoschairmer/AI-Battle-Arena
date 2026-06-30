@@ -75,9 +75,12 @@ with one `action` per tick) → `round_end` → repeat. Rate limit: 25 msg/s; AF
 
 | Agent | Cadence | Model (default) | Job |
 | --- | --- | --- | --- |
-| **Loadout** | per connect | `anthropic/claude-3.5-sonnet` | Draft weapon + stat spread vs. the meta and round modifier. |
-| **Strategist** | per round | `anthropic/claude-3.5-sonnet` | Set posture, objective, who to hunt/avoid, retreat threshold. |
-| **Tactician** | ~every 2.5 s | `openai/gpt-4o-mini` | Fast mid-fight tweaks: focus the low-HP target, flip to retreat, dial aggression. |
+| **Loadout** | per connect | `anthropic/claude-sonnet-4.6` | Draft weapon + stat spread vs. the meta and round modifier. |
+| **Strategist** | per round | `anthropic/claude-sonnet-4.6` | Set posture, objective, who to hunt/avoid, retreat threshold. |
+| **Tactician** | ~every 2.5 s | `anthropic/claude-haiku-4.5` | Fast mid-fight tweaks: focus the low-HP target, flip to retreat, dial aggression. |
+
+> Models are env-configurable — any current OpenRouter slug works (e.g. bump the planners to
+> `anthropic/claude-opus-4.8` for maximum strength, or `anthropic/claude-opus-4.8-fast` for lower latency).
 
 All outputs are **Zod-validated**; stat blocks are normalised to always sum to the 20-point budget,
 so the server never rejects a loadout. Any agent may fail — the orchestrator just keeps the last
@@ -187,7 +190,7 @@ All via env (see `.env.example`). Highlights:
 | `BUS` | `memory` | `redis` for split processes; `memory` requires `ROLE=all` |
 | `ARENA_API_KEY` | — | required for the engine; `npm run keygen` |
 | `OPENROUTER_API_KEY` | — | empty ⇒ pure deterministic bot (no LLM cost) |
-| `OPENROUTER_MODEL_*` | claude-3.5-sonnet / gpt-4o-mini | any OpenRouter model slug |
+| `OPENROUTER_MODEL_*` | claude-sonnet-4.6 / claude-haiku-4.5 | any current OpenRouter model slug |
 | `TACTICIAN_INTERVAL_MS` | `2500` | mid-round re-evaluation cadence |
 | `LLM_TIMEOUT_MS` | `8000` | hard cap before falling back to deterministic logic |
 
