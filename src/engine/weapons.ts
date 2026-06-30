@@ -41,10 +41,10 @@ export function profileFor(weapon: Weapon): WeaponProfile {
 /** A balanced default stat spread per weapon (sums to the 20 budget, 1..10 each). */
 export const DEFAULT_STATS: Record<Weapon, { hp: number; speed: number; attack: number; defense: number }> = {
   sword: { hp: 6, speed: 5, attack: 6, defense: 3 },
-  daggers: { hp: 4, speed: 8, attack: 6, defense: 2 },
+  daggers: { hp: 5, speed: 7, attack: 5, defense: 3 },
   shield: { hp: 8, speed: 4, attack: 3, defense: 5 },
-  spear: { hp: 6, speed: 5, attack: 6, defense: 3 },
-  bow: { hp: 5, speed: 6, attack: 7, defense: 2 },
-  staff: { hp: 5, speed: 5, attack: 7, defense: 3 },
+  spear: { hp: 6, speed: 5, attack: 5, defense: 4 },
+  bow: { hp: 6, speed: 5, attack: 6, defense: 3 },
+  staff: { hp: 6, speed: 5, attack: 6, defense: 3 },
   grapple: { hp: 6, speed: 6, attack: 5, defense: 3 },
 };

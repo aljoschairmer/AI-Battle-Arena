@@ -1,15 +1,19 @@
 import type {
   ConnectedMsg,
   GridVec,
+  LobbyMsg,
   NearbyBot,
   NearbyBurnField,
   NearbyEntity,
   NearbyPickup,
+  RespawnMsg,
   RoundStartMsg,
   SelfState,
   TickMsg,
+  Weapon,
 } from "../types/protocol";
-import { chebyshev, dist } from "../shared/geometry";
+import { chebyshev, dist, stepAwayFrom, stepToward } from "../shared/geometry";
+import { nextStep } from "./pathfinding";
 import { profileFor } from "./weapons";
 
 /**
@@ -39,6 +43,13 @@ export class GameState {
   self: SelfState | null = null;
   entities: NearbyEntity[] = [];
   nearbyMines = 0;
+  lastSeenEnemies: Record<string, { position: GridVec; tick: number }> = {};
+
+  /** Weapons seen on opponents in the pre-round lobby (available before round_start). */
+  lobbyWeapons: Partial<Record<Weapon, number>> = {};
+
+  /** True while we are in the post-death wait before a respawn. */
+  isRespawning = false;
 
   /** Server-confirmed attack range (tiles), from loadout_confirmed. */
   private confirmedAttackRange: number | null = null;
@@ -51,13 +62,34 @@ export class GameState {
     this.statBudget = msg.stat_budget || 20;
     this.statMin = msg.stat_min || 1;
     this.statMax = msg.stat_max || 10;
+    this.lobbyWeapons = {};
+    this.isRespawning = false;
+  }
+
+  applyLobby(msg: LobbyMsg): void {
+    // Pre-scout opponent weapons before the round begins.
+    this.lobbyWeapons = {};
+    for (const p of msg.players ?? []) {
+      if (p.weapon) {
+        this.lobbyWeapons[p.weapon] = (this.lobbyWeapons[p.weapon] ?? 0) + 1;
+      }
+    }
   }
 
   applyRoundStart(msg: RoundStartMsg): void {
     this.round = msg.round_number;
     this.roundModifier = msg.round_modifier;
+    this.isRespawning = false;
     // Terrain is per-round; invalidate until we (optionally) fetch the new map.
     this.terrain = null;
+  }
+
+  applyRespawn(msg: RespawnMsg): void {
+    this.isRespawning = false;
+    // Update self state with the new position and HP if self exists.
+    if (this.self) {
+      this.self = { ...this.self, position: msg.position as GridVec, hp: msg.hp, is_alive: true };
+    }
   }
 
   setTerrain(terrain: string[][] | null): void {
@@ -81,6 +113,19 @@ export class GameState {
     this.self = msg.your_state;
     this.entities = msg.nearby_entities ?? [];
     this.nearbyMines = msg.nearby_mines ?? 0;
+    if (this.self?.is_alive) this.isRespawning = false;
+    this.updateSeenEnemies();
+  }
+
+  private updateSeenEnemies(): void {
+    const now = this.tick;
+    for (const enemy of this.enemies()) {
+      this.lastSeenEnemies[enemy.bot_id] = { position: enemy.position, tick: now };
+    }
+    const stale = Object.entries(this.lastSeenEnemies).filter(
+      ([id, info]) => now - info.tick > 30,
+    );
+    for (const [id] of stale) delete this.lastSeenEnemies[id];
   }
 
   // --- typed views -----------------------------------------------------------
@@ -143,6 +188,38 @@ export class GameState {
     return true;
   }
 
+  /**
+   * Wall-aware single step toward `goal`. Uses local A* when terrain is loaded
+   * so the bot navigates around obstacles rather than bumping into them. Falls
+   * back to a plain directional step when no terrain is available.
+   * Returns a unit direction vector [dc, dr] to pass to move().
+   */
+  stepToward(goal: GridVec): GridVec {
+    const me = this.position;
+    if (this.terrain) {
+      const next = nextStep(me, goal, this.gridSize, (c, r) => this.isPassable(c, r));
+      if (next) return [next[0] - me[0], next[1] - me[1]] as GridVec;
+    }
+    return stepToward(me, goal);
+  }
+
+  /**
+   * Wall-aware single step away from `threat`. Finds the next step toward the
+   * point on the opposite side of the grid, using A* when terrain is loaded.
+   * Returns a unit direction vector [dc, dr] to pass to move().
+   */
+  stepAwayFrom(threat: GridVec): GridVec {
+    const me = this.position;
+    if (this.terrain) {
+      // Goal = mirror of threat through our position, clamped to grid.
+      const goalCol = Math.max(0, Math.min(this.gridSize - 1, 2 * me[0] - threat[0]));
+      const goalRow = Math.max(0, Math.min(this.gridSize - 1, 2 * me[1] - threat[1]));
+      const next = nextStep(me, [goalCol, goalRow], this.gridSize, (c, r) => this.isPassable(c, r));
+      if (next) return [next[0] - me[0], next[1] - me[1]] as GridVec;
+    }
+    return stepAwayFrom(me, threat);
+  }
+
   /** Closest living enemy, or null. */
   nearestEnemy(): NearbyBot | null {
     const me = this.position;
@@ -158,8 +235,64 @@ export class GameState {
     return best;
   }
 
+  guessedEnemyPositions(maxAge = 30): Array<{ bot_id: string; position: GridVec; since: number }> {
+    const now = this.tick;
+    return Object.entries(this.lastSeenEnemies)
+      .filter(([, info]) => now - info.tick <= maxAge)
+      .map(([bot_id, info]) => ({ bot_id, position: info.position, since: now - info.tick }));
+  }
+
   hpFraction(): number {
     if (!this.self || this.self.max_hp <= 0) return 1;
     return this.self.hp / this.self.max_hp;
+  }
+
+  /** True if we currently have the hazard key active (suppresses hazard damage). */
+  hasHazardKey(): boolean {
+    return (this.self?.hazard_key_active ?? false) && (this.self?.hazard_key_ticks ?? 0) > 0;
+  }
+
+  /** True if we are currently burning, poisoned, or otherwise DoT'd. */
+  hasNegativeEffect(): boolean {
+    return (this.self?.effects ?? []).some(
+      (e) => e.name === "burn" || e.name === "poison" || e.name === "dot",
+    );
+  }
+
+  /** Dominant weapon among opponents visible in the lobby (pre-round scout). */
+  lobbyDominantWeapon(): Weapon | null {
+    let best: Weapon | null = null;
+    let bestCount = 0;
+    for (const [w, n] of Object.entries(this.lobbyWeapons) as [Weapon, number][]) {
+      if (n > bestCount) { bestCount = n; best = w; }
+    }
+    return best;
+  }
+
+  /** Whether a terrain cell is a teleport pad ('T') */
+  isTeleportPad(col: number, row: number): boolean {
+    return this.terrain?.[row]?.[col] === "T";
+  }
+
+  /** Whether a terrain cell is a capture pad ('C') */
+  isCapturePad(col: number, row: number): boolean {
+    return this.terrain?.[row]?.[col] === "C";
+  }
+
+  /** Find the nearest capture pad position within search radius, or null. */
+  nearestCapturePad(searchRadius = 20): GridVec | null {
+    if (!this.terrain) return null;
+    const [cx, cy] = this.position;
+    let best: GridVec | null = null;
+    let bestDist = Infinity;
+    for (let row = Math.max(0, cy - searchRadius); row <= Math.min(this.gridSize - 1, cy + searchRadius); row++) {
+      for (let col = Math.max(0, cx - searchRadius); col <= Math.min(this.gridSize - 1, cx + searchRadius); col++) {
+        if (this.terrain[row]?.[col] === "C") {
+          const d = dist([col, row], this.position);
+          if (d < bestDist) { bestDist = d; best = [col, row]; }
+        }
+      }
+    }
+    return best;
   }
 }

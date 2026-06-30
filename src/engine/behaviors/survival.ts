@@ -21,25 +21,41 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
   const self = gs.self;
   if (!self) return null;
 
-  // 1. Outside the safe zone — get back in. Zone damage stacks fast.
+  // 1. Outside the safe zone — get back in immediately. Zone damage stacks fast.
   if (!self.in_safe_zone) {
     return moveTo(tick, self.zone_center);
   }
 
-  // 2. Zone is shrinking and we're near the edge — drift toward the next centre
-  //    so we're never caught outside when it contracts.
-  if (self.distance_to_zone_edge >= 0 && self.distance_to_zone_edge <= 3) {
-    const target = self.zone_target_radius < self.zone_radius ? self.zone_target_center : self.zone_center;
-    return moveTo(tick, target);
+  // 2. Zone is shrinking toward a new center — drift proactively so we're never
+  //    caught at the edge when the boundary snaps. Only trigger when the zone IS
+  //    actually contracting (target_radius < current radius) and we're close to
+  //    the current edge.
+  const zoneShrinking = self.zone_target_radius < self.zone_radius;
+  if (zoneShrinking && self.distance_to_zone_edge >= 0 && self.distance_to_zone_edge <= 5) {
+    return moveTo(tick, self.zone_target_center);
   }
 
-  // 3. Standing on / adjacent to a hazard tile — step off to a safe neighbour.
-  const hazards = gs.hazardTiles();
-  if (hazards.length > 0) {
+  // 3. Standing near a hazard tile — step off, UNLESS we have the hazard key active.
+  if (!gs.hasHazardKey()) {
+    const hazards = gs.hazardTiles();
+    if (hazards.length > 0) {
+      const here = gs.position;
+      const onHazard = hazards.some((h) => chebyshev(here, h) <= 2);
+      if (onHazard) {
+        const escape = safestNeighbourAway(ctx, hazards);
+        if (escape) return move(tick, escape);
+      }
+    }
+  }
+
+  // 4. Burning / DoT'd and no health pack close — kite toward zone center while
+  //    the pickup layer handles healing. Burning in place is always worse than
+  //    moving (burn fields persist, so just walk off them).
+  if (gs.hasNegativeEffect()) {
     const here = gs.position;
-    const onHazard = hazards.some((h) => chebyshev(here, h) <= 1);
-    if (onHazard) {
-      const escape = safestNeighbourAway(ctx, hazards);
+    const onBurn = gs.burnFields().some((b) => chebyshev(here, b.position) <= 1);
+    if (onBurn) {
+      const escape = safestNeighbourAway(ctx, gs.burnFields().map((b) => b.position));
       if (escape) return move(tick, escape);
     }
   }
@@ -48,12 +64,14 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
 }
 
 /**
- * Reactive emergency dodge: spend a dodge (2 tiles + 3 ticks invuln) when a hit
- * is imminent AND we can't simply trade it back. The dodge has a 30-tick
- * cooldown, so we hoard it for the moments that matter — incoming charged shots,
- * or melee pressure while our own weapon is cooling down — rather than burning
- * it every time an enemy stands next to us. When our weapon is ready and a
- * target is in range we prefer to attack (handled by the combat layer).
+ * Emergency dodge: spend the 30-tick dodge (2 tiles, 3 ticks invuln) when a hit
+ * is imminent and retaliating now wouldn't be worth it.
+ *
+ * Extended triggers vs. original:
+ *   - charged bow shot lined up on us (was already there)
+ *   - enemy bow at high charge level even without charged_shot_ready (imminent)
+ *   - melee pressure while our weapon is cooling
+ *   - just took a hit and can't trade back immediately
  */
 export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   const { gs, tick } = ctx;
@@ -65,29 +83,34 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   const myRange = gs.effectiveAttackRange();
   const enemies = gs.enemies();
 
-  // Can we retaliate this tick instead of dodging?
-  const canTradeNow =
-    self.weapon_ready && enemies.some((e) => e.has_los && dist(me, e.position) <= myRange + 0.5);
-
-  // The scariest single event: a charged ranged shot lined up on us.
+  // Fully charged shot about to fire.
   const chargedIncoming = enemies.find((e) => {
     const range = e.attack_range || profileFor(e.weapon).baseRange;
     return e.charged_shot_ready && e.has_los && dist(me, e.position) <= range + 2;
   });
 
+  // Bow enemy at charge level 2+ — fire is imminent; dodge before the shot lands.
+  const highChargeBow: NearbyBot | null = chargedIncoming
+    ? null
+    : enemies.find((e) => {
+        const range = e.attack_range || profileFor(e.weapon).baseRange;
+        return e.weapon === "bow" && e.bow_charge_level >= 2 && e.has_los && dist(me, e.position) <= range + 1;
+      }) ?? null;
+
   const justHit = self.hits_received.length > 0;
-  const meleePressureNoRetaliate =
-    !self.weapon_ready &&
-    enemies.some((e) => e.can_attack && dist(me, e.position) <= 1.6);
+  // Melee pressure: dodge whenever an enemy can attack us in melee, regardless
+  // of whether our own weapon is ready. Trading hits at 1:1 is always losing
+  // when the enemy has more HP or is part of a cluster.
+  const meleePressure = enemies.some((e) => e.can_attack && dist(me, e.position) <= 1.6);
 
   let trigger = false;
   if (chargedIncoming) trigger = true;
-  else if (!canTradeNow && (justHit || meleePressureNoRetaliate)) trigger = true;
+  else if (highChargeBow) trigger = true;
+  else if (justHit || meleePressure) trigger = true;
   if (!trigger) return null;
 
-  const ref: NearbyBot | null = chargedIncoming ?? nearestAttacker(ctx) ?? gs.nearestEnemy();
+  const ref: NearbyBot | null = chargedIncoming ?? highChargeBow ?? nearestAttacker(ctx) ?? gs.nearestEnemy();
   if (!ref) {
-    // Hit by something we can't see (mine/AoE) — dodge toward zone centre.
     const dir = stepToward(me, self.zone_center);
     if (isDodgeWorthwhile(ctx, dir)) return dodge(tick, dir);
     return null;
@@ -95,7 +118,9 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
 
   const perp = perpendicularStep(me, ref.position);
   const away = stepAwayFrom(me, ref.position);
-  for (const dir of [perp, [-perp[0], -perp[1]] as GridVec, away]) {
+  // Try both perpendicular directions, then straight away — pick first safe one.
+  const perpNeg: GridVec = [-perp[0] as number, -perp[1] as number];
+  for (const dir of [perp, perpNeg, away]) {
     if (isDodgeWorthwhile(ctx, dir)) return dodge(tick, dir);
   }
   return null;
@@ -103,8 +128,7 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
 
 /**
  * Retreat-and-heal: when below the directive's HP threshold, grab a nearby
- * health pack if one is reachable and safe, otherwise kite away from danger
- * toward the zone centre. Returns null when healthy enough to fight.
+ * health pack or kite away from danger toward zone center.
  */
 export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
   const { gs, directive, tick } = ctx;
@@ -116,21 +140,20 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
 
   const me = gs.position;
 
-  // Prefer a health pack if it's close and not guarded by an adjacent enemy.
   const health = gs
     .pickups()
     .filter((p) => /health|hp|heal/i.test(p.pickup_type))
     .sort((a, b) => dist(me, a.position) - dist(me, b.position))[0];
 
-  if (health && dist(me, health.position) <= 6 && !enemyAdjacentTo(gs.enemies(), health.position)) {
+  if (health && dist(me, health.position) <= 9 && !enemyAdjacentTo(gs.enemies(), health.position)) {
     return moveTo(tick, health.position);
   }
 
-  // Otherwise kite: move away from the nearest threat, biased toward zone centre.
+  // Kite: move away from nearest threat using wall-aware steps, biased toward zone center.
   const threat = gs.nearestEnemy();
   if (threat) {
-    const away = stepAwayFrom(me, threat.position);
-    const toCentre = stepToward(me, self.zone_center);
+    const away = gs.stepAwayFrom(threat.position);
+    const toCentre = gs.stepToward(self.zone_center);
     const blended = toUnitStep([away[0] + toCentre[0], away[1] + toCentre[1]]);
     const step = firstSafeStep(ctx, [blended, away, toCentre]);
     if (step) return move(tick, step);
@@ -144,7 +167,6 @@ function enemyAdjacentTo(enemies: NearbyBot[], pos: GridVec): boolean {
   return enemies.some((e) => chebyshev(e.position, pos) <= 1);
 }
 
-/** The enemy most able to land damage on us this tick (for dodge direction). */
 function nearestAttacker(ctx: DecisionContext): NearbyBot | null {
   const me = ctx.gs.position;
   let best: NearbyBot | null = null;
@@ -155,23 +177,19 @@ function nearestAttacker(ctx: DecisionContext): NearbyBot | null {
     let score = 0;
     if (e.has_los && d <= range + 1 && e.can_attack) score += 50 - d;
     if (e.charged_shot_ready && e.has_los && d <= range + 2) score += 40;
-    if (d <= 1.5) score += 20; // adjacent melee pressure
-    if (score > bestScore) {
-      bestScore = score;
-      best = e;
-    }
+    if (e.bow_charge_level >= 3 && e.has_los && d <= range + 1) score += 30;
+    if (d <= 1.5) score += 20;
+    if (score > bestScore) { bestScore = score; best = e; }
   }
   return best;
 }
 
-/** Would dodging in `dir` land us somewhere safe (in-bounds, passable, off-hazard)? */
 function isDodgeWorthwhile(ctx: DecisionContext, dir: GridVec): boolean {
   if (dir[0] === 0 && dir[1] === 0) return false;
   const landing = project(ctx.gs.position, dir, 2, ctx.gs.gridSize);
   return ctx.gs.isSafeStep(landing[0], landing[1]);
 }
 
-/** Pick the immediate neighbour that maximises distance from all hazards. */
 function safestNeighbourAway(ctx: DecisionContext, hazards: GridVec[]): GridVec | null {
   const me = ctx.gs.position;
   let best: GridVec | null = null;
@@ -184,16 +202,12 @@ function safestNeighbourAway(ctx: DecisionContext, hazards: GridVec[]): GridVec 
       if (!ctx.gs.isPassable(col, row)) continue;
       let clearance = Infinity;
       for (const h of hazards) clearance = Math.min(clearance, chebyshev([col, row], h));
-      if (clearance > bestClearance) {
-        bestClearance = clearance;
-        best = [dc, dr];
-      }
+      if (clearance > bestClearance) { bestClearance = clearance; best = [dc, dr]; }
     }
   }
   return best;
 }
 
-/** Return the first direction from `dirs` that leads to a safe tile. */
 function firstSafeStep(ctx: DecisionContext, dirs: GridVec[]): GridVec | null {
   for (const d of dirs) {
     if (d[0] === 0 && d[1] === 0) continue;

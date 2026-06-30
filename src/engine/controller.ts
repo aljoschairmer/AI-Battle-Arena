@@ -3,7 +3,7 @@ import type { Directive } from "../types/internal";
 import { DEFAULT_DIRECTIVE } from "../types/internal";
 import { dist } from "../shared/geometry";
 import type { GameState } from "./gameState";
-import { combatBehavior } from "./behaviors/combat";
+import { combatBehavior, gravityWellBehavior } from "./behaviors/combat";
 import { idle, placeMine } from "./behaviors/context";
 import { defaultReposition, grabPickup, positionForCombat } from "./behaviors/movement";
 import { selectTarget } from "./behaviors/targeting";
@@ -11,19 +11,19 @@ import { emergencyDodge, retreatAndHeal, survivalBehavior } from "./behaviors/su
 
 /**
  * The reactive controller: deterministic, allocation-light, runs every tick in
- * well under a millisecond. It composes the behaviour modules in strict priority
- * order and is the ONLY thing in the loop that decides an action. The LLM Brain
- * never touches this path — it only swaps out the `directive` it reads.
+ * well under a millisecond. Composes behaviour modules in strict priority order.
+ * The LLM Brain never touches this path — it only swaps the `directive` it reads.
  *
  * Priority (highest first):
- *   1. Can't act (dead / stunned)         -> idle
- *   2. Survive the environment (zone/haz)  -> reposition to safety
- *   3. Emergency dodge an incoming hit
- *   4. Retreat & heal when low / told to
- *   5. Drop a mine while being chased
- *   6. Fight the chosen target (attack/special) or position for it
- *   7. Grab a valuable nearby pickup
- *   8. Default: pre-position for the shrinking zone
+ *   1. Can't act (dead / stunned / respawning)     -> idle
+ *   2. Survive the environment (zone / hazard)      -> reposition to safety
+ *   3. Emergency dodge incoming hit                 -> spend dodge
+ *   4. Retreat & heal when low / told to            -> kite + heal
+ *   5. Drop a mine while being chased (retreating)  -> place_mine
+ *   6. Gravity well on clusters (staff/grapple)     -> use_gravity_well
+ *   7. Fight the chosen target (attack/special)     -> or position for it
+ *   8. Grab a valuable nearby pickup               -> use_item / move
+ *   9. Default: pre-position for zone / capture pad -> move_to
  */
 export class Controller {
   private directive: Directive = { ...DEFAULT_DIRECTIVE };
@@ -46,7 +46,9 @@ export class Controller {
   decide(gs: GameState): ClientAction {
     const self = gs.self;
     const tick = gs.tick;
-    if (!self || !self.is_alive) return idle(tick);
+
+    // 1. Can't act.
+    if (!self || !self.is_alive || gs.isRespawning) return idle(tick);
     if (self.stun_ticks > 0) return idle(tick);
 
     const ctx = { gs, directive: this.directive, tick };
@@ -56,19 +58,24 @@ export class Controller {
     if (survive) return survive;
 
     // 3. Reactive dodge.
-    const dodge = emergencyDodge(ctx);
-    if (dodge) return dodge;
+    const dodgeAction = emergencyDodge(ctx);
+    if (dodgeAction) return dodgeAction;
 
     // 4. Retreat / heal.
     const retreat = retreatAndHeal(ctx);
     if (retreat) {
-      // 5. Mine the path behind us while fleeing.
-      const mine = this.maybeDropMine(gs);
+      // 5. Mine the path behind us while fleeing — but ONLY if we're actually
+      //    moving away (retreating), not if we're cornered in place.
+      const mine = this.maybeDropMine(gs, true);
       if (mine) return mine;
       return retreat;
     }
 
-    // 6. Engage the best target.
+    // 6. Gravity well on enemy clusters (staff/grapple weapons, opportunistic).
+    const gw = gravityWellBehavior(ctx);
+    if (gw) return gw;
+
+    // 7. Engage the best target.
     const target = selectTarget(ctx);
     if (target) {
       const combat = combatBehavior(ctx, target);
@@ -76,26 +83,31 @@ export class Controller {
       return positionForCombat(ctx, target);
     }
 
-    // 7. Opportunistic loot.
+    // 8. Opportunistic loot.
     const loot = grabPickup(ctx);
     if (loot) return loot;
 
-    // 8. Hold good ground.
+    // 9. Hold good ground.
     return defaultReposition(ctx);
   }
 
   /**
-   * Place a mine when an enemy is right on our heels and we still have charges.
-   * Mines arm after ~1s, so this only pays off while actively kiting away.
+   * Place a mine only when:
+   * - An enemy is right behind us (≤2.2 tiles)
+   * - We have charges remaining and the cooldown has elapsed
+   * - retreatingNow is true (we're actively kiting, not cornered)
+   *
+   * Cornered mine placement wastes all 3 charges in one spot — avoid it.
    */
-  private maybeDropMine(gs: GameState): ClientAction | null {
+  private maybeDropMine(gs: GameState, retreatingNow: boolean): ClientAction | null {
+    if (!retreatingNow) return null;
     const self = gs.self;
     if (!self) return null;
-    if (this.minesPlacedThisRound >= 3) return null;
-    if (gs.tick - this.lastMineTick < 30) return null;
+    if (this.minesPlacedThisRound >= 6) return null;
+    if (gs.tick - this.lastMineTick < 15) return null;
 
     const me = gs.position;
-    const chaser = gs.enemies().find((e) => dist(me, e.position) <= 2.2);
+    const chaser = gs.enemies().find((e) => dist(me, e.position) <= 4);
     if (!chaser) return null;
 
     this.minesPlacedThisRound += 1;

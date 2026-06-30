@@ -60,3 +60,15 @@ export const TacticOutputSchema = z.object({
   reasoning: z.string().max(400).default(""),
 });
 export type TacticOutput = z.infer<typeof TacticOutputSchema>;
+
+export const PostureEnumSimple = z.enum(["aggressive", "balanced", "defensive"]);
+
+export const AnalystOutputSchema = z.object({
+  lessons: z.array(z.string().max(200)).max(6).default([]),
+  recommendedWeapon: WeaponEnum.nullable().default(null),
+  recommendedWeaponReason: z.string().max(300).default(""),
+  dangerousOpponents: z.array(z.string()).max(5).default([]),
+  weakOpponents: z.array(z.string()).max(5).default([]),
+  suggestedPosture: PostureEnumSimple.default("balanced"),
+});
+export type AnalystOutput = z.infer<typeof AnalystOutputSchema>;

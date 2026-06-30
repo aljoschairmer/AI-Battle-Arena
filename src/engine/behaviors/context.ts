@@ -21,10 +21,16 @@ export function move(tick: number, direction: GridVec): ClientAction {
   return { type: "action", tick, action: "move", direction };
 }
 
+export function sprint(tick: number, direction: GridVec): ClientAction {
+  return { type: "action", tick, action: "move", direction };
+}
+
 export function moveTo(tick: number, target_position: GridVec): ClientAction {
   return { type: "action", tick, action: "move_to", target_position };
 }
-
+export function sprintTo(tick: number, target_position: GridVec): ClientAction {
+  return { type: "action", tick, action: "move_to", target_position };
+}
 export function attack(tick: number, target: string, charged = false): ClientAction {
   return charged
     ? { type: "action", tick, action: "attack", target, charged: true }

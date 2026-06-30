@@ -4,6 +4,8 @@ import type {
   ArenaMapResponse,
   ArenaStatus,
   BotConfig,
+  BotLiveState,
+  BotStats,
   BountyResponse,
   GenerateKeyResponse,
   LeaderboardResponse,
@@ -96,6 +98,14 @@ export class ArenaRest {
     return this.request("/api/v1/keys/revoke", { method: "DELETE", auth: true });
   }
 
+  getBotStats(): Promise<BotStats> {
+    return this.request<BotStats>("/api/v1/bot/stats", { auth: true });
+  }
+
+  getBotLive(): Promise<BotLiveState> {
+    return this.request<BotLiveState>("/api/v1/bot/live", { auth: true });
+  }
+
   /** Best-effort: returns null on any failure so callers never crash on telemetry. */
   async tryGetLeaderboard(limit = 10): Promise<LeaderboardResponse | null> {
     try {
@@ -111,6 +121,24 @@ export class ArenaRest {
       return await this.getBounties();
     } catch (e) {
       log.debug({ err: (e as Error).message }, "bounty fetch failed");
+      return null;
+    }
+  }
+
+  async tryGetBotStats(): Promise<BotStats | null> {
+    try {
+      return await this.getBotStats();
+    } catch (e) {
+      log.debug({ err: (e as Error).message }, "bot stats fetch failed");
+      return null;
+    }
+  }
+
+  async tryGetArenaStatus(): Promise<ArenaStatus | null> {
+    try {
+      return await this.getStatus();
+    } catch (e) {
+      log.debug({ err: (e as Error).message }, "arena status fetch failed");
       return null;
     }
   }

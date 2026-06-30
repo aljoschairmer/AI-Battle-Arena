@@ -426,10 +426,10 @@ export interface LeaderboardEntry {
 }
 
 export interface LeaderboardResponse {
-  leaderboard: LeaderboardEntry[];
+  entries: LeaderboardEntry[];
   limit: number;
   offset: number;
-  period: string;
+  period?: string;
   total: number;
 }
 
@@ -457,4 +457,28 @@ export interface BotConfig {
   name: string;
   avatar_color: string;
   default_loadout: LoadoutSelection;
+}
+
+export interface BotStats {
+  bot_id: string;
+  name: string;
+  elo: number;
+  kills: number;
+  deaths: number;
+  kd_ratio: number;
+  best_streak: number;
+  damage_dealt: number;
+  rounds_played: number;
+  round_wins: number;
+}
+
+export interface BotLiveState {
+  in_game: boolean;
+  round_number?: number;
+  position?: GridVec;
+  hp?: number;
+  max_hp?: number;
+  kills?: number;
+  deaths?: number;
+  weapon?: Weapon;
 }

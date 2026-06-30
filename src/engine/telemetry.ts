@@ -1,4 +1,5 @@
 import type { EnemySnapshot, GameSnapshot } from "../types/internal";
+import type { GridVec } from "../types/protocol";
 import { dist } from "../shared/geometry";
 import type { GameState } from "./gameState";
 
@@ -29,13 +30,31 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
       rearExposed: e.rear_exposed,
     }))
     .sort((a, b) => b.threatScore - a.threatScore)
-    .slice(0, 8);
+    .slice(0, 16);
 
   const nearbyPickups = gs
     .pickups()
     .map((p) => ({ type: p.pickup_type, position: p.position, distance: round1(dist(me, p.position)) }))
     .sort((a, b) => a.distance - b.distance)
-    .slice(0, 6);
+    .slice(0, 12);
+
+  const nearbyHazards = gs.entities
+    .filter((e) => e.type !== "bot" && e.type !== "pickup")
+    .map((e) => ({
+      type: e.type,
+      position: e.position,
+      distance: round1(dist(me, e.position)),
+      radius: "radius" in e ? e.radius : undefined,
+      active: "active" in e ? e.active : undefined,
+    }))
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 8);
+
+  const nearbyTerrain = gatherNearbyTerrain(gs, me, 7);
+  const lastSeenEnemies = gs
+    .guessedEnemyPositions(30)
+    .sort((a, b) => a.since - b.since)
+    .map((entry) => ({ botId: entry.bot_id, position: entry.position, age: entry.since }));
 
   const recentKills = self.kill_feed.slice(-5).map((k) => ({
     killer: k.killer,
@@ -68,8 +87,34 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
     },
     enemies,
     nearbyPickups,
+    nearbyHazards,
+    nearbyTerrain,
+    lastSeenEnemies,
     recentKills,
   };
+}
+
+function gatherNearbyTerrain(gs: GameState, me: GridVec, maxDistance: number): { type: "wall" | "void" | "water"; position: GridVec; distance: number }[] {
+  if (!gs.terrain) return [];
+  const features: { type: "wall" | "void" | "water"; position: GridVec; distance: number }[] = [];
+  const [cx, cy] = me;
+  const minRow = Math.max(0, cy - maxDistance);
+  const maxRow = Math.min(gs.gridSize - 1, cy + maxDistance);
+  const minCol = Math.max(0, cx - maxDistance);
+  const maxCol = Math.min(gs.gridSize - 1, cx + maxDistance);
+
+  for (let row = minRow; row <= maxRow; row++) {
+    for (let col = minCol; col <= maxCol; col++) {
+      const cell = gs.terrain[row]?.[col];
+      if (!cell || cell === ".") continue;
+      const type = cell === "#" ? "wall" : cell === "V" ? "void" : cell === "~" ? "water" : null;
+      if (!type) continue;
+      const distance = round1(dist(me, [col, row]));
+      features.push({ type, position: [col, row], distance });
+    }
+  }
+
+  return features.sort((a, b) => a.distance - b.distance).slice(0, 12);
 }
 
 function round1(n: number): number {

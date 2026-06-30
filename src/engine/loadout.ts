@@ -31,7 +31,7 @@ export function chooseFallbackLoadout(opts: {
   return {
     weapon,
     stats,
-    fallback_behavior: "balanced",
+    fallback_behavior: "defensive",
   };
 }
 

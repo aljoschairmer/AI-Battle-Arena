@@ -15,13 +15,19 @@ export function selectTarget(ctx: DecisionContext): NearbyBot | null {
   const enemies = gs.enemies();
   if (enemies.length === 0) return null;
 
-  // Honour an explicit kill order from the Brain if that bot is in view.
+  const avoid = new Set(directive.avoidTargetIds);
+
+  // Honour the Brain's kill order only if the target scores well enough to be
+  // worth it — don't blindly charge a full-HP, high-threat bot behind a wall.
   if (directive.primaryTargetId) {
     const preferred = enemies.find((e) => e.bot_id === directive.primaryTargetId);
-    if (preferred) return preferred;
+    if (preferred && !avoid.has(preferred.bot_id)) {
+      const preferredScore = scoreEnemy(ctx, preferred, dist(me, preferred.position));
+      // Accept the Brain's pick unless it scores very poorly (negative = dangerous/unreachable).
+      if (preferredScore > -10) return preferred;
+    }
   }
 
-  const avoid = new Set(directive.avoidTargetIds);
   let best: NearbyBot | null = null;
   let bestScore = -Infinity;
 
@@ -42,23 +48,35 @@ function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): numbe
   const hpFrac = e.max_hp > 0 ? e.hp / e.max_hp : 1;
 
   let score = 0;
-  // Prefer low-HP, finishable targets.
+
+  // Prefer low-HP, finishable targets — biggest single factor.
   score += (1 - hpFrac) * 60;
-  // Prefer closer targets (less travel, more uptime).
-  score += Math.max(0, 30 - distance * 3);
-  // Reward exploitable openings.
+
+  // Prefer closer targets. Linear decay so distance always matters, not just < 10 tiles.
+  score += Math.max(0, 40 - distance * 2);
+
+  // Exploitable openings.
   if (e.rear_exposed) score += 20;
-  if (e.is_stunned) score += 25;
-  if (e.near_impact_surface) score += 10; // good shove candidate
-  if (!e.has_los) score -= 15; // can't shoot through walls
-  if (!e.can_attack) score += 8; // safer to approach
+  if (e.is_stunned) score += 30;
+  if (e.near_impact_surface) score += 10;
+  if (!e.can_attack) score += 12; // weapon on cooldown — safe window
 
-  // Objective-driven biases.
+  // No LOS = can't attack them right now; strong penalty.
+  if (!e.has_los) score -= 25;
+
+  // Target is dodging — immune to damage this tick; avoid wasting the action.
+  if (e.is_dodging) score -= 20;
+
+  // Threat score: normalise to 0..1 range assuming 0..10 scale, then penalise
+  // proportionally to how non-aggressive we are.
+  const normThreat = Math.min(1, e.threat_score / 10);
+  const threatPenalty = normThreat * (30 + (1 - directive.aggression) * 30);
+  score -= threatPenalty;
+
+  // Objective overrides.
   if (directive.objective === "engage_weakest") score += (1 - hpFrac) * 40;
-  if (directive.objective === "survive") score -= distance * 2; // only fight what's on top of us
-
-  // Aggression dials up willingness to take on healthier targets.
-  score += directive.aggression * 10 - e.threat_score * 0.15;
+  if (directive.objective === "survive") score -= Math.max(0, distance - 2) * 6;
+  if (directive.objective === "hunt_bounty" && e.threat_score > 0) score += 15; // bounty targets worth risk
 
   return score;
 }

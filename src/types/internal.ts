@@ -52,8 +52,8 @@ export const DEFAULT_DIRECTIVE: Directive = {
   objective: "free_for_all",
   primaryTargetId: null,
   avoidTargetIds: [],
-  hpRetreatFraction: 0.3,
-  aggression: 0.6,
+  hpRetreatFraction: 0.25,
+  aggression: 0.55,
   reasoning: "default deterministic policy",
   source: "fallback",
 };
@@ -87,6 +87,28 @@ export interface EnemySnapshot {
  * Condensed game snapshot published by the Engine ~1-2x/sec for the Brain.
  * Small on purpose — the LLM gets the gist, not the firehose.
  */
+export type NearbyHazardType = "burn_field" | "hazard" | "gravity_well" | "mine" | "void";
+
+export interface NearbyHazardSnapshot {
+  type: NearbyHazardType;
+  position: GridVec;
+  distance: number;
+  radius?: number;
+  active?: boolean;
+}
+
+export interface LastSeenEnemySnapshot {
+  botId: string;
+  position: GridVec;
+  age: number;
+}
+
+export interface NearbyTerrainSnapshot {
+  type: "wall" | "void" | "water";
+  position: GridVec;
+  distance: number;
+}
+
 export interface GameSnapshot {
   ts: number;
   round: number;
@@ -112,6 +134,9 @@ export interface GameSnapshot {
   };
   enemies: EnemySnapshot[];
   nearbyPickups: { type: string; position: GridVec; distance: number }[];
+  nearbyHazards: NearbyHazardSnapshot[];
+  nearbyTerrain: NearbyTerrainSnapshot[];
+  lastSeenEnemies: LastSeenEnemySnapshot[];
   recentKills: { killer: string; victim: string; weapon: Weapon }[];
 }
 
@@ -126,6 +151,20 @@ export interface RoundContext {
   leaderboardTop: { name: string; elo: number; kills: number }[];
   /** Current bounty board (best-effort). */
   bounties: { name: string; bounty: number }[];
+  /** Our own lifetime stats (best-effort). */
+  ourStats: {
+    elo: number;
+    kills: number;
+    deaths: number;
+    kd_ratio: number;
+    best_streak: number;
+    rounds_played: number;
+    round_wins: number;
+  } | null;
+  /** How many bots are connected in the arena right now (best-effort). */
+  arenaBotsConnected: number | null;
+  /** Opponent weapons seen in the pre-round lobby (best-effort, may be empty). */
+  lobbyWeapons: Partial<Record<Weapon, number>>;
   /** Constraints from the `connected` handshake. */
   constraints: {
     statBudget: number;
