@@ -40,6 +40,9 @@ export const config = {
     // Origin is present (the arena responds with `Vary: Origin`). Default to the
     // HTTP origin; override with ARENA_WS_ORIGIN if needed.
     wsOrigin: str("ARENA_WS_ORIGIN", arenaHttpBase),
+    // Auth method for the bot WebSocket. "message" (default) = direct-message
+    // auth, which works; "query" = the documented ?key= path, broken server-side.
+    wsAuth: (str("ARENA_WS_AUTH", "message") === "query" ? "query" : "message") as "message" | "query",
     apiKey: str("ARENA_API_KEY"),
     botName: str("BOT_NAME", "NeuralReaper"),
     botColor: str("BOT_COLOR", "#00d4ff"),

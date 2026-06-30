@@ -212,25 +212,34 @@ All via env (see `.env.example`). Highlights:
 
 ## Troubleshooting
 
-**`websocket error: Unexpected server response: 200` and constant reconnects (Zscaler / corporate proxy).**
-The arena bot endpoint is a real WebSocket (`wss://…/ws/bot?key=…`) — verified: with a valid key the
-origin returns the `Upgrade: websocket` handshake. A `200` instead of `101` means an intermediary ate
-the upgrade. By far the most common cause is a **TLS-inspecting corporate proxy (e.g. Zscaler)**: it
-decrypts HTTPS (which is why you also need its root CA — see the Docker note below) but does **not**
-forward WebSocket upgrades, so it answers the handshake itself with a plain `200`. REST calls
-(leaderboard, bounties, key generation, the LLM brain) still work because they're ordinary HTTPS.
+**`websocket error: Unexpected server response: 200` (the bot can't connect).**
+This was traced to a **server-side bug in the arena**, not the client or your network. Verified
+against the live server (real cert, transparent connection):
 
-What the bot already does to help: it sends a browser-like `Origin`/`User-Agent` on the handshake
-(some CDNs only upgrade with one — the arena emits `Vary: Origin`), it routes `ws` **and** `fetch`
-through `HTTPS_PROXY`/`NO_PROXY` when set, and it prints a one-time, explicit diagnostic instead of a
-silent reconnect loop.
+| Request | Result |
+| --- | --- |
+| `/ws/spectator` | `101` ✓ upgrades |
+| `/ws/bot` with **no** key | `101` ✓ upgrades |
+| `/ws/bot?key=…` (documented query auth) | **`200`** ✗ refuses upgrade |
+| `/ws/bot` + `X-Arena-Key` header (documented) | **`200`** ✗ refuses upgrade |
+| `/ws/bot` no key → `{"type":"auth","api_key":"…"}` | accepted ✓ |
 
-How to actually fix it (in order of preference):
-1. **Exempt `arena.angel-serv.com` from SSL inspection** (add it to your proxy's do-not-decrypt /
-   bypass list). This is the real fix for Zscaler and lets the upgrade pass through untouched.
-2. **Run the bot off the inspected network** — a cloud VM, or a host with a split-tunnel to the arena.
-3. **Point `HTTPS_PROXY` at a proxy that tunnels WebSockets** (HTTP `CONNECT`), and add internal hosts
-   (e.g. `redis`) to `NO_PROXY`.
+The documented `?key=` and `X-Arena-Key` auth paths make the server answer the handshake with a plain
+`200` instead of `101 Switching Protocols`, so no bot can connect (which is why `bots_online` sits at
+`0`). The third documented method — **direct-message authentication** — works: connect with no key,
+then send `{"type":"auth","api_key":"…"}` as the first frame.
+
+**The bot uses direct-message auth by default** (`ARENA_WS_AUTH=message`), so it sidesteps the bug. If
+the arena fixes the query path you can switch back with `ARENA_WS_AUTH=query`. If you *still* see a
+non-`101` on `message` mode, that's a separate WebSocket-blocking proxy (e.g. Zscaler SSL inspection)
+— see below.
+
+**Behind a TLS-inspecting proxy (Zscaler).** Such proxies decrypt HTTPS (hence the bundled root CA in
+the Docker image) but may not forward WebSocket upgrades. REST/LLM calls still work. Fixes, best first:
+1. **Exempt `arena.angel-serv.com` from SSL inspection** (do-not-decrypt / bypass list).
+2. **Run the bot off the inspected network** — a cloud VM, or a split-tunnel to the arena.
+3. **Point `HTTPS_PROXY` at a proxy that tunnels WebSockets** (HTTP `CONNECT`), with internal hosts
+   (e.g. `redis`) in `NO_PROXY`. The bot routes both `ws` and `fetch` through it.
 
 **Docker + corporate root CA.** The `Dockerfile` installs `ZscalerRootCertificate-2048-SHA256.crt`
 into the system trust store and sets `NODE_EXTRA_CA_CERTS`, so Node trusts the proxy's intercepted
