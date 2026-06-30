@@ -24,8 +24,8 @@ export function positionForCombat(ctx: DecisionContext, target: NearbyBot): Clie
   const lead = gs.predictEnemyPos(target, ctx.policy.leadTicks);
 
   if (!profile.ranged) {
-    // Daggers: try to get behind the target for backstab bonus
-    if (self.weapon === "daggers" && !target.rear_exposed) {
+    // Daggers: try to get behind the target for backstab bonus (Tuner-toggleable)
+    if (ctx.policy.daggerFlank && self.weapon === "daggers" && !target.rear_exposed) {
       const behind = flankingPosition(me, target.position);
       if (behind && gs.isPassable(behind[0], behind[1])) {
         return moveTo(tick, behind);

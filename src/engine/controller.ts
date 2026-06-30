@@ -62,7 +62,7 @@ export class Controller {
     if (!self || !self.is_alive || gs.isRespawning) return idle(tick);
     if (self.stun_ticks > 0) return idle(tick);
 
-    const ctx = { gs, directive: this.directive, policy: this.policy, tick };
+    const ctx = { gs, directive: this.resolveDirective(), policy: this.policy, tick };
 
     // 2. Environmental survival (outside zone / on hazard).
     const survive = survivalBehavior(ctx);
@@ -106,6 +106,26 @@ export class Controller {
 
     // 9. Hold good ground.
     return defaultReposition(ctx);
+  }
+
+  /**
+   * Resolve the posture/aggression the behaviours actually use, combining the
+   * Tuner's slow learned BASELINE (policy) with the Tactician's fast tactical
+   * intent (directive):
+   *   - aggression = policy baseline + the directive's deviation from default,
+   *     so the Tactician nudges around whatever the Tuner has learned.
+   *   - posture = the live tactical posture when the brain set one, else the
+   *     Tuner's baseline posture (which also drives the deterministic-only bot).
+   */
+  private resolveDirective(): Directive {
+    const d = this.directive;
+    const p = this.policy;
+    const brainSet = d.source === "strategist" || d.source === "tactician";
+    const aggression = Math.max(
+      0,
+      Math.min(1, p.aggression + (d.aggression - DEFAULT_DIRECTIVE.aggression)),
+    );
+    return { ...d, aggression, posture: brainSet ? d.posture : p.posture };
   }
 
   /**

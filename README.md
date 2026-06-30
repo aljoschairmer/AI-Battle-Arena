@@ -84,7 +84,9 @@ with one `action` per tick) → `round_end` → repeat. Rate limit: 25 msg/s; AF
 ### Live re-tuning — change behaviour without a restart
 
 The engine's combat constants (dodge eagerness, kite distance, target-scoring weights, pickup detour,
-zone margin, mine usage) are **not hardcoded** — they live in a runtime `EnginePolicy`. The **Tuner**
+zone margin, mine usage, engagement threshold + target-leading, the **posture/aggression baseline**, and
+**per-weapon tactics** like bow-charging / dagger-flanking / spear-brace / staff gravity-wells) are
+**not hardcoded** — they live in a runtime `EnginePolicy`. The **Tuner**
 agent rewrites that policy after each round based on how the fight is going; the new policy flows over
 the bus (`arena:policy`) and the engine applies it on the **next tick**. So you tune the bot by letting
 the LLM adjust it — *no code edit, no `docker compose` restart*. Every value is clamped by

@@ -89,6 +89,15 @@ export interface EnginePolicy {
   minTradeAdvantage: number;
   /** Ticks ahead to lead a moving target when aiming/intercepting (0..8). */
   leadTicks: number;
+  /** Tuner-controlled BASELINE aggression (0..1); the Tactician layers a delta on top. */
+  aggression: number;
+  /** Tuner-controlled baseline posture (used when no live tactical posture is set). */
+  posture: Posture;
+  /** Per-weapon tactic toggles the Tuner can flip. */
+  bowAlwaysCharge: boolean; // bow: always spend a charged shot when ready
+  daggerFlank: boolean; // daggers: reposition behind targets for the backstab bonus
+  spearBraceWait: boolean; // spear: wait out a braced enemy instead of charging in
+  staffGravityWell: boolean; // staff/grapple: deploy gravity wells to cluster enemies
   reasoning: string;
   source: string;
 }
@@ -109,9 +118,19 @@ export const DEFAULT_POLICY: EnginePolicy = {
   mineCooldownTicks: 15,
   minTradeAdvantage: -0.1,
   leadTicks: 3,
+  aggression: 0.55,
+  posture: "balanced",
+  bowAlwaysCharge: true,
+  daggerFlank: true,
+  spearBraceWait: true,
+  staffGravityWell: true,
   reasoning: "default tuning",
   source: "default",
 };
+
+const POSTURES: Posture[] = ["aggressive", "balanced", "defensive", "retreat"];
+const asBool = (v: boolean | undefined, fallback: boolean): boolean =>
+  typeof v === "boolean" ? v : fallback;
 
 const clampNum = (v: number | undefined, lo: number, hi: number, fallback: number): number =>
   typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
@@ -139,6 +158,12 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     mineCooldownTicks: clampNum(patch.mineCooldownTicks, 5, 100, base.mineCooldownTicks),
     minTradeAdvantage: clampNum(patch.minTradeAdvantage, -1, 1, base.minTradeAdvantage),
     leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
+    aggression: clampNum(patch.aggression, 0, 1, base.aggression),
+    posture: patch.posture && POSTURES.includes(patch.posture) ? patch.posture : base.posture,
+    bowAlwaysCharge: asBool(patch.bowAlwaysCharge, base.bowAlwaysCharge),
+    daggerFlank: asBool(patch.daggerFlank, base.daggerFlank),
+    spearBraceWait: asBool(patch.spearBraceWait, base.spearBraceWait),
+    staffGravityWell: asBool(patch.staffGravityWell, base.staffGravityWell),
     reasoning: typeof patch.reasoning === "string" ? patch.reasoning.slice(0, 300) : base.reasoning,
     source: typeof patch.source === "string" ? patch.source : "tuner",
   };

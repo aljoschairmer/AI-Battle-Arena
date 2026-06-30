@@ -33,8 +33,8 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
   const profile = profileFor(self.weapon);
   const inRange = d <= range + 0.5;
 
-  // --- Spear: never charge a braced enemy — wait them out ---
-  if (self.weapon === "spear" && target.brace_ready && d <= range + 1) {
+  // --- Spear: never charge a braced enemy — wait them out (Tuner-toggleable) ---
+  if (ctx.policy.spearBraceWait && self.weapon === "spear" && target.brace_ready && d <= range + 1) {
     // Don't attack into a brace — shove to disrupt if adjacent, otherwise wait
     if (d <= 1.5 && !self.weapon_ready) {
       return shove(tick, target.bot_id);
@@ -44,8 +44,8 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
 
   if (inRange) {
     if (self.weapon_ready) {
-      // Bow: fire charged shot whenever ready — it always deals more damage.
-      const charged = profile.usesCharge && self.charged_shot_ready;
+      // Bow: fire charged shot whenever ready (Tuner can disable to fire faster/uncharged).
+      const charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
 
       // Staff: if we can hit multiple enemies, try gravity well first to cluster them
       if (self.weapon === "staff") {
@@ -143,6 +143,7 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
  * enemy cluster centroid.
  */
 function tryGravityWell(ctx: DecisionContext): ClientAction | null {
+  if (!ctx.policy.staffGravityWell) return null;
   const { gs, tick } = ctx;
   // Only fire if we have the gravity well item active (indicated by a gravity_well pickup entity)
   const hasGravityWell = gs.entities.some(

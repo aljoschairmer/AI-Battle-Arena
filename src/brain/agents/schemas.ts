@@ -98,6 +98,12 @@ export const PolicyPatchSchema = z.object({
   mineCooldownTicks: z.number().optional(),
   minTradeAdvantage: z.number().optional(),
   leadTicks: z.number().optional(),
+  aggression: z.number().optional(),
+  posture: PostureEnum.optional(),
+  bowAlwaysCharge: z.boolean().optional(),
+  daggerFlank: z.boolean().optional(),
+  spearBraceWait: z.boolean().optional(),
+  staffGravityWell: z.boolean().optional(),
   reasoning: z.string().max(300).default(""),
 });
 export type PolicyPatch = z.infer<typeof PolicyPatchSchema>;

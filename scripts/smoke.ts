@@ -325,6 +325,28 @@ async function run(): Promise<void> {
     ctl.setPolicy({ ...DEFAULT_POLICY, dodgeEagerness: 0 });
     const calm = ctl.decide(meleePressure());
     check("dodgeEagerness 0 -> does NOT dodge (re-tuned live, no restart)", calm.action !== "dodge", calm);
+
+    // Tuner-controlled posture + per-weapon tactics in the policy.
+    const m2 = mergePolicy(DEFAULT_POLICY, { aggression: 0.9, posture: "aggressive", daggerFlank: false });
+    check("mergePolicy carries aggression", m2.aggression === 0.9, m2.aggression);
+    check("mergePolicy carries posture", m2.posture === "aggressive", m2.posture);
+    check("mergePolicy carries per-weapon toggle", m2.daggerFlank === false, m2.daggerFlank);
+    const mBad = mergePolicy(DEFAULT_POLICY, { posture: "garbage" as never });
+    check("mergePolicy rejects invalid posture", mBad.posture === DEFAULT_POLICY.posture, mBad.posture);
+
+    // Policy posture drives behaviour (deterministic, no live tactical directive):
+    // adjacent enemy while our weapon cools -> aggressive shoves, defensive backs off.
+    const cooling = () => {
+      const g = freshGameState();
+      g.applyTick(tickFrom(self({ weapon_ready: false, dodge_cooldown: 5 }), [enemy({ position: [51, 50] })]));
+      return g;
+    };
+    ctl.setPolicy({ ...DEFAULT_POLICY, posture: "aggressive" });
+    const aggro = ctl.decide(cooling());
+    check("policy posture aggressive -> shove", aggro.action === "shove", aggro);
+    ctl.setPolicy({ ...DEFAULT_POLICY, posture: "defensive" });
+    const defen = ctl.decide(cooling());
+    check("policy posture defensive -> not shove (Tuner controls posture)", defen.action !== "shove", defen);
   }
 
   console.log("\nMemoryBus");
