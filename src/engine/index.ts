@@ -257,6 +257,13 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
 
   socket.on("loadout_confirmed", (msg: LoadoutConfirmedMsg) => {
     gs.setConfirmedAttackRange(msg.computed.attack_range);
+    gs.setSelfCombat({
+      weaponDamage: msg.computed.weapon_damage,
+      attackMult: msg.computed.attack_mult,
+      cooldownSeconds: msg.computed.cooldown_seconds,
+      maxHp: msg.computed.max_hp,
+      defenseRed: msg.computed.defense_red,
+    });
     confirmedWeapon = msg.weapon;
     // The server has accepted and locked our loadout for this session.
     loadoutLocked = true;

@@ -4,10 +4,11 @@ import { DEFAULT_DIRECTIVE, DEFAULT_POLICY } from "../types/internal";
 import { dist } from "../shared/geometry";
 import type { GameState } from "./gameState";
 import { combatBehavior, gravityWellBehavior } from "./behaviors/combat";
+import { shouldEngage } from "./combatMath";
 import { idle, placeMine } from "./behaviors/context";
 import { defaultReposition, grabPickup, positionForCombat } from "./behaviors/movement";
 import { selectTarget } from "./behaviors/targeting";
-import { emergencyDodge, retreatAndHeal, survivalBehavior } from "./behaviors/survival";
+import { emergencyDodge, retreatAndHeal, survivalBehavior, tacticalDisengage } from "./behaviors/survival";
 
 /**
  * The reactive controller: deterministic, allocation-light, runs every tick in
@@ -85,9 +86,15 @@ export class Controller {
     const gw = gravityWellBehavior(ctx);
     if (gw) return gw;
 
-    // 7. Engage the best target.
+    // 7. Engage the best target — unless the trade looks lost and we aren't
+    //    pinned to it, in which case disengage toward safer ground.
     const target = selectTarget(ctx);
     if (target) {
+      const forced = this.directive.primaryTargetId === target.bot_id;
+      if (!forced && !shouldEngage(ctx, target)) {
+        const bail = tacticalDisengage(ctx);
+        if (bail) return bail;
+      }
       const combat = combatBehavior(ctx, target);
       if (combat) return combat;
       return positionForCombat(ctx, target);

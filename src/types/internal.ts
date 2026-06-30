@@ -85,6 +85,10 @@ export interface EnginePolicy {
   mineWhenChased: boolean;
   mineChaseRange: number;
   mineCooldownTicks: number;
+  /** Engage only when the estimated trade advantage is at least this (-1..1). */
+  minTradeAdvantage: number;
+  /** Ticks ahead to lead a moving target when aiming/intercepting (0..8). */
+  leadTicks: number;
   reasoning: string;
   source: string;
 }
@@ -103,6 +107,8 @@ export const DEFAULT_POLICY: EnginePolicy = {
   mineWhenChased: true,
   mineChaseRange: 4,
   mineCooldownTicks: 15,
+  minTradeAdvantage: -0.1,
+  leadTicks: 3,
   reasoning: "default tuning",
   source: "default",
 };
@@ -131,6 +137,8 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
       typeof patch.mineWhenChased === "boolean" ? patch.mineWhenChased : base.mineWhenChased,
     mineChaseRange: clampNum(patch.mineChaseRange, 1, 10, base.mineChaseRange),
     mineCooldownTicks: clampNum(patch.mineCooldownTicks, 5, 100, base.mineCooldownTicks),
+    minTradeAdvantage: clampNum(patch.minTradeAdvantage, -1, 1, base.minTradeAdvantage),
+    leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
     reasoning: typeof patch.reasoning === "string" ? patch.reasoning.slice(0, 300) : base.reasoning,
     source: typeof patch.source === "string" ? patch.source : "tuner",
   };

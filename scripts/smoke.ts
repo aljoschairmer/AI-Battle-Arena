@@ -13,7 +13,8 @@ import { GameState } from "../src/engine/gameState";
 import { MemoryBus } from "../src/bus/memory";
 import { normalizeStats } from "../src/shared/stats";
 import { chooseFallbackLoadout } from "../src/engine/loadout";
-import { DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
+import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
+import { tradeAdvantage } from "../src/engine/combatMath";
 import type {
   ConnectedMsg,
   NearbyBot,
@@ -105,11 +106,11 @@ function enemy(overrides: Partial<NearbyBot> = {}): NearbyBot {
   };
 }
 
-function tickFrom(s: SelfState, enemies: NearbyBot[] = []): TickMsg {
+function tickFrom(s: SelfState, enemies: NearbyBot[] = [], tickNum = 100): TickMsg {
   return {
     type: "tick",
-    tick: 100,
-    tick_number: 100,
+    tick: tickNum,
+    tick_number: tickNum,
     fog_radius: 7,
     your_state: s,
     nearby_mines: 0,
@@ -253,6 +254,44 @@ async function run(): Promise<void> {
       a9.action === "move_to" && (a9 as { target_position: [number, number] }).target_position[0] > 50,
       a9,
     );
+  }
+
+  console.log("\nSpatial & combat intelligence");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // Target leading: an enemy moving -col is predicted ahead of its last tile.
+    const gp = freshGameState();
+    gp.applyTick(tickFrom(self(), [enemy({ position: [60, 50] })], 100));
+    gp.applyTick(tickFrom(self(), [enemy({ position: [56, 50] })], 110)); // moved -4 over 10 ticks
+    const en = gp.enemies()[0]!;
+    const pred = gp.predictEnemyPos(en, 5);
+    check("prediction leads a moving target (-col)", pred[0] < 56, pred);
+
+    // Trade evaluator: favourable vs a lone weak enemy, unfavourable when ganked.
+    const gf = freshGameState();
+    gf.applyTick(tickFrom(self(), [enemy({ hp: 30, position: [51, 50] })]));
+    check("trade vs lone weak enemy is favourable", tradeAdvantage(ctxOf(gf), gf.enemies()[0]!) > 0);
+
+    const gu = freshGameState();
+    gu.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 220, max_hp: 240, position: [52, 50], can_attack: true }),
+        enemy({ bot_id: "g1", position: [51, 49], can_attack: true }),
+        enemy({ bot_id: "g2", position: [51, 51], can_attack: true }),
+      ]),
+    );
+    const tanky = gu.enemies().find((e) => e.bot_id === "t")!;
+    check("trade vs tanky target while ganked is unfavourable", tradeAdvantage(ctxOf(gu), tanky) < 0);
+
+    // Threat field: safest step heads away from a one-sided enemy cluster.
+    const step = gu.threatField().safestStep([50, 50], (c, r) => gu.isPassable(c, r));
+    check("threat field steps away from the cluster (-col)", step !== null && step[0] <= 0, step);
+
+    // Tactical disengage: a losing, un-pinned fight yields a move, not an attack.
+    const ctl = new Controller();
+    const a = ctl.decide(gu);
+    check("losing trade -> disengage (move, not attack)", a.action === "move" || a.action === "move_to", a);
   }
 
   console.log("\nEnginePolicy (live LLM tuning)");

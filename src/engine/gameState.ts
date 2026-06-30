@@ -16,6 +16,7 @@ import type {
 import { chebyshev, dist, stepAwayFrom, stepToward } from "../shared/geometry";
 import { nextStep } from "./pathfinding";
 import { profileFor } from "./weapons";
+import { ThreatField } from "./threatField";
 
 /**
  * The Engine's authoritative world model. Rebuilt cheaply each tick from the
@@ -56,6 +57,21 @@ export class GameState {
 
   /** Server-confirmed attack range (tiles), from loadout_confirmed. */
   private confirmedAttackRange: number | null = null;
+
+  /** Server-computed combat stats, from loadout_confirmed (null until known). */
+  selfCombat: {
+    weaponDamage: number;
+    attackMult: number;
+    cooldownSeconds: number;
+    maxHp: number;
+    defenseRed: number;
+  } | null = null;
+
+  /** Per-enemy velocity estimate [dCol, dRow] per tick, for prediction/leading. */
+  private enemyVel: Record<string, GridVec> = {};
+
+  /** Lazily-built, per-tick-cached threat field (see threatField()). */
+  private threatCache: { tick: number; field: ThreatField } | null = null;
 
   applyConnected(msg: ConnectedMsg): void {
     this.selfId = msg.bot_id;
@@ -103,6 +119,40 @@ export class GameState {
     this.confirmedAttackRange = range && range > 0 ? range : null;
   }
 
+  setSelfCombat(c: {
+    weaponDamage: number;
+    attackMult: number;
+    cooldownSeconds: number;
+    maxHp: number;
+    defenseRed: number;
+  }): void {
+    this.selfCombat = c;
+  }
+
+  /** Our estimated damage-per-second, preferring server-computed stats. */
+  selfDps(): number {
+    const c = this.selfCombat;
+    if (c && c.cooldownSeconds > 0) return (c.weaponDamage * c.attackMult) / c.cooldownSeconds;
+    return this.self ? profileFor(this.self.weapon).estDps : 25;
+  }
+
+  /** Predict where an enemy will be `ticks` ticks from now, from its velocity. */
+  predictEnemyPos(enemy: NearbyBot, ticks: number): GridVec {
+    const v = this.enemyVel[enemy.bot_id];
+    if (!v) return enemy.position;
+    const col = Math.max(0, Math.min(this.gridSize - 1, Math.round(enemy.position[0] + v[0] * ticks)));
+    const row = Math.max(0, Math.min(this.gridSize - 1, Math.round(enemy.position[1] + v[1] * ticks)));
+    return [col, row];
+  }
+
+  /** Per-tick threat/influence field around us (cached for the tick). */
+  threatField(): ThreatField {
+    if (this.threatCache && this.threatCache.tick === this.tick) return this.threatCache.field;
+    const field = ThreatField.build(this);
+    this.threatCache = { tick: this.tick, field };
+    return field;
+  }
+
   /** Best estimate of our own attack range, preferring the server's value. */
   effectiveAttackRange(): number {
     if (this.confirmedAttackRange !== null) return this.confirmedAttackRange;
@@ -124,6 +174,15 @@ export class GameState {
   private updateSeenEnemies(): void {
     const now = this.tick;
     for (const enemy of this.enemies()) {
+      const prev = this.lastSeenEnemies[enemy.bot_id];
+      if (prev && now > prev.tick) {
+        const dt = now - prev.tick;
+        // Clamp velocity to ±2 tiles/tick so a fog re-acquisition doesn't produce
+        // a wild jump that throws off prediction.
+        const vc = Math.max(-2, Math.min(2, (enemy.position[0] - prev.position[0]) / dt));
+        const vr = Math.max(-2, Math.min(2, (enemy.position[1] - prev.position[1]) / dt));
+        this.enemyVel[enemy.bot_id] = [vc, vr];
+      }
       this.lastSeenEnemies[enemy.bot_id] = { position: enemy.position, tick: now };
     }
     const stale = Object.entries(this.lastSeenEnemies).filter(

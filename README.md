@@ -92,6 +92,24 @@ the LLM adjust it — *no code edit, no `docker compose` restart*. Every value i
 Redis KV so learned tuning **survives a restart**. The fast 10 Hz loop stays fully deterministic; the
 LLM only owns the knobs.
 
+### Spatial & combat intelligence (deterministic, in-loop)
+
+Drawn from competitive RTS-bot practice, three deterministic systems run inside the tick loop:
+
+- **Threat/influence map** (`threatField.ts`) — a local danger field (enemy weapon coverage + zone +
+  hazards) rebuilt each tick. Dodging, kiting and disengaging pick the *lowest-danger tile/gradient*
+  instead of naively "stepping away from the nearest enemy" (which is how you dodge one bow into
+  another's line and die).
+- **Trade evaluator** (`combatMath.ts`) — a cheap "will I win this exchange?" estimate (our DPS-vs-their-HP
+  against incoming DPS-vs-our-HP, counting nearby gankers and our defence). Feeds target scoring and a
+  **disengage rule**: don't commit to a losing, un-pinned fight — back off to safe ground.
+- **Movement prediction / target leading** — per-enemy velocity is tracked across ticks, so we
+  intercept where a target is *heading* and place staff AoE / lead chases ahead of it, not on its
+  last tile.
+
+All three expose knobs to the Tuner (`minTradeAdvantage`, `leadTicks`, plus the threat field feeding
+dodge/retreat), so the LLM can dial how cautious vs. aggressive the bot plays — live.
+
 > Models are env-configurable — any current OpenRouter slug works (e.g. bump the planners to
 > `anthropic/claude-opus-4.8` for maximum strength, or `anthropic/claude-opus-4.8-fast` for lower latency).
 

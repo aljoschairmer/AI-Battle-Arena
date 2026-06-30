@@ -1,5 +1,6 @@
 import type { NearbyBot } from "../../types/protocol";
 import { dist } from "../../shared/geometry";
+import { tradeAdvantage } from "../combatMath";
 import type { DecisionContext } from "./context";
 
 /**
@@ -72,6 +73,9 @@ function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): numbe
   const normThreat = Math.min(1, e.threat_score / 10);
   const threatPenalty = normThreat * (policy.targetThreatAversion + (1 - directive.aggression) * 30);
   score -= threatPenalty;
+
+  // Favour fights we expect to win (forward trade estimate), penalise losing ones.
+  score += tradeAdvantage(ctx, e) * 30;
 
   // Objective overrides.
   if (directive.objective === "engage_weakest") score += (1 - hpFrac) * 40;

@@ -52,8 +52,9 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
         const gwAction = tryGravityWell(ctx);
         if (gwAction) return gwAction;
         // Place the delayed AoE/burn field on the enemy cluster centroid (to catch
-        // several bots) or directly on the target's tile for a single foe.
-        const aoe = enemyCluster(ctx, 2) ?? target.position;
+        // several bots) or — since the field is delayed — where this target is
+        // heading rather than where it stands now (target leading).
+        const aoe = enemyCluster(ctx, 2) ?? gs.predictEnemyPos(target, ctx.policy.leadTicks);
         return attackAt(tick, target.bot_id, aoe);
       }
 

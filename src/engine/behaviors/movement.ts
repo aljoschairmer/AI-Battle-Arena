@@ -20,6 +20,8 @@ export function positionForCombat(ctx: DecisionContext, target: NearbyBot): Clie
   const me = gs.position;
   const d = dist(me, target.position);
   const profile = profileFor(self.weapon);
+  // Intercept where the target is heading, not where it was (target leading).
+  const lead = gs.predictEnemyPos(target, ctx.policy.leadTicks);
 
   if (!profile.ranged) {
     // Daggers: try to get behind the target for backstab bonus
@@ -29,7 +31,7 @@ export function positionForCombat(ctx: DecisionContext, target: NearbyBot): Clie
         return moveTo(tick, behind);
       }
     }
-    return moveTo(tick, target.position);
+    return moveTo(tick, lead);
   }
 
   const range = gs.effectiveAttackRange();
@@ -44,9 +46,9 @@ export function positionForCombat(ctx: DecisionContext, target: NearbyBot): Clie
     if (step) return move(tick, step);
   }
 
-  // Too far — advance to get into firing range.
+  // Too far — advance to get into firing range (toward the lead point).
   if (d > range + 0.25) {
-    return moveTo(tick, target.position);
+    return moveTo(tick, lead);
   }
 
   // In the sweet spot — strafe perpendicular to be a harder target.

@@ -96,6 +96,8 @@ export const PolicyPatchSchema = z.object({
   mineWhenChased: z.boolean().optional(),
   mineChaseRange: z.number().optional(),
   mineCooldownTicks: z.number().optional(),
+  minTradeAdvantage: z.number().optional(),
+  leadTicks: z.number().optional(),
   reasoning: z.string().max(300).default(""),
 });
 export type PolicyPatch = z.infer<typeof PolicyPatchSchema>;
