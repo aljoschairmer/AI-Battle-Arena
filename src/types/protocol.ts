@@ -297,6 +297,17 @@ export type ServerMessage =
 // Bot -> Server messages
 // ---------------------------------------------------------------------------
 
+/**
+ * Direct-message authentication. The documented `?key=` query-param and
+ * `X-Arena-Key` header auth paths are broken server-side (the upgrade returns
+ * HTTP 200 instead of 101). The working path is to connect WITHOUT a key and
+ * send this as the first frame; the server validates the `api_key` field.
+ */
+export interface AuthMsg {
+  type: "auth";
+  api_key: string;
+}
+
 export interface LoadoutSelection {
   weapon: Weapon;
   stats: StatBlock;
@@ -378,7 +389,7 @@ export type ClientAction =
   | UseItemAction
   | IdleAction;
 
-export type ClientMessage = SelectLoadoutMsg | ClientAction;
+export type ClientMessage = AuthMsg | SelectLoadoutMsg | ClientAction;
 
 // ---------------------------------------------------------------------------
 // REST payloads

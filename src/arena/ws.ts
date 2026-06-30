@@ -49,6 +49,10 @@ export class ArenaSocket extends EventEmitter {
     private readonly wsUrl: string,
     private readonly apiKey: string,
     private readonly origin: string = "",
+    // "message" (default) = direct-message auth: connect with no key, then send
+    // an auth frame. "query" = legacy ?key= path (broken server-side; kept for
+    // when/if the arena fixes it).
+    private readonly authMode: "message" | "query" = "message",
   ) {
     super();
   }
@@ -71,8 +75,13 @@ export class ArenaSocket extends EventEmitter {
   }
 
   private connect(): void {
-    const url = `${this.wsUrl}?key=${encodeURIComponent(this.apiKey)}`;
-    log.info({ attempt: this.reconnectAttempts }, "connecting to arena");
+    // Direct-message auth connects WITHOUT a key in the URL (the ?key= path is
+    // broken server-side and refuses the upgrade with HTTP 200).
+    const url =
+      this.authMode === "query" && this.apiKey
+        ? `${this.wsUrl}?key=${encodeURIComponent(this.apiKey)}`
+        : this.wsUrl;
+    log.info({ attempt: this.reconnectAttempts, authMode: this.authMode }, "connecting to arena");
 
     const ws = new WebSocket(url, {
       // Keep the socket warm; the arena AFK timeout is ~3s of game time but the
@@ -95,6 +104,12 @@ export class ArenaSocket extends EventEmitter {
     ws.on("open", () => {
       this.reconnectAttempts = 0;
       log.info("websocket open");
+      // Authenticate immediately via the working direct-message path. Sent
+      // outside the rate limiter — this one frame must land before anything else.
+      if (this.authMode === "message" && this.apiKey) {
+        this.sendImmediate({ type: "auth", api_key: this.apiKey });
+        log.debug("sent auth frame");
+      }
       this.emit("open");
     });
 
@@ -115,15 +130,15 @@ export class ArenaSocket extends EventEmitter {
       // the user stare at a cryptic reconnect loop.
       if (!this.warnedUpgradeBlocked && /Unexpected server response: \d+/.test(err.message)) {
         this.warnedUpgradeBlocked = true;
-        log.error(
-          { hint: err.message },
-          "WebSocket upgrade was refused (got a plain HTTP response instead of 101 Switching " +
-            "Protocols). This is almost always a TLS-inspecting corporate proxy (e.g. Zscaler) " +
-            "that does not forward WebSocket upgrades. Fixes: (1) exempt arena.angel-serv.com " +
-            "from SSL inspection / add it to the do-not-decrypt list, (2) run the bot on a " +
-            "network without WebSocket-blocking inspection (e.g. a cloud VM), or (3) set " +
-            "HTTPS_PROXY to a proxy that tunnels WebSockets. REST features are unaffected.",
-        );
+        const hint =
+          this.authMode === "query"
+            ? "ARENA_WS_AUTH=query uses the arena's ?key= path, which is broken server-side " +
+              "(it returns HTTP 200 instead of 101). Switch to ARENA_WS_AUTH=message (the default)."
+            : "Using direct-message auth, the handshake upgrades without a key, so a non-101 here " +
+              "points to a WebSocket-blocking proxy (e.g. Zscaler SSL inspection). Exempt " +
+              "arena.angel-serv.com from SSL inspection, run off the inspected network, or set " +
+              "HTTPS_PROXY to a proxy that tunnels WebSockets. REST features are unaffected.";
+        log.error({ err: err.message }, `WebSocket upgrade was refused (no 101 Switching Protocols). ${hint}`);
       }
       // 'close' fires after 'error'; reconnect is handled there.
     });
@@ -178,6 +193,16 @@ export class ArenaSocket extends EventEmitter {
     } catch (e) {
       log.warn({ err: (e as Error).message }, "send failed");
       return false;
+    }
+  }
+
+  /** Send a critical control frame (e.g. auth) bypassing the rate limiter. */
+  private sendImmediate(msg: ClientMessage): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify(msg));
+    } catch (e) {
+      log.warn({ err: (e as Error).message }, "immediate send failed");
     }
   }
 
