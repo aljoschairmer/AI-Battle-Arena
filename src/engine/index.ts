@@ -56,6 +56,13 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
   let directiveVersion = -1;
   let policyVersion = -1;
 
+  // Whether to publish telemetry (snapshots / loadout requests / round outcomes)
+  // to the Brain. CRITICAL: in a split deployment the Engine process has NO
+  // OpenRouter key (only the Brain does), so `llmEnabled` is false here — gating
+  // on it would silence the Brain entirely. Publish whenever a Brain *could* be
+  // listening: any Redis bus (separate Brain process) or an in-process Brain.
+  const publishToBrain = config.bus === "redis" || llmEnabled;
+
   // --- Per-round telemetry accumulator (published to Brain at round_end) ---
   let roundStartTick = 0;
   let confirmedWeapon: Weapon | null = null;
@@ -160,7 +167,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
       max: gs.statMax,
     });
 
-    if (!llmEnabled) {
+    if (!publishToBrain) {
       sendLoadout(fallbackLoadout);
       return;
     }
@@ -309,7 +316,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
     const action = controller.decide(gs);
     socket.send(action);
 
-    if (llmEnabled && gs.tick % SNAPSHOT_EVERY_TICKS === 0) {
+    if (publishToBrain && gs.tick % SNAPSHOT_EVERY_TICKS === 0) {
       const snap = buildSnapshot(gs);
       if (snap) void bus.publish(Channels.snapshot, snap);
     }
@@ -360,7 +367,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
       "round end",
     );
 
-    if (llmEnabled) {
+    if (publishToBrain) {
       void bus.publish(Channels.roundOutcome, outcome);
     }
 
@@ -384,7 +391,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
   });
 
   socket.start();
-  log.info("engine started");
+  log.info({ publishToBrain, bus: config.bus }, "engine started");
 
   return {
     async stop() {
