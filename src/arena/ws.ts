@@ -44,6 +44,9 @@ export class ArenaSocket extends EventEmitter {
   private droppedSinceLastWarn = 0;
 
   private warnedUpgradeBlocked = false;
+  private authSentThisConn = false;
+  private gotServerMessage = false;
+  private warnedBackendDown = false;
 
   constructor(
     private readonly wsUrl: string,
@@ -81,6 +84,8 @@ export class ArenaSocket extends EventEmitter {
       this.authMode === "query" && this.apiKey
         ? `${this.wsUrl}?key=${encodeURIComponent(this.apiKey)}`
         : this.wsUrl;
+    this.authSentThisConn = false;
+    this.gotServerMessage = false;
     log.info({ attempt: this.reconnectAttempts, authMode: this.authMode }, "connecting to arena");
 
     const ws = new WebSocket(url, {
@@ -108,6 +113,7 @@ export class ArenaSocket extends EventEmitter {
       // outside the rate limiter — this one frame must land before anything else.
       if (this.authMode === "message" && this.apiKey) {
         this.sendImmediate({ type: "auth", api_key: this.apiKey });
+        this.authSentThisConn = true;
         log.debug("sent auth frame");
       }
       this.emit("open");
@@ -118,6 +124,19 @@ export class ArenaSocket extends EventEmitter {
     ws.on("close", (code: number, reasonBuf: Buffer) => {
       const reason = reasonBuf.toString();
       log.warn({ code, reason }, "websocket closed");
+      // We upgraded and sent a correctly-formatted auth frame, but the arena
+      // dropped the socket without ever replying (no `connected`, no error).
+      // The transport + auth are correct, so this is the arena's bot backend
+      // failing to accept the session — surface it clearly, once.
+      if (this.authSentThisConn && !this.gotServerMessage && !this.warnedBackendDown) {
+        this.warnedBackendDown = true;
+        log.error(
+          "Upgraded (101) and sent a valid auth frame, but the arena never replied with " +
+            "'connected' and closed the socket. The handshake and auth format are correct, so this " +
+            "is the arena's bot backend not accepting connections (matches bots_online=0 and an " +
+            "empty leaderboard) — not a client-side issue. The bot will keep retrying.",
+        );
+      }
       this.emit("close", code, reason);
       this.ws = null;
       if (this.shouldRun) this.scheduleReconnect();
@@ -166,6 +185,7 @@ export class ArenaSocket extends EventEmitter {
       log.warn({ err: (e as Error).message }, "failed to parse server frame");
       return;
     }
+    this.gotServerMessage = true;
     if (!msg || typeof (msg as { type?: unknown }).type !== "string") return;
     // Re-emit as a typed, per-type event. Listeners attach via on('tick', ...).
     // Use the base emitter directly: the discriminant is only known at runtime,
