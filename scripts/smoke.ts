@@ -13,6 +13,7 @@ import { GameState } from "../src/engine/gameState";
 import { MemoryBus } from "../src/bus/memory";
 import { normalizeStats } from "../src/shared/stats";
 import { chooseFallbackLoadout } from "../src/engine/loadout";
+import { DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
 import type {
   ConnectedMsg,
   NearbyBot,
@@ -252,6 +253,39 @@ async function run(): Promise<void> {
       a9.action === "move_to" && (a9 as { target_position: [number, number] }).target_position[0] > 50,
       a9,
     );
+  }
+
+  console.log("\nEnginePolicy (live LLM tuning)");
+  {
+    // mergePolicy clamps wild LLM values into safe ranges and bumps the version.
+    const merged = mergePolicy(DEFAULT_POLICY, {
+      dodgeEagerness: 9,
+      kiteRangeBias: -99,
+      mineCooldownTicks: 1,
+    });
+    check("mergePolicy clamps dodgeEagerness <= 1", merged.dodgeEagerness <= 1, merged.dodgeEagerness);
+    check("mergePolicy clamps kiteRangeBias >= -3", merged.kiteRangeBias >= -3, merged.kiteRangeBias);
+    check("mergePolicy bumps version", merged.version === DEFAULT_POLICY.version + 1, merged.version);
+
+    // A live policy swap changes a real decision WITHOUT restart.
+    const ctl = new Controller();
+    const meleePressure = () => {
+      const g = freshGameState();
+      g.applyTick(
+        tickFrom(self({ weapon_ready: false, dodge_cooldown: 0 }), [
+          enemy({ position: [51, 50], can_attack: true }),
+        ]),
+      );
+      return g;
+    };
+
+    ctl.setPolicy({ ...DEFAULT_POLICY, dodgeEagerness: 0.6 });
+    const eager = ctl.decide(meleePressure());
+    check("dodgeEagerness 0.6 -> dodges melee pressure", eager.action === "dodge", eager);
+
+    ctl.setPolicy({ ...DEFAULT_POLICY, dodgeEagerness: 0 });
+    const calm = ctl.decide(meleePressure());
+    check("dodgeEagerness 0 -> does NOT dodge (re-tuned live, no restart)", calm.action !== "dodge", calm);
   }
 
   console.log("\nMemoryBus");

@@ -44,16 +44,16 @@ export function selectTarget(ctx: DecisionContext): NearbyBot | null {
 }
 
 function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): number {
-  const { directive } = ctx;
+  const { directive, policy } = ctx;
   const hpFrac = e.max_hp > 0 ? e.hp / e.max_hp : 1;
 
   let score = 0;
 
-  // Prefer low-HP, finishable targets — biggest single factor.
-  score += (1 - hpFrac) * 60;
+  // Prefer low-HP, finishable targets — biggest single factor (LLM-tunable weight).
+  score += (1 - hpFrac) * policy.targetLowHpWeight;
 
   // Prefer closer targets. Linear decay so distance always matters, not just < 10 tiles.
-  score += Math.max(0, 40 - distance * 2);
+  score += Math.max(0, 40 - distance * policy.targetCloseWeight);
 
   // Exploitable openings.
   if (e.rear_exposed) score += 20;
@@ -70,7 +70,7 @@ function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): numbe
   // Threat score: normalise to 0..1 range assuming 0..10 scale, then penalise
   // proportionally to how non-aggressive we are.
   const normThreat = Math.min(1, e.threat_score / 10);
-  const threatPenalty = normThreat * (30 + (1 - directive.aggression) * 30);
+  const threatPenalty = normThreat * (policy.targetThreatAversion + (1 - directive.aggression) * 30);
   score -= threatPenalty;
 
   // Objective overrides.

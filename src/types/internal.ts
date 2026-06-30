@@ -58,6 +58,84 @@ export const DEFAULT_DIRECTIVE: Directive = {
   source: "fallback",
 };
 
+/**
+ * Runtime-tunable behaviour policy: the knobs that used to be hardcoded
+ * constants in the engine's behaviours. The LLM Tuner agent rewrites these live
+ * (over the bus, mirrored to Redis KV) so the bot can be re-tuned WITHOUT a
+ * restart — the deterministic controller reads the latest values every tick.
+ */
+export interface EnginePolicy {
+  version: number;
+  ts: number;
+  /** 0..1 — how readily to spend the 30-tick dodge (low = hoard it). */
+  dodgeEagerness: number;
+  /** -3..+3 tiles added to a ranged weapon's preferred fighting distance. */
+  kiteRangeBias: number;
+  /** Grapple-close to a melee target when the gap exceeds range + this (tiles). */
+  grappleCloseMinGap: number;
+  /** Target-scoring weights. */
+  targetLowHpWeight: number;
+  targetCloseWeight: number;
+  targetThreatAversion: number;
+  /** Max tiles to detour for an uncontested pickup. */
+  pickupDetourMax: number;
+  /** Drift to the next zone centre when within this many tiles of the edge. */
+  zoneEdgeMargin: number;
+  /** Mine behaviour while being chased. */
+  mineWhenChased: boolean;
+  mineChaseRange: number;
+  mineCooldownTicks: number;
+  reasoning: string;
+  source: string;
+}
+
+export const DEFAULT_POLICY: EnginePolicy = {
+  version: 0,
+  ts: 0,
+  dodgeEagerness: 0.5,
+  kiteRangeBias: 0,
+  grappleCloseMinGap: 1.5,
+  targetLowHpWeight: 60,
+  targetCloseWeight: 2,
+  targetThreatAversion: 30,
+  pickupDetourMax: 6,
+  zoneEdgeMargin: 5,
+  mineWhenChased: true,
+  mineChaseRange: 4,
+  mineCooldownTicks: 15,
+  reasoning: "default tuning",
+  source: "default",
+};
+
+const clampNum = (v: number | undefined, lo: number, hi: number, fallback: number): number =>
+  typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
+
+/**
+ * Merge a (possibly partial, possibly LLM-produced) patch onto a base policy,
+ * clamping every field to a safe range so a bad LLM value can never brick the
+ * bot. Bumps the version so the Engine's newest-wins filter works.
+ */
+export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): EnginePolicy {
+  return {
+    version: base.version + 1,
+    ts: Date.now(),
+    dodgeEagerness: clampNum(patch.dodgeEagerness, 0, 1, base.dodgeEagerness),
+    kiteRangeBias: clampNum(patch.kiteRangeBias, -3, 3, base.kiteRangeBias),
+    grappleCloseMinGap: clampNum(patch.grappleCloseMinGap, 0.5, 8, base.grappleCloseMinGap),
+    targetLowHpWeight: clampNum(patch.targetLowHpWeight, 0, 150, base.targetLowHpWeight),
+    targetCloseWeight: clampNum(patch.targetCloseWeight, 0, 10, base.targetCloseWeight),
+    targetThreatAversion: clampNum(patch.targetThreatAversion, 0, 120, base.targetThreatAversion),
+    pickupDetourMax: clampNum(patch.pickupDetourMax, 0, 20, base.pickupDetourMax),
+    zoneEdgeMargin: clampNum(patch.zoneEdgeMargin, 0, 20, base.zoneEdgeMargin),
+    mineWhenChased:
+      typeof patch.mineWhenChased === "boolean" ? patch.mineWhenChased : base.mineWhenChased,
+    mineChaseRange: clampNum(patch.mineChaseRange, 1, 10, base.mineChaseRange),
+    mineCooldownTicks: clampNum(patch.mineCooldownTicks, 5, 100, base.mineCooldownTicks),
+    reasoning: typeof patch.reasoning === "string" ? patch.reasoning.slice(0, 300) : base.reasoning,
+    source: typeof patch.source === "string" ? patch.source : "tuner",
+  };
+}
+
 /** A chosen loadout plus rationale, produced by the loadout agent. */
 export interface LoadoutPlan extends LoadoutSelection {
   reasoning: string;

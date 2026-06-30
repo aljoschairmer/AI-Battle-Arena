@@ -1,5 +1,5 @@
 import type { GameState } from "../gameState";
-import type { Directive } from "../../types/internal";
+import type { Directive, EnginePolicy } from "../../types/internal";
 import type {
   ClientAction,
   GridVec,
@@ -9,6 +9,8 @@ import type {
 export interface DecisionContext {
   gs: GameState;
   directive: Directive;
+  /** Live, LLM-tunable behaviour knobs (see EnginePolicy). */
+  policy: EnginePolicy;
   tick: number;
 }
 

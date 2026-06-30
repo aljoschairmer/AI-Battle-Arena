@@ -31,7 +31,7 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
   //    actually contracting (target_radius < current radius) and we're close to
   //    the current edge.
   const zoneShrinking = self.zone_target_radius < self.zone_radius;
-  if (zoneShrinking && self.distance_to_zone_edge >= 0 && self.distance_to_zone_edge <= 5) {
+  if (zoneShrinking && self.distance_to_zone_edge >= 0 && self.distance_to_zone_edge <= ctx.policy.zoneEdgeMargin) {
     return moveTo(tick, self.zone_target_center);
   }
 
@@ -103,10 +103,13 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   // when the enemy has more HP or is part of a cluster.
   const meleePressure = enemies.some((e) => e.can_attack && dist(me, e.position) <= 1.6);
 
+  // dodgeEagerness (0..1, LLM-tunable) gates how twitchy we are. A charged shot
+  // is always worth dodging; lesser threats only trip the dodge as eagerness rises.
+  const eager = ctx.policy.dodgeEagerness;
   let trigger = false;
   if (chargedIncoming) trigger = true;
-  else if (highChargeBow) trigger = true;
-  else if (justHit || meleePressure) trigger = true;
+  else if (highChargeBow && eager >= 0.3) trigger = true;
+  else if ((justHit || meleePressure) && eager >= 0.5) trigger = true;
   if (!trigger) return null;
 
   const ref: NearbyBot | null = chargedIncoming ?? highChargeBow ?? nearestAttacker(ctx) ?? gs.nearestEnemy();

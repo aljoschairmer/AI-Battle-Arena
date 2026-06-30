@@ -18,12 +18,16 @@ export const Channels = {
   directive: "arena:directive",
   loadoutPlan: "arena:loadout_plan",
   roundOutcome: "arena:round_outcome",
+  // Brain --policy--> Engine: live behaviour-tuning knobs the LLM rewrites
+  // without a restart (newest version wins, mirrored to KV below).
+  policy: "arena:policy",
 } as const;
 
 export const Keys = {
   currentDirective: "arena:kv:directive",
   currentLoadoutPlan: "arena:kv:loadout_plan",
   learningInsights: "arena:kv:insights",
+  currentPolicy: "arena:kv:policy",
 } as const;
 
 export type ChannelName = (typeof Channels)[keyof typeof Channels];

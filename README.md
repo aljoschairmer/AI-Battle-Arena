@@ -71,13 +71,26 @@ with one `action` per tick) → `round_end` → repeat. Rate limit: 25 msg/s; AF
   OpenRouter key?** the bot fights on pure deterministic strategy. **LLM slow/down?** agents time
   out and the last good directive (or the default) stays in force.
 
-### The three LLM agents
+### The LLM agents
 
 | Agent | Cadence | Model (default) | Job |
 | --- | --- | --- | --- |
 | **Loadout** | per connect | `anthropic/claude-sonnet-4.6` | Draft weapon + stat spread vs. the meta and round modifier. |
 | **Strategist** | per round | `anthropic/claude-sonnet-4.6` | Set posture, objective, who to hunt/avoid, retreat threshold. |
 | **Tactician** | ~every 2.5 s | `anthropic/claude-haiku-4.5` | Fast mid-fight tweaks: focus the low-HP target, flip to retreat, dial aggression. |
+| **Analyst** | post-round | `anthropic/claude-sonnet-4.6` | Watch the tape: distil lessons + opponent profiles into persistent insights. |
+| **Tuner** | post-round | `anthropic/claude-sonnet-4.6` | Rewrite the engine's behaviour **policy** live (see below). |
+
+### Live re-tuning — change behaviour without a restart
+
+The engine's combat constants (dodge eagerness, kite distance, target-scoring weights, pickup detour,
+zone margin, mine usage) are **not hardcoded** — they live in a runtime `EnginePolicy`. The **Tuner**
+agent rewrites that policy after each round based on how the fight is going; the new policy flows over
+the bus (`arena:policy`) and the engine applies it on the **next tick**. So you tune the bot by letting
+the LLM adjust it — *no code edit, no `docker compose` restart*. Every value is clamped by
+`mergePolicy()` (a wild LLM number can nudge but never break the bot), and the policy is mirrored to
+Redis KV so learned tuning **survives a restart**. The fast 10 Hz loop stays fully deterministic; the
+LLM only owns the knobs.
 
 > Models are env-configurable — any current OpenRouter slug works (e.g. bump the planners to
 > `anthropic/claude-opus-4.8` for maximum strength, or `anthropic/claude-opus-4.8-fast` for lower latency).

@@ -4,8 +4,8 @@ import { ArenaSocket } from "../arena/ws";
 import { type Bus, Channels, Keys } from "../bus";
 import { child } from "../shared/logger";
 import type { RoundOutcome } from "../shared/memory";
-import type { Directive, LoadoutPlan, LoadoutRequest, RoundContext } from "../types/internal";
-import { DEFAULT_DIRECTIVE } from "../types/internal";
+import type { Directive, EnginePolicy, LoadoutPlan, LoadoutRequest, RoundContext } from "../types/internal";
+import { DEFAULT_DIRECTIVE, DEFAULT_POLICY } from "../types/internal";
 import type {
   ConnectedMsg,
   DeathMsg,
@@ -54,6 +54,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
   let fallbackLoadout = chooseFallbackLoadout({});
   let selectionTimer: NodeJS.Timeout | null = null;
   let directiveVersion = -1;
+  let policyVersion = -1;
 
   // --- Per-round telemetry accumulator (published to Brain at round_end) ---
   let roundStartTick = 0;
@@ -86,6 +87,17 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
     if (!loadoutSent && socket.isOpen) sendLoadout(plan);
   });
 
+  // Live behaviour tuning from the LLM Tuner — applied instantly, no restart.
+  const unsubPolicy = await bus.subscribe<EnginePolicy>(Channels.policy, (p) => {
+    if (p.version <= policyVersion) return; // newest wins
+    policyVersion = p.version;
+    controller.setPolicy(p);
+    log.info(
+      { v: p.version, dodge: p.dodgeEagerness, kite: p.kiteRangeBias, src: p.source, why: p.reasoning },
+      "policy applied (live re-tune)",
+    );
+  });
+
   // Seed directive from the KV mirror so a freshly-started engine isn't blind.
   const seeded = await bus.getKV<Directive>(Keys.currentDirective);
   if (seeded) {
@@ -93,6 +105,16 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
     controller.setDirective(seeded);
   } else {
     controller.setDirective({ ...DEFAULT_DIRECTIVE });
+  }
+
+  // Seed the tuning policy from KV so learned tuning survives an engine restart.
+  const seededPolicy = await bus.getKV<EnginePolicy>(Keys.currentPolicy);
+  if (seededPolicy) {
+    policyVersion = seededPolicy.version;
+    controller.setPolicy(seededPolicy);
+    log.info({ v: seededPolicy.version, src: seededPolicy.source }, "restored tuning policy");
+  } else {
+    controller.setPolicy({ ...DEFAULT_POLICY });
   }
 
   // --- helpers ---------------------------------------------------------------
@@ -361,6 +383,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
     async stop() {
       if (selectionTimer) clearTimeout(selectionTimer);
       unsubDirective();
+      unsubPolicy();
       unsubLoadout();
       socket.stop();
       log.info("engine stopped");

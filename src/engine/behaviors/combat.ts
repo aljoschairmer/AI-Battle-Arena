@@ -108,9 +108,9 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
     }
   }
 
-  // Universal grapple-to-target for melee weapons: close the gap
+  // Universal grapple-to-target for melee weapons: close the gap (LLM-tunable threshold).
   if (!profile.ranged && self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
-    if (d > range + 1.5 && d <= 12 && target.has_los) {
+    if (d > range + ctx.policy.grappleCloseMinGap && d <= 12 && target.has_los) {
       return grappleTarget(tick, target.bot_id);
     }
   }
