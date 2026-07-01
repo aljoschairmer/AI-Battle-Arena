@@ -143,7 +143,7 @@ export const DEFAULT_POLICY: EnginePolicy = {
   targetLowHpWeight: 60,
   targetCloseWeight: 2,
   targetThreatAversion: 30,
-  targetSwitchHysteresis: 15,
+  targetSwitchHysteresis: 30,
   targetMatchupWeight: 12,
   pickupDetourMax: 6,
   zoneEdgeMargin: 5,

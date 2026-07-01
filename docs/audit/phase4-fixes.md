@@ -9,7 +9,7 @@ in any of them. Every new constant is an `EnginePolicy` field with `mergePolicy(
 |---|---|---|---|
 | 1 | Retreat cluster: threat-aware zone-return, trade-aware retreat threshold, defensive shove/grapple when cornered | `survival.ts` | `retreatTradeSensitivity` (0, [0,0.4]), `disengageUseSeparation` (bool) |
 | 2 | Cooldown step-away now threat-field-aware, not single-target | `combat.ts` | — (reuses `threatField()`) |
-| 3 | Target-switch hysteresis (debounce) | `targeting.ts`, `gameState.ts` (new `currentTargetId()`/`noteTargetSelection()`) | `targetSwitchHysteresis` (15, [0,60]) |
+| 3 | Target-switch hysteresis (debounce) | `targeting.ts`, `gameState.ts` (new `currentTargetId()`/`noteTargetSelection()`) | `targetSwitchHysteresis` (30 — see below, [0,60]) |
 | 4 | Dagger backstab dead code now actually defers to finish an in-progress flank | `combat.ts`, `movement.ts` (exported `flankingPosition`) | — (reuses existing `daggerFlank` toggle) |
 | 5 | Hardcoded `0.6` disengage gate exposed as a tunable | `controller.ts` | `disengageHpThreshold` (0.6, [0,1]) |
 | 6 | Weapon-matchup matrix wired into target scoring | `targeting.ts` | `targetMatchupWeight` (12, [0,40]) |
@@ -44,17 +44,22 @@ ones as directional corroboration, not a precise before/after delta.
   down roughly a third, bad-engage rate down roughly 6×. Win rate against this specific harsh
   scenario roughly doubled (and went from "mostly 0% across small samples" to a stable,
   non-trivial rate against 5 simultaneous opponents).
-- **Target-switch thrash did NOT improve (24.4% → 24.9%, statistically flat).** This is worth
-  taking at face value rather than explaining away: the hysteresis fix is correctly implemented
-  and unit-tested (it demonstrably suppresses small-margin flips in the smoke tests), but the
-  aggregate thrash metric barely moved. The likely explanation — not yet confirmed — is that
-  the analyzer's "<5 ticks apart" measure doesn't distinguish noise-driven oscillation between
-  two persistent targets (what the fix targets) from legitimate rapid re-targeting in a chaotic
-  5-enemy brawl (an enemy dying and a new best target needing to be picked the very next tick,
-  which a debounce mechanism correctly should *not* suppress). Flagged as an open follow-up: a
-  future telemetry pass could check whether switches revisit a *previously-held* target within
-  a short window (true thrash) versus always moving to a *new* target (legitimate churn) before
-  concluding the hysteresis margin (currently 15) needs to be raised.
+- **Target-switch thrash barely moved at first (24.4% → 24.9%) — investigated, not just
+  reported.** Follow-up: instrumented a diagnostic pass over the same telemetry that checks
+  whether each fast (<5-tick) switch revisits a target held within the last 20 ticks (true
+  A→B→A oscillation) versus always moves to a genuinely new target (legitimate churn, e.g. the
+  old target died). Result: **70 of 160 fast switches (44%) were true oscillation** — the
+  hysteresis mechanism itself is correct (it demonstrably suppresses small-margin flips in the
+  smoke tests), but the default margin (15) was too small relative to how much
+  `tradeAdvantage`'s gang-up term swings a candidate's score tick-to-tick as *other* enemies'
+  cooldowns cycle in and out of the 5-tile gang-up radius — a volatility source separate from
+  the thing the fix targets. Swept `targetSwitchHysteresis` empirically (15/30/45) on the same
+  144-match sweep: 30 captured most of the achievable reduction (fast switches 160→136, true
+  oscillation 70→56, several configs' win rates up) with diminishing returns beyond it (45 gave
+  130/53, plus risk of over-tuning stickiness to this one scenario) — **default raised from 15
+  to 30**. The residual ~53 oscillations are very likely mostly genuine multi-enemy volatility
+  (a chaotic 5-enemy brawl where the objectively-best target really does change most ticks)
+  rather than a further fixable bug, but flagged as a real possibility, not confirmed.
 
 Also unchanged, as expected: dodge-hit-despite-min-danger stayed at 0 (Phase 3 already flagged
 this as unreproduced and low-priority — no fix was attempted for it, consistent with "don't fix
