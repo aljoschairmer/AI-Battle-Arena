@@ -298,8 +298,13 @@ function safePerp(perp: GridVec): GridVec {
 /**
  * Compute a flanking position behind the target for dagger backstab.
  * "Behind" = opposite direction of the target's facing, offset 1 tile.
+ *
+ * Exported so combat.ts can check how close an in-progress flank is to
+ * completion before deciding whether to finish it or attack head-on instead
+ * (see combatBehavior's dagger branch) — the two call sites must agree on the
+ * same destination tile, not compute it twice with any risk of drifting apart.
  */
-function flankingPosition(me: GridVec, targetPos: GridVec): GridVec | null {
+export function flankingPosition(me: GridVec, targetPos: GridVec): GridVec | null {
   // Approach from the side opposite to where we currently are relative to the target
   const dx = me[0] - targetPos[0];
   const dy = me[1] - targetPos[1];

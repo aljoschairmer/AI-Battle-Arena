@@ -328,10 +328,17 @@ export class GameState {
     return this.self.hp / this.self.max_hp;
   }
 
+  /** The target selected as of last tick (read-only peek, no side effect) — used
+   *  by selectTarget's switch hysteresis to know what it'd be unseating. */
+  currentTargetId(): string | null {
+    return this.lastTargetId;
+  }
+
   /**
    * Record the current tick's selected target and report whether it changed
-   * from last tick. Telemetry-only bookkeeping — has no effect on targeting
-   * itself (selectTarget's scoring/fallback logic is unchanged).
+   * from last tick. Telemetry bookkeeping AND the source of truth
+   * currentTargetId() reads from — selectTarget's hysteresis (targeting.ts)
+   * depends on this being called once per tick with the final decision.
    */
   noteTargetSelection(
     id: string | null,

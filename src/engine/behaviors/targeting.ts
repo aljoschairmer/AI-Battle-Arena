@@ -1,6 +1,7 @@
 import type { NearbyBot } from "../../types/protocol";
 import { dist } from "../../shared/geometry";
 import { tradeAdvantage } from "../combatMath";
+import { matchupRating } from "../matchups";
 import { telemetry } from "../telemetryLog";
 import type { DecisionContext } from "./context";
 
@@ -38,18 +39,38 @@ export function selectTarget(ctx: DecisionContext): NearbyBot | null {
 
   let best: NearbyBot | null = null;
   let bestScore = -Infinity;
+  const scored = new Map<string, number>();
 
   for (const e of enemies) {
     if (avoid.has(e.bot_id)) continue;
     const score = scoreEnemy(ctx, e, dist(me, e.position));
+    scored.set(e.bot_id, score);
     if (score > bestScore) {
       bestScore = score;
       best = e;
     }
   }
+
+  // Debounce: stick with the currently-selected target unless it's no longer
+  // valid (dead / out of fog / newly avoided — not in `scored`) or a challenger
+  // clears its score by a real margin. Without this, tiny per-tick score noise
+  // between similarly-ranked enemies flips the target every tick — confirmed in
+  // play (Phase 2: 24% of switches land under 500ms apart with no debounce at
+  // all), wasting flank/approach progress restarted from scratch each flip.
+  // Only applies to this scored fallback, not the Brain's forced-target branch
+  // above — an explicit directive should take effect immediately.
+  let reason = "best_scored";
+  const currentId = gs.currentTargetId();
+  if (best && currentId && currentId !== best.bot_id && scored.has(currentId)) {
+    if (bestScore - scored.get(currentId)! < ctx.policy.targetSwitchHysteresis) {
+      best = enemies.find((e) => e.bot_id === currentId) ?? best;
+      reason = "stuck_hysteresis";
+    }
+  }
+
   // If everything is on the avoid list, fall back to nearest so we still fight.
   const result = best ?? gs.nearestEnemy();
-  logSwitch(ctx, result, best ? "best_scored" : "fallback_nearest_all_avoided");
+  logSwitch(ctx, result, best ? reason : "fallback_nearest_all_avoided");
   return result;
 }
 
@@ -67,13 +88,20 @@ function logSwitch(ctx: DecisionContext, target: NearbyBot | null, reason: strin
 }
 
 function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): number {
-  const { directive, policy } = ctx;
+  const { gs, directive, policy } = ctx;
   const hpFrac = e.max_hp > 0 ? e.hp / e.max_hp : 1;
 
   let score = 0;
 
   // Prefer low-HP, finishable targets — biggest single factor (LLM-tunable weight).
   score += (1 - hpFrac) * policy.targetLowHpWeight;
+
+  // Weapon matchup (matchups.ts, -2..+2): break ties toward the enemy our
+  // weapon hard-counters rather than treating all equally-tempting targets as
+  // interchangeable. Enemy weapon type is known with certainty every tick
+  // (Phase 0 finding — no fog-of-war ambiguity here, unlike trade math), so
+  // this was previously unwired data, not unavailable data.
+  if (gs.self) score += matchupRating(gs.self.weapon, e.weapon) * policy.targetMatchupWeight;
 
   // Prefer closer targets. Linear decay so distance always matters, not just < 10 tiles.
   score += Math.max(0, 40 - distance * policy.targetCloseWeight);

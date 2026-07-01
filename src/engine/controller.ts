@@ -189,7 +189,8 @@ export class Controller {
       // Phase 2/3 telemetry can see what trade math predicted for EVERY
       // engagement, not only the ones already hp-gated into re-checking it.
       const advantage = tradeAdvantage(ctx, target);
-      const wouldBail = !forced && gs.hpFraction() < 0.6 && advantage < ctx.policy.minTradeAdvantage;
+      const wouldBail =
+        !forced && gs.hpFraction() < ctx.policy.disengageHpThreshold && advantage < ctx.policy.minTradeAdvantage;
       let bail: ClientAction | null = null;
       if (wouldBail) {
         bail = tacticalDisengage(ctx);
