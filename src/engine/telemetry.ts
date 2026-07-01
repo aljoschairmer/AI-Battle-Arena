@@ -56,7 +56,7 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
     .sort((a, b) => a.since - b.since)
     .map((entry) => ({ botId: entry.bot_id, position: entry.position, age: entry.since }));
 
-  const recentKills = self.kill_feed.slice(-5).map((k) => ({
+  const recentKills = (self.kill_feed ?? []).slice(-5).map((k) => ({
     killer: k.killer,
     victim: k.victim,
     weapon: k.weapon,

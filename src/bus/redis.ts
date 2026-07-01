@@ -19,6 +19,8 @@ export class RedisBus implements Bus {
   private readonly handlers = new Map<string, Set<(payload: unknown) => void>>();
 
   constructor(url: string) {
+    // Redact credentials before logging the URL (redis://user:pass@host:port).
+    const safeUrl = url.replace(/\/\/[^@/]*@/, "//***@");
     const opts = {
       lazyConnect: false,
       maxRetriesPerRequest: 3,
@@ -28,8 +30,13 @@ export class RedisBus implements Bus {
     this.pub = new Redis(url, opts);
     this.sub = new Redis(url, opts);
 
-    this.pub.on("error", (e) => log.warn({ err: e.message }, "pub connection error"));
-    this.sub.on("error", (e) => log.warn({ err: e.message }, "sub connection error"));
+    // Full connection-lifecycle logging on both connections, so it's obvious
+    // from the logs whether Redis is actually reachable — not just "it threw
+    // once" but connect/ready/reconnecting/close, matched to which connection
+    // (pub: publish + KV, sub: pub/sub only) so a stuck subscriber vs. a dead
+    // publisher are easy to tell apart.
+    this.wireLifecycleLogging(this.pub, "pub", safeUrl);
+    this.wireLifecycleLogging(this.sub, "sub", safeUrl);
 
     this.sub.on("message", (channel: string, message: string) => {
       const set = this.handlers.get(channel);
@@ -51,6 +58,16 @@ export class RedisBus implements Bus {
     });
   }
 
+  /** Logs every connection-state transition for one of the two Redis clients. */
+  private wireLifecycleLogging(client: Redis, label: "pub" | "sub", url: string): void {
+    client.on("connect", () => log.info({ conn: label, url }, "redis TCP connected"));
+    client.on("ready", () => log.info({ conn: label }, "redis ready — commands flowing"));
+    client.on("error", (e) => log.warn({ conn: label, err: e.message }, "redis connection error"));
+    client.on("close", () => log.warn({ conn: label }, "redis connection closed"));
+    client.on("reconnecting", (delay: number) => log.warn({ conn: label, delayMs: delay }, "redis reconnecting"));
+    client.on("end", () => log.error({ conn: label }, "redis connection ended — giving up reconnecting"));
+  }
+
   async publish<T>(channel: string, payload: T): Promise<void> {
     await this.pub.publish(channel, JSON.stringify(payload));
   }
@@ -61,6 +78,7 @@ export class RedisBus implements Bus {
       set = new Set();
       this.handlers.set(channel, set);
       await this.sub.subscribe(channel);
+      log.debug({ channel }, "redis subscribed");
     }
     const typed = handler as (payload: unknown) => void;
     set.add(typed);
@@ -71,7 +89,10 @@ export class RedisBus implements Bus {
       s.delete(typed);
       if (s.size === 0) {
         this.handlers.delete(channel);
-        void this.sub.unsubscribe(channel).catch(() => undefined);
+        this.sub
+          .unsubscribe(channel)
+          .then(() => log.debug({ channel }, "redis unsubscribed"))
+          .catch((e) => log.warn({ channel, err: (e as Error).message }, "redis unsubscribe failed"));
       }
     };
   }

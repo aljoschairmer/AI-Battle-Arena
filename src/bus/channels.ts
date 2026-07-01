@@ -24,6 +24,9 @@ export const Channels = {
   // Engine <--coop--> Engine: bot-to-bot coalition channel. Published on the
   // GLOBAL (unscoped) bus so all of our parallel bots hear each other.
   coop: "arena:coop",
+  // Coordinator brain --coop_directive--> Engine: squad-wide focus-fire target
+  // + role assignments (hold/flank/support). Also on the GLOBAL bus.
+  coopDirective: "arena:coop_directive",
 } as const;
 
 export const Keys = {
@@ -31,6 +34,7 @@ export const Keys = {
   currentLoadoutPlan: "arena:kv:loadout_plan",
   learningInsights: "arena:kv:insights",
   currentPolicy: "arena:kv:policy",
+  currentCoopDirective: "arena:kv:coop_directive",
 } as const;
 
 export type ChannelName = (typeof Channels)[keyof typeof Channels];

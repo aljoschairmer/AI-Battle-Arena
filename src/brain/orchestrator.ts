@@ -119,12 +119,12 @@ export class Orchestrator {
     );
     this.unsubs.push(
       await this.bus.subscribe<LoadoutRequest>(Channels.loadoutRequest, (r) =>
-        void this.onLoadoutRequest(r),
+        this.onLoadoutRequest(r).catch((e) => log.warn({ err: (e as Error).message }, "loadout request handling failed")),
       ),
     );
     this.unsubs.push(
       await this.bus.subscribe<RoundOutcome>(Channels.roundOutcome, (o) =>
-        void this.onRoundOutcome(o),
+        this.onRoundOutcome(o).catch((e) => log.warn({ err: (e as Error).message }, "round outcome handling failed")),
       ),
     );
 
@@ -369,8 +369,8 @@ export class Orchestrator {
 
   private publish(d: Directive): void {
     this.directive = d;
-    void this.bus.publish(Channels.directive, d);
-    void this.bus.setKV(Keys.currentDirective, d);
+    this.bus.publish(Channels.directive, d).catch((e) => log.warn({ err: (e as Error).message }, "directive publish failed"));
+    this.bus.setKV(Keys.currentDirective, d).catch((e) => log.warn({ err: (e as Error).message }, "directive KV mirror failed"));
     log.debug(
       { v: d.version, posture: d.posture, objective: d.objective, target: d.primaryTargetId, src: d.source },
       "directive published",

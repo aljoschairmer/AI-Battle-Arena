@@ -1,5 +1,6 @@
 import type { ClientAction, GridVec, NearbyBot, NearbyPickup } from "../../types/protocol";
 import {
+  chebyshev,
   clampToGrid,
   dist,
   perpendicularStep,
@@ -99,6 +100,7 @@ export function grabPickup(ctx: DecisionContext): ClientAction | null {
   // Detour budget anchored on the LLM-tunable base, widened when burning or playing safe.
   const base = ctx.policy.pickupDetourMax;
   const maxDetour = burning ? base + 4 : directive.posture === "defensive" || directive.posture === "retreat" ? base + 2 : base;
+  const hazards = gs.hasHazardKey() ? [] : gs.hazardTiles();
 
   let best: NearbyPickup | null = null;
   let bestScore = -Infinity;
@@ -110,6 +112,10 @@ export function grabPickup(ctx: DecisionContext): ClientAction | null {
     const effectiveMax = burning && isHealth ? base + 4 : maxDetour;
     if (d > effectiveMax) continue;
     if (enemyControls(gs.enemies(), p.position)) continue;
+    // A pack next to a hazard tile gets us shoved right back off it by
+    // survivalBehavior the moment we arrive — the two behaviours would then
+    // fight over the same tile every tick. Skip it rather than get stuck.
+    if (hazardAdjacent(hazards, p.position)) continue;
     const score = pickupScore(p.pickup_type) * 10 - d;
     if (score > bestScore) {
       bestScore = score;
@@ -198,11 +204,13 @@ function seekPickup(ctx: DecisionContext): ClientAction | null {
   const pickups = gs.pickups();
   if (pickups.length === 0) return null;
 
+  const hazards = gs.hasHazardKey() ? [] : gs.hazardTiles();
   let best: NearbyPickup | null = null;
   let bestScore = -Infinity;
 
   for (const p of pickups) {
     if (enemyControls(gs.enemies(), p.position)) continue;
+    if (hazardAdjacent(hazards, p.position)) continue;
     const d = dist(me, p.position);
     const score = pickupScore(p.pickup_type) * 10 - d * 0.5;
     if (score > bestScore) { bestScore = score; best = p; }
@@ -254,6 +262,12 @@ function searchLastSeenEnemy(ctx: DecisionContext): ClientAction | null {
 
 function enemyControls(enemies: NearbyBot[], pos: GridVec): boolean {
   return enemies.some((e) => dist(e.position, pos) <= 1.5);
+}
+
+/** Same radius survivalBehavior uses to trigger a hazard escape — avoid locking
+ * onto a pickup destination that would immediately get us pulled back off it. */
+function hazardAdjacent(hazards: GridVec[], pos: GridVec): boolean {
+  return hazards.some((h) => chebyshev(pos, h) <= 2);
 }
 
 function pickSafe(ctx: DecisionContext, dirs: GridVec[]): GridVec | null {

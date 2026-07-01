@@ -97,7 +97,7 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
         return e.weapon === "bow" && e.bow_charge_level >= 2 && e.has_los && dist(me, e.position) <= range + 1;
       }) ?? null;
 
-  const justHit = self.hits_received.length > 0;
+  const justHit = (self.hits_received ?? []).length > 0;
   // Melee pressure: dodge whenever an enemy can attack us in melee, regardless
   // of whether our own weapon is ready. Trading hits at 1:1 is always losing
   // when the enemy has more HP or is part of a cluster.
@@ -153,10 +153,16 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
   if (!lowHp && directive.posture !== "retreat") return null;
 
   const me = gs.position;
+  const hazards = gs.hasHazardKey() ? [] : gs.hazardTiles();
 
   const health = gs
     .pickups()
     .filter((p) => /health|hp|heal/i.test(p.pickup_type))
+    // A pack sitting next to a hazard would just get us yanked back by
+    // survivalBehavior (priority 2, above this) the instant we arrive — the two
+    // behaviours would then fight over the same tile forever. Skip it so we
+    // don't lock onto a target we can never actually stand on.
+    .filter((p) => !hazardAdjacentTo(hazards, p.position))
     .sort((a, b) => dist(me, a.position) - dist(me, b.position))[0];
 
   if (health && dist(me, health.position) <= 9 && !enemyAdjacentTo(gs.enemies(), health.position)) {
@@ -203,6 +209,11 @@ export function tacticalDisengage(ctx: DecisionContext): ClientAction | null {
 
 function enemyAdjacentTo(enemies: NearbyBot[], pos: GridVec): boolean {
   return enemies.some((e) => chebyshev(e.position, pos) <= 1);
+}
+
+/** Same radius survivalBehavior uses to trigger a hazard escape (see onHazard above). */
+function hazardAdjacentTo(hazards: GridVec[], pos: GridVec): boolean {
+  return hazards.some((h) => chebyshev(pos, h) <= 2);
 }
 
 function nearestAttacker(ctx: DecisionContext): NearbyBot | null {

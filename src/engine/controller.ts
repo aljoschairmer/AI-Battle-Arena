@@ -1,5 +1,5 @@
 import type { ClientAction } from "../types/protocol";
-import type { Directive, EnginePolicy } from "../types/internal";
+import type { CoopRole, Directive, EnginePolicy } from "../types/internal";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY } from "../types/internal";
 import { dist } from "../shared/geometry";
 import type { GameState } from "./gameState";
@@ -30,6 +30,7 @@ export class Controller {
   private directive: Directive = { ...DEFAULT_DIRECTIVE };
   private policy: EnginePolicy = { ...DEFAULT_POLICY };
   private coopFocus: string | null = null;
+  private coopRole: CoopRole | null = null;
   private minesPlacedThisRound = 0;
   private lastMineTick = -1000;
 
@@ -53,6 +54,11 @@ export class Controller {
   /** Coalition focus-fire target (used when the Brain hasn't pinned one). */
   setCoopFocus(id: string | null): void {
     this.coopFocus = id;
+  }
+
+  /** Squad role assigned by the Coordinator brain (hold/flank/support), or null. */
+  setCoopRole(role: CoopRole | null): void {
+    this.coopRole = role;
   }
 
   onRoundStart(): void {
@@ -131,14 +137,34 @@ export class Controller {
     const d = this.directive;
     const p = this.policy;
     const brainSet = d.source === "strategist" || d.source === "tactician";
-    const aggression = Math.max(
+    let aggression = Math.max(
       0,
       Math.min(1, p.aggression + (d.aggression - DEFAULT_DIRECTIVE.aggression)),
     );
+    let hpRetreatFraction = d.hpRetreatFraction;
+
+    // Squad role from the Coordinator brain — basic fireteam doctrine: the
+    // frontline (hold) fights longer, ranged support (support) peels earlier,
+    // the flanker (flank) presses harder to exploit the opening it's chasing.
+    if (this.coopRole === "hold") {
+      hpRetreatFraction = Math.max(0, hpRetreatFraction - 0.08);
+    } else if (this.coopRole === "support") {
+      aggression = Math.max(0, aggression - 0.1);
+      hpRetreatFraction = Math.min(1, hpRetreatFraction + 0.1);
+    } else if (this.coopRole === "flank") {
+      aggression = Math.min(1, aggression + 0.1);
+    }
+
     // Fall back to the coalition's focus-fire target when the Brain hasn't
     // pinned one (selectTarget still only commits if it's visible + worthwhile).
     const primaryTargetId = d.primaryTargetId ?? this.coopFocus;
-    return { ...d, aggression, posture: brainSet ? d.posture : p.posture, primaryTargetId };
+    return {
+      ...d,
+      aggression,
+      hpRetreatFraction,
+      posture: brainSet ? d.posture : p.posture,
+      primaryTargetId,
+    };
   }
 
   /**

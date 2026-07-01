@@ -179,6 +179,7 @@ export interface CoopMessage {
   /** Our arena bot_id (so allies know which bot_ids are friendly). */
   botId: string;
   name: string;
+  weapon: Weapon;
   pos: GridVec;
   hp: number;
   /** Enemies we currently see (never includes friendlies). */
@@ -186,6 +187,43 @@ export interface CoopMessage {
   /** Our vote for the focus-fire target (lowest-HP enemy we see), or null. */
   focusVote: string | null;
 }
+
+/**
+ * Squad role assigned to one of our bots by the Coordinator brain — mirrors
+ * basic fireteam doctrine: someone tanks/holds the line, someone exploits
+ * openings from the flank, someone hangs back and provides ranged support.
+ */
+export type CoopRole = "hold" | "flank" | "support";
+
+/**
+ * Coalition-wide tactical directive, produced by the (single, LLM-driven)
+ * Coordinator brain from pooled squad + enemy intel and broadcast on the
+ * GLOBAL bus so every one of our parallel bots' engines can read it. Purely
+ * additive: engines fall back to their own local heuristic (lowest-HP focus,
+ * no assigned role) when this is absent or stale.
+ */
+export interface CoopDirective {
+  version: number;
+  ts: number;
+  /** Concentrate the whole squad's fire on this enemy bot_id, or null. */
+  focusTargetId: string | null;
+  /** botId -> assigned squad role. */
+  roles: Record<string, CoopRole>;
+  /** Call to regroup/fall back as a unit rather than fight scattered. */
+  regroup: boolean;
+  reasoning: string;
+  source: string;
+}
+
+export const DEFAULT_COOP_DIRECTIVE: CoopDirective = {
+  version: 0,
+  ts: 0,
+  focusTargetId: null,
+  roles: {},
+  regroup: false,
+  reasoning: "",
+  source: "none",
+};
 
 /** A chosen loadout plus rationale, produced by the loadout agent. */
 export interface LoadoutPlan extends LoadoutSelection {
