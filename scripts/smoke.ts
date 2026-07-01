@@ -17,6 +17,9 @@ import { scoped } from "../src/bus";
 import { normalizeStats } from "../src/shared/stats";
 import { chooseFallbackLoadout } from "../src/engine/loadout";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
+import { deriveStats, damagePerHit, dpsInto, fightPower, optimizeBuild } from "../src/shared/derived";
+import { WEAPONS } from "../src/engine/weapons";
+import { matchupRating, counterScore, rankCounterPicks } from "../src/engine/matchups";
 import { tradeAdvantage } from "../src/engine/combatMath";
 import { PolicyPatchSchema, StrategyOutputSchema, AnalystOutputSchema } from "../src/brain/agents/schemas";
 import type {
@@ -426,6 +429,73 @@ async function run(): Promise<void> {
     check("scoped KV isolated across bots", (await b.getKV("arena:kv:policy")) === null);
     check("scoped KV readable in same scope", ((await a.getKV<{ p: string }>("arena:kv:policy"))?.p) === "A");
     await root.close();
+  }
+
+  console.log("\nDerived stats (matches the arena Stat Simulator exactly)");
+  {
+    // The simulator's published 5/5/5/5 sword build.
+    const d = deriveStats({ hp: 5, speed: 5, attack: 5, defense: 5 });
+    check("max_hp = 150", d.maxHp === 150, d.maxHp);
+    check("speed = 5.5", d.speed === 5.5, d.speed);
+    check("attack_mult = 1.5", d.attackMult === 1.5, d.attackMult);
+    check("defense_red = 15%", Math.round(d.defenseRed * 100) === 15, d.defenseRed);
+    check("effective_hp = 176", Math.round(d.effectiveHp) === 176, d.effectiveHp);
+    check("defense_red caps at 30%", deriveStats({ hp: 5, speed: 5, attack: 5, defense: 10 }).defenseRed === 0.3);
+
+    // The simulator's DPS table (sword base 23.18, cd 0.47), attacker attack 5.
+    const base = 23.18, cd = 0.47;
+    const rows: Array<[number, number, number, number]> = [
+      // enemyDef, dmg/hit, dps, hits-to-kill(150)
+      [0, 34.77, 73.98, 5],
+      [5, 29.55, 62.88, 6],
+      [10, 24.34, 51.79, 7],
+    ];
+    for (const [def, dmg, dps, htk] of rows) {
+      const gotDmg = damagePerHit(base, 5, def);
+      const gotDps = dpsInto(base, cd, 5, def);
+      check(`def${def}: dmg/hit ${dmg}`, Math.abs(gotDmg - dmg) < 0.02, gotDmg.toFixed(2));
+      check(`def${def}: dps ${dps}`, Math.abs(gotDps - dps) < 0.02, gotDps.toFixed(2));
+      check(`def${def}: hits-to-kill ${htk}`, Math.ceil(150 / gotDmg) === htk, Math.ceil(150 / gotDmg));
+    }
+
+    // optimizeBuild: legal, budget-exact, honours floors, and beats neutral.
+    const opt = optimizeBuild(WEAPONS.sword.damage, WEAPONS.sword.cooldown, { speedFloor: 5, defenseFloor: 2 });
+    check("optimize sums to budget", opt.hp + opt.speed + opt.attack + opt.defense === 20, opt);
+    check("optimize honours speed floor", opt.speed >= 5, opt);
+    check("optimize honours defense floor", opt.defense >= 2, opt);
+    check("optimize keeps defense LOW (weak stat)", opt.defense <= 3, opt);
+    check(
+      "optimize beats flat 5/5/5/5 fight power",
+      fightPower(WEAPONS.sword.damage, WEAPONS.sword.cooldown, opt) >
+        fightPower(WEAPONS.sword.damage, WEAPONS.sword.cooldown, { hp: 5, speed: 5, attack: 5, defense: 5 }),
+      opt,
+    );
+  }
+
+  console.log("\nWeapon matchups (Strategy tab) + counter-pick");
+  {
+    // The two hard counters the Strategy tab calls out explicitly.
+    check("daggers hard-counter bow (+2)", matchupRating("daggers", "bow") === 2, matchupRating("daggers", "bow"));
+    check("bow loses hard to daggers (-2)", matchupRating("bow", "daggers") === -2, matchupRating("bow", "daggers"));
+    check("staff hard-counters shield (+2)", matchupRating("staff", "shield") === 2, matchupRating("staff", "shield"));
+    check("mirror is even (0)", matchupRating("sword", "sword") === 0);
+    check("unrated grapple pairing is even (0)", matchupRating("grapple", "bow") === 0);
+
+    // Counter score vs a bow-heavy lobby: daggers strongly positive, bow neutral.
+    const bowLobby = { bow: 3, shield: 1 } as Partial<Record<Weapon, number>>;
+    check("daggers score high vs bow-heavy lobby", counterScore("daggers", bowLobby) > 1, counterScore("daggers", bowLobby));
+    check("bow ~neutral in a bow mirror lobby", counterScore("bow", bowLobby) < counterScore("daggers", bowLobby));
+
+    // rankCounterPicks flips an even base in favour of the counter weapon.
+    const ranked = rankCounterPicks(["bow", "daggers"], bowLobby, () => 0.8);
+    check("counter-pick beats equal-base weapon vs its counter", ranked[0]!.weapon === "daggers", ranked);
+
+    // Deterministic fallback honours the lobby: a bow-heavy lobby -> daggers.
+    const lo = chooseFallbackLoadout({ lobbyWeapons: { bow: 4 } });
+    check("fallback counter-picks daggers vs 4 bows", lo.weapon === "daggers", lo.weapon);
+    // With no lobby intel it falls back to the standalone meta pick.
+    const loNoIntel = chooseFallbackLoadout({});
+    check("fallback with no lobby is a legal weapon", ["sword", "bow", "daggers", "shield", "spear", "staff", "grapple"].includes(loNoIntel.weapon), loNoIntel.weapon);
   }
 
   console.log("\nBOT_COOP coalition");

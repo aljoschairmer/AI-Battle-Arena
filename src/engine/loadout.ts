@@ -1,6 +1,8 @@
 import type { FallbackBehavior, LoadoutSelection, Weapon } from "../types/protocol";
 import { normalizeStats } from "../shared/stats";
-import { DEFAULT_STATS, WEAPONS } from "./weapons";
+import { BUILD_FLOORS, optimizeBuild } from "../shared/derived";
+import { rankCounterPicks } from "./matchups";
+import { WEAPONS } from "./weapons";
 
 /**
  * Server-side autonomous behaviour best matched to each weapon's playstyle, used
@@ -29,6 +31,8 @@ export function chooseFallbackLoadout(opts: {
   budget?: number;
   min?: number;
   max?: number;
+  /** Weapon counts seen in the pre-round lobby — drives the counter-pick. */
+  lobbyWeapons?: Partial<Record<Weapon, number>>;
 }): LoadoutSelection {
   const available = opts.availableWeapons?.length
     ? opts.availableWeapons
@@ -36,12 +40,29 @@ export function chooseFallbackLoadout(opts: {
 
   const mod = (opts.modifier ?? "").toLowerCase();
 
-  const weapon = available
-    .map((w) => ({ w, score: WEAPONS[w].metaScore + modifierBonus(w, mod) }))
-    .sort((a, b) => b.score - a.score)[0]!.w;
+  // Rank by standalone strength (metaScore + modifier fit) blended with the
+  // matchup edge against whatever weapons the lobby is fielding (Strategy-tab
+  // matrix). With no lobby intel the counter term is 0 and this is pure meta.
+  const weapon = rankCounterPicks(
+    available,
+    opts.lobbyWeapons ?? {},
+    (w) => WEAPONS[w].metaScore + modifierBonus(w, mod),
+  )[0]!.weapon;
 
-  const base = DEFAULT_STATS[weapon] ?? { hp: 6, speed: 5, attack: 6, defense: 3 };
-  const stats = normalizeStats(base, opts.budget ?? 20, opts.min ?? 1, opts.max ?? 10);
+  // Fight-power-optimal spread for the ACTUAL round budget/bounds (the arena can
+  // vary them per round), honouring the weapon's mobility/durability floors.
+  const p = WEAPONS[weapon];
+  const floors = BUILD_FLOORS[weapon];
+  const optimal = optimizeBuild(p.damage, p.cooldown, {
+    budget: opts.budget ?? 20,
+    min: opts.min ?? 1,
+    max: opts.max ?? 10,
+    speedFloor: floors.speedFloor,
+    defenseFloor: floors.defenseFloor,
+  });
+  // normalizeStats is a no-op safety net (optimizeBuild already returns a legal,
+  // budget-exact spread) but guarantees the invariant even if bounds are exotic.
+  const stats = normalizeStats(optimal, opts.budget ?? 20, opts.min ?? 1, opts.max ?? 10);
 
   return {
     weapon,

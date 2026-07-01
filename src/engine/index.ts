@@ -188,6 +188,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       budget: gs.statBudget,
       min: gs.statMin,
       max: gs.statMax,
+      lobbyWeapons: gs.lobbyWeapons,
     });
 
     if (!publishToBrain) {

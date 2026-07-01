@@ -13,7 +13,8 @@
  */
 import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
-import { WEAPONS, profileFor } from "../src/engine/weapons";
+import { WEAPONS, DEFAULT_STATS, profileFor } from "../src/engine/weapons";
+import { deriveStats, NEUTRAL_STATS } from "../src/shared/derived";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy, type EnginePolicy } from "../src/types/internal";
 import type {
   ClientAction,
@@ -21,6 +22,7 @@ import type {
   GridVec,
   NearbyBot,
   SelfState,
+  StatBlock,
   TickMsg,
   Weapon,
 } from "../src/types/protocol";
@@ -39,8 +41,6 @@ function rng(seed: number): () => number {
     return s / 0xffffffff;
   };
 }
-
-const STATS = { attackMult: 1.6, defenseRed: 0.09, maxHp: 150 }; // fixed spread for all bots
 
 interface SimBot {
   id: string;
@@ -67,12 +67,15 @@ interface SimBot {
   gs?: GameState;
 }
 
-function makeBot(id: string, name: string, weapon: Weapon, pos: GridVec, ours: boolean): SimBot {
+// Combat stats come from the EXACT server formulas (shared/derived.ts) applied
+// to each bot's real stat block — so the sim's damage/HP model matches the arena.
+function makeBot(id: string, name: string, weapon: Weapon, pos: GridVec, ours: boolean, stats: StatBlock): SimBot {
   const p = profileFor(weapon);
-  const defenseRed = STATS.defenseRed + (weapon === "shield" ? 0.5 : 0); // shield 50% passive
+  const d = deriveStats(stats);
+  const defenseRed = Math.min(0.75, d.defenseRed + (weapon === "shield" ? 0.5 : 0)); // shield 50% passive
   return {
-    id, name, pos, hp: STATS.maxHp, maxHp: STATS.maxHp, weapon,
-    damage: p.damage, attackMult: STATS.attackMult, defenseRed, range: p.baseRange,
+    id, name, pos, hp: d.maxHp, maxHp: d.maxHp, weapon,
+    damage: p.damage, attackMult: d.attackMult, defenseRed, range: p.baseRange,
     cooldownTicks: Math.max(1, Math.round(p.cooldown / DT)), cdRemaining: 0,
     dodgeCd: 0, invuln: 0, stun: 0, alive: true, kills: 0, dmgDealt: 0, dmgTaken: 0, ours,
   };
@@ -203,7 +206,8 @@ function runMatch(policy: EnginePolicy, aggression: number, seed: number): Match
   const oppWeapons: Weapon[] = ["sword", "bow", "daggers", "spear", "staff"];
 
   const bots: SimBot[] = [];
-  const ours = makeBot("ours", "Ours", "sword", spawn(), true);
+  // Ours fights with the fight-power-optimal sword build; baselines use neutral.
+  const ours = makeBot("ours", "Ours", "sword", spawn(), true, DEFAULT_STATS.sword);
   ours.controller = new Controller();
   ours.gs = new GameState();
   ours.gs.applyConnected({
@@ -217,7 +221,7 @@ function runMatch(policy: EnginePolicy, aggression: number, seed: number): Match
   ours.controller.setDirective({ ...DEFAULT_DIRECTIVE, aggression, source: "sim" });
   ours.controller.onRoundStart();
   bots.push(ours);
-  for (let i = 0; i < 5; i++) bots.push(makeBot(`opp${i}`, `Opp${i}`, oppWeapons[i]!, spawn(), false));
+  for (let i = 0; i < 5; i++) bots.push(makeBot(`opp${i}`, `Opp${i}`, oppWeapons[i]!, spawn(), false, NEUTRAL_STATS));
 
   let survived = 0;
   for (let tick = 0; tick < MAX_TICKS; tick++) {
