@@ -412,6 +412,39 @@ async function run(): Promise<void> {
     );
   }
 
+  console.log("\nMine placement is bearing-aware, not just proximity (Tier 3 fix)");
+  {
+    // A single adjacent chaser is, by construction, behind whatever direction
+    // we flee it in -> places a mine.
+    const ctlMine1 = new Controller();
+    ctlMine1.onRoundStart();
+    const gsChaserBehind = freshGameState();
+    gsChaserBehind.applyTick(tickFrom(self({ hp: 10, max_hp: 160 }), [enemy({ bot_id: "chaser", position: [51, 50] })]));
+    const behindResult = ctlMine1.decide(gsChaserBehind);
+    check("single chaser adjacent (necessarily behind) -> places a mine", behindResult.action === "place_mine", behindResult);
+
+    // A distant, dominant threat drives the flight direction (verified: a
+    // [-1,-1] retreat, away from it); a second, weak enemy sits within
+    // mineChaseRange but AHEAD of that direction, not behind it. Regression
+    // test for: maybeDropMine used to check only proximity, so this weak
+    // bystander directly in our path would have been mined too.
+    const ctlMine2 = new Controller();
+    ctlMine2.onRoundStart();
+    const gsAhead = freshGameState();
+    gsAhead.applyTick(
+      tickFrom(self({ hp: 10, max_hp: 160 }), [
+        enemy({ bot_id: "dominant", position: [56, 50], attack_range: 6, threat_score: 200 }),
+        enemy({ bot_id: "westfoe", position: [47, 50], attack_range: 1, threat_score: 1 }),
+      ]),
+    );
+    const aheadResult = ctlMine2.decide(gsAhead);
+    check(
+      "weak enemy within range but ahead of the retreat direction -> no mine, just kites",
+      aheadResult.action === "move",
+      aheadResult,
+    );
+  }
+
   console.log("\nCombat cooldown step (Phase 4 fix 2): threat-field-aware, not single-target");
   {
     const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });

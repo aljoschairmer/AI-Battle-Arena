@@ -1,4 +1,4 @@
-import type { ClientAction } from "../types/protocol";
+import type { ClientAction, GridVec } from "../types/protocol";
 import type { CoopRole, Directive, EnginePolicy } from "../types/internal";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY } from "../types/internal";
 import { dist } from "../shared/geometry";
@@ -162,7 +162,7 @@ export class Controller {
     if (retreat) {
       // 5. Mine the path behind us while fleeing — but ONLY if we're actually
       //    moving away (retreating), not if we're cornered in place.
-      const mine = this.maybeDropMine(gs, true);
+      const mine = this.maybeDropMine(gs, true, retreat);
       if (mine) {
         logTick("retreat_heal_mine", "mine_while_retreating");
         return mine;
@@ -287,13 +287,15 @@ export class Controller {
 
   /**
    * Place a mine only when:
-   * - An enemy is right behind us (≤2.2 tiles)
+   * - An enemy is right behind us (≤ mineChaseRange) AND roughly on the path
+   *   we're retreating along, not just anywhere in range — a chaser to the
+   *   side or ahead of us won't walk over a mine dropped at our current tile.
    * - We have charges remaining and the cooldown has elapsed
    * - retreatingNow is true (we're actively kiting, not cornered)
    *
    * Cornered mine placement wastes all 3 charges in one spot — avoid it.
    */
-  private maybeDropMine(gs: GameState, retreatingNow: boolean): ClientAction | null {
+  private maybeDropMine(gs: GameState, retreatingNow: boolean, retreatAction: ClientAction | null): ClientAction | null {
     if (!retreatingNow) return null;
     if (!this.policy.mineWhenChased) return null;
     const self = gs.self;
@@ -304,11 +306,30 @@ export class Controller {
     if (gs.tick - this.lastMineTick < this.policy.mineCooldownTicks) return null;
 
     const me = gs.position;
-    const chaser = gs.enemies().find((e) => dist(me, e.position) <= this.policy.mineChaseRange);
+    const retreatVector = maybeRetreatVector(retreatAction, me);
+    const chaser = gs.enemies().find((e) => {
+      if (dist(me, e.position) > this.policy.mineChaseRange) return false;
+      if (!retreatVector) return true; // can't tell direction (e.g. server pathfind target) — proximity only
+      const toChaser: GridVec = [e.position[0] - me[0], e.position[1] - me[1]];
+      // Negative dot product = roughly opposite our travel direction = behind us.
+      return retreatVector[0] * toChaser[0] + retreatVector[1] * toChaser[1] < 0;
+    });
     if (!chaser) return null;
 
     this.minesPlacedThisRound += 1;
     this.lastMineTick = gs.tick;
     return placeMine(gs.tick);
   }
+}
+
+/** Direction of travel implied by a retreat action, or null if it can't be read (e.g. idle/attack). */
+function maybeRetreatVector(action: ClientAction | null, me: [number, number]): GridVec | null {
+  if (!action) return null;
+  if (action.action === "move") return action.direction;
+  if (action.action === "move_to") {
+    const dx = action.target_position[0] - me[0];
+    const dy = action.target_position[1] - me[1];
+    return dx === 0 && dy === 0 ? null : [dx, dy];
+  }
+  return null;
 }
