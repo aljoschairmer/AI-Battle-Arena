@@ -76,6 +76,15 @@ export class GameState {
   /** Lazily-built, per-tick-cached threat field (see threatField()). */
   private threatCache: { tick: number; field: ThreatField } | null = null;
 
+  /** Last target selected by targeting.ts, for switch-detection telemetry
+   *  (Phase 2 audit). Lives here rather than module-level state in
+   *  targeting.ts so multiple bot instances in one process don't cross-talk. */
+  private lastTargetId: string | null = null;
+  private lastTargetSwitchTick = -1000;
+
+  /** Dodge awaiting next-tick resolution (damage-taken), for telemetry only. */
+  private pendingDodge: { dodgeId: string; tick: number } | null = null;
+
   applyConnected(msg: ConnectedMsg): void {
     this.selfId = msg.bot_id;
     this.gridSize = msg.grid_size[0] || 100;
@@ -317,6 +326,37 @@ export class GameState {
   hpFraction(): number {
     if (!this.self || this.self.max_hp <= 0) return 1;
     return this.self.hp / this.self.max_hp;
+  }
+
+  /**
+   * Record the current tick's selected target and report whether it changed
+   * from last tick. Telemetry-only bookkeeping — has no effect on targeting
+   * itself (selectTarget's scoring/fallback logic is unchanged).
+   */
+  noteTargetSelection(
+    id: string | null,
+    tick: number,
+  ): { switched: boolean; fromId: string | null; ticksSinceLastSwitch: number } {
+    const fromId = this.lastTargetId;
+    const switched = id !== fromId;
+    const ticksSinceLastSwitch = tick - this.lastTargetSwitchTick;
+    if (switched) {
+      this.lastTargetId = id;
+      this.lastTargetSwitchTick = tick;
+    }
+    return { switched, fromId, ticksSinceLastSwitch };
+  }
+
+  /** Stash a dodge for next-tick damage resolution (telemetry only). */
+  notePendingDodge(dodgeId: string, tick: number): void {
+    this.pendingDodge = { dodgeId, tick };
+  }
+
+  /** Consume the pending dodge (if any) for resolution — one-shot. */
+  takePendingDodge(): { dodgeId: string; tick: number } | null {
+    const p = this.pendingDodge;
+    this.pendingDodge = null;
+    return p;
   }
 
   /** True if we currently have the hazard key active (suppresses hazard damage). */

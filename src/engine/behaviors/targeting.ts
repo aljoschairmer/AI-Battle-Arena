@@ -1,6 +1,7 @@
 import type { NearbyBot } from "../../types/protocol";
 import { dist } from "../../shared/geometry";
 import { tradeAdvantage } from "../combatMath";
+import { telemetry } from "../telemetryLog";
 import type { DecisionContext } from "./context";
 
 /**
@@ -14,7 +15,10 @@ export function selectTarget(ctx: DecisionContext): NearbyBot | null {
   const { gs, directive } = ctx;
   const me = gs.position;
   const enemies = gs.enemies();
-  if (enemies.length === 0) return null;
+  if (enemies.length === 0) {
+    logSwitch(ctx, null, "no_enemies_visible");
+    return null;
+  }
 
   const avoid = new Set(directive.avoidTargetIds);
 
@@ -25,7 +29,10 @@ export function selectTarget(ctx: DecisionContext): NearbyBot | null {
     if (preferred && !avoid.has(preferred.bot_id)) {
       const preferredScore = scoreEnemy(ctx, preferred, dist(me, preferred.position));
       // Accept the Brain's pick unless it scores very poorly (negative = dangerous/unreachable).
-      if (preferredScore > -10) return preferred;
+      if (preferredScore > -10) {
+        logSwitch(ctx, preferred, "forced_target");
+        return preferred;
+      }
     }
   }
 
@@ -41,7 +48,22 @@ export function selectTarget(ctx: DecisionContext): NearbyBot | null {
     }
   }
   // If everything is on the avoid list, fall back to nearest so we still fight.
-  return best ?? gs.nearestEnemy();
+  const result = best ?? gs.nearestEnemy();
+  logSwitch(ctx, result, best ? "best_scored" : "fallback_nearest_all_avoided");
+  return result;
+}
+
+/**
+ * Telemetry only: log a target-switch event iff the pick differs from last
+ * tick's (Phase 2 audit — selectTarget itself carries no other state and its
+ * scoring/fallback behaviour above is unchanged).
+ */
+function logSwitch(ctx: DecisionContext, target: NearbyBot | null, reason: string): void {
+  const { gs, tick } = ctx;
+  const toId = target?.bot_id ?? null;
+  const { switched, fromId, ticksSinceLastSwitch } = gs.noteTargetSelection(toId, tick);
+  if (!switched) return;
+  telemetry.targetSwitch({ tick, fromTargetId: fromId, toTargetId: toId, ticksSinceLastSwitch, reason });
 }
 
 function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): number {

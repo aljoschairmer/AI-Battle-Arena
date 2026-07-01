@@ -1,5 +1,6 @@
 import type { ClientAction, GridVec, NearbyBot } from "../../types/protocol";
 import {
+  DIRECTIONS8,
   chebyshev,
   dist,
   perpendicularStep,
@@ -8,7 +9,9 @@ import {
   stepToward,
   toUnitStep,
 } from "../../shared/geometry";
+import type { GameState } from "../gameState";
 import { profileFor } from "../weapons";
+import { telemetry } from "../telemetryLog";
 import { type DecisionContext, dodge, move, moveTo } from "./context";
 
 /**
@@ -137,7 +140,55 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
       bestDir = dir;
     }
   }
-  return bestDir ? dodge(tick, bestDir) : null;
+  if (!bestDir) return null;
+
+  logDodgeDecision(ctx, tick, me, field, bestDanger);
+  return dodge(tick, bestDir);
+}
+
+/**
+ * Telemetry only (Phase 2 audit): record the chosen landing tile's danger
+ * alongside the true minimum across all 8 directions — the live decision
+ * above only ever considers {perp, perpNeg, away} relative to one reference
+ * enemy, so this measures whether a safer tile existed outside that narrower
+ * candidate set, without changing which tile is actually picked.
+ */
+function logDodgeDecision(
+  ctx: DecisionContext,
+  tick: number,
+  me: GridVec,
+  field: ReturnType<GameState["threatField"]>,
+  chosenTileDanger: number,
+): void {
+  let minAvailableDanger = chosenTileDanger;
+  let candidateTileCount = 0;
+  for (const dir of DIRECTIONS8) {
+    if (!isDodgeWorthwhile(ctx, dir)) continue;
+    candidateTileCount++;
+    const landing = project(me, dir, 2, ctx.gs.gridSize);
+    const dgr = field.danger(landing[0], landing[1]);
+    if (dgr < minAvailableDanger) minAvailableDanger = dgr;
+  }
+  const dodgeId = String(tick);
+  telemetry.dodgeDecision({ tick, dodgeId, chosenTileDanger, minAvailableDanger, candidateTileCount });
+  ctx.gs.notePendingDodge(dodgeId, tick);
+}
+
+/**
+ * Telemetry only (Phase 2 audit): resolve last tick's dodge (if any) now that
+ * this tick's damage-taken is known — dodge outcomes land one tick after the
+ * decision (see HitReceived on the following tick's self state).
+ *
+ * Called from Controller.decide() itself, before the can't-act guard — NOT
+ * nested inside survivalBehavior — because survivalBehavior is unreachable on
+ * a dead/stunned/respawning tick, and a dodge that gets us killed or stunned
+ * on the very next tick is exactly the outcome this must not silently drop.
+ */
+export function resolvePendingDodge(gs: GameState, tick: number): void {
+  const pending = gs.takePendingDodge();
+  if (!pending) return;
+  const damageTaken = (gs.self?.hits_received ?? []).reduce((sum, h) => sum + h.damage, 0);
+  telemetry.dodgeResolved({ tick, dodgeId: pending.dodgeId, damageTaken });
 }
 
 /**
