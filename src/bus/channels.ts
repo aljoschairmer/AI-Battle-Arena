@@ -21,6 +21,9 @@ export const Channels = {
   // Brain --policy--> Engine: live behaviour-tuning knobs the LLM rewrites
   // without a restart (newest version wins, mirrored to KV below).
   policy: "arena:policy",
+  // Engine <--coop--> Engine: bot-to-bot coalition channel. Published on the
+  // GLOBAL (unscoped) bus so all of our parallel bots hear each other.
+  coop: "arena:coop",
 } as const;
 
 export const Keys = {

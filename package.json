@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit",
     "keygen": "tsx scripts/generate-key.ts",
     "smoke": "tsx scripts/smoke.ts",
+    "sim": "tsx scripts/simulate.ts",
     "test": "tsx scripts/smoke.ts",
     "lint": "tsc --noEmit"
   },

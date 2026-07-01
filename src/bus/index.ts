@@ -36,3 +36,4 @@ function redacted(url: string): string {
 
 export type { Bus };
 export { Channels, Keys } from "./channels";
+export { scoped, ScopedBus } from "./scoped";

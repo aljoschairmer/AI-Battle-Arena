@@ -34,6 +34,40 @@ export class OpenRouter {
     return this.apiKey.length > 0;
   }
 
+  /**
+   * Boot-time check: GET /api/v1/key (auth-gated — 401 on a bad/missing key).
+   * Confirms BOTH the key is valid AND the network path (incl. any corporate
+   * proxy / Zscaler) actually reaches openrouter.ai — so a silent "no LLM calls"
+   * surfaces as a concrete error at startup instead of a mystery.
+   */
+  async healthCheck(): Promise<{ ok: boolean; detail: string }> {
+    if (!this.enabled) return { ok: false, detail: "OPENROUTER_API_KEY is empty" };
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(`${this.base}/key`, {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, detail: `invalid OPENROUTER_API_KEY (HTTP ${res.status})` };
+      }
+      if (!res.ok) return { ok: false, detail: `HTTP ${res.status}: ${text.slice(0, 160)}` };
+      let usage: unknown;
+      try {
+        usage = (JSON.parse(text) as { data?: { usage?: unknown } }).data?.usage;
+      } catch {
+        /* body is optional */
+      }
+      return { ok: true, detail: `key valid, reachable (usage=${String(usage ?? "?")})` };
+    } catch (e) {
+      return { ok: false, detail: (e as Error).message };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
   async chat(req: ChatRequest): Promise<string> {
     const timeout = req.timeoutMs ?? config.openrouter.timeoutMs;
     let lastErr: unknown;

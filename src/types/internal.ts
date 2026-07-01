@@ -53,7 +53,7 @@ export const DEFAULT_DIRECTIVE: Directive = {
   primaryTargetId: null,
   avoidTargetIds: [],
   hpRetreatFraction: 0.25,
-  aggression: 0.55,
+  aggression: 0.62,
   reasoning: "default deterministic policy",
   source: "fallback",
 };
@@ -116,9 +116,9 @@ export const DEFAULT_POLICY: EnginePolicy = {
   mineWhenChased: true,
   mineChaseRange: 4,
   mineCooldownTicks: 15,
-  minTradeAdvantage: -0.1,
+  minTradeAdvantage: -0.3,
   leadTicks: 3,
-  aggression: 0.55,
+  aggression: 0.62,
   posture: "balanced",
   bowAlwaysCharge: true,
   daggerFlank: true,
@@ -167,6 +167,24 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     reasoning: typeof patch.reasoning === "string" ? patch.reasoning.slice(0, 300) : base.reasoning,
     source: typeof patch.source === "string" ? patch.source : "tuner",
   };
+}
+
+/**
+ * Bot-to-bot coalition message, broadcast on the global bus by each of our
+ * parallel bots (when BOT_COOP=true). Lets allies avoid friendly fire, focus a
+ * shared target, and share enemy sightings beyond their own fog.
+ */
+export interface CoopMessage {
+  ts: number;
+  /** Our arena bot_id (so allies know which bot_ids are friendly). */
+  botId: string;
+  name: string;
+  pos: GridVec;
+  hp: number;
+  /** Enemies we currently see (never includes friendlies). */
+  enemies: { id: string; hp: number; pos: GridVec }[];
+  /** Our vote for the focus-fire target (lowest-HP enemy we see), or null. */
+  focusVote: string | null;
 }
 
 /** A chosen loadout plus rationale, produced by the loadout agent. */

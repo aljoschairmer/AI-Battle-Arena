@@ -10,11 +10,15 @@
  */
 import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
+import { Coalition } from "../src/engine/coop";
+import { Channels } from "../src/bus";
 import { MemoryBus } from "../src/bus/memory";
+import { scoped } from "../src/bus";
 import { normalizeStats } from "../src/shared/stats";
 import { chooseFallbackLoadout } from "../src/engine/loadout";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
 import { tradeAdvantage } from "../src/engine/combatMath";
+import { PolicyPatchSchema, StrategyOutputSchema, AnalystOutputSchema } from "../src/brain/agents/schemas";
 import type {
   ConnectedMsg,
   NearbyBot,
@@ -288,10 +292,23 @@ async function run(): Promise<void> {
     const step = gu.threatField().safestStep([50, 50], (c, r) => gu.isPassable(c, r));
     check("threat field steps away from the cluster (-col)", step !== null && step[0] <= 0, step);
 
-    // Tactical disengage: a losing, un-pinned fight yields a move, not an attack.
+    // Tactical disengage: only when HURT does a losing, un-pinned fight yield a
+    // move instead of an attack (healthy bots commit — the anti-passive change).
     const ctl = new Controller();
-    const a = ctl.decide(gu);
-    check("losing trade -> disengage (move, not attack)", a.action === "move" || a.action === "move_to", a);
+    const hurt = freshGameState();
+    hurt.applyTick(
+      tickFrom(self({ hp: 64, max_hp: 160 }), [
+        enemy({ bot_id: "t", hp: 220, max_hp: 240, position: [52, 50], can_attack: true }),
+        enemy({ bot_id: "g1", position: [51, 49], can_attack: true }),
+        enemy({ bot_id: "g2", position: [51, 51], can_attack: true }),
+      ]),
+    );
+    const a = ctl.decide(hurt);
+    check("losing trade while HURT -> disengage (move, not attack)", a.action === "move" || a.action === "move_to", a);
+
+    // Healthy in the same spot -> commit to the fight (no longer over-defensive).
+    const b = ctl.decide(gu);
+    check("losing trade while HEALTHY -> engages (not a plain retreat move)", b.action !== "move", b);
   }
 
   console.log("\nEnginePolicy (live LLM tuning)");
@@ -349,6 +366,32 @@ async function run(): Promise<void> {
     check("policy posture defensive -> not shove (Tuner controls posture)", defen.action !== "shove", defen);
   }
 
+  console.log("\nAgent output leniency (no dropped decisions)");
+  {
+    // Over-long reasoning must NOT reject the whole Tuner patch (the reported bug).
+    const p = PolicyPatchSchema.safeParse({ dodgeEagerness: 0.7, reasoning: "x".repeat(1200) });
+    check("tuner patch with 1200-char reasoning parses", p.success, p.success ? "ok" : p.error?.issues?.[0]);
+    check("...and reasoning is truncated", p.success === true && p.data.reasoning.length <= 300, p.success && p.data.reasoning.length);
+
+    // Out-of-range numbers get clamped, not rejected.
+    const s = StrategyOutputSchema.safeParse({
+      posture: "aggressive",
+      objective: "free_for_all",
+      aggression: 5, // > 1
+      hpRetreatFraction: -3, // < 0
+      avoidTargetIds: Array.from({ length: 20 }, (_, i) => `bot${i}`), // > 8
+      reasoning: "y".repeat(900),
+    });
+    check("strategy output with bad numbers parses", s.success, s.success ? "ok" : s.error?.issues?.[0]);
+    check("...aggression clamped to <=1", s.success === true && s.data.aggression <= 1, s.success && s.data.aggression);
+    check("...avoidTargetIds clamped to <=8", s.success === true && s.data.avoidTargetIds.length <= 8, s.success && s.data.avoidTargetIds.length);
+
+    // Analyst lessons over the item/length caps are truncated, not rejected.
+    const a = AnalystOutputSchema.safeParse({ lessons: Array.from({ length: 12 }, () => "z".repeat(500)) });
+    check("analyst output with too many long lessons parses", a.success, a.success ? "ok" : a.error?.issues?.[0]);
+    check("...lessons clamped to <=6", a.success === true && a.data.lessons.length <= 6, a.success && a.data.lessons.length);
+  }
+
   console.log("\nMemoryBus");
   {
     const bus = new MemoryBus();
@@ -363,6 +406,71 @@ async function run(): Promise<void> {
     await bus.setKV("k", { v: "hello" });
     const kv = await bus.getKV<{ v: string }>("k");
     check("KV set/get", kv?.v === "hello", kv);
+    await bus.close();
+  }
+
+  console.log("\nScopedBus (parallel-bot isolation)");
+  {
+    const root = new MemoryBus();
+    const a = scoped(root, "bot0:");
+    const b = scoped(root, "bot1:");
+    let gotA: { v: number } | null = null;
+    let gotB: { v: number } | null = null;
+    await a.subscribe<{ v: number }>("arena:directive", (p) => { gotA = p; });
+    await b.subscribe<{ v: number }>("arena:directive", (p) => { gotB = p; });
+    await a.publish("arena:directive", { v: 1 });
+    await new Promise((r) => setTimeout(r, 10));
+    check("scoped publish reaches its own scope", gotA !== null && (gotA as { v: number }).v === 1, gotA);
+    check("scoped publish isolated from other bot", gotB === null, gotB);
+    await a.setKV("arena:kv:policy", { p: "A" });
+    check("scoped KV isolated across bots", (await b.getKV("arena:kv:policy")) === null);
+    check("scoped KV readable in same scope", ((await a.getKV<{ p: string }>("arena:kv:policy"))?.p) === "A");
+    await root.close();
+  }
+
+  console.log("\nBOT_COOP coalition");
+  {
+    // GameState drops coalition allies from its enemy view.
+    const gs = freshGameState(); // selfId = "me"
+    gs.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "ally", position: [51, 50] }),
+        enemy({ bot_id: "foe", position: [52, 50] }),
+      ]),
+    );
+    check("enemies() sees both bots before friendlies set", gs.enemies().length === 2, gs.enemies().map((e) => e.bot_id));
+    gs.setFriendlies(new Set(["ally"]));
+    const afterFilter = gs.enemies();
+    check("enemies() excludes a friendly ally", afterFilter.length === 1 && afterFilter[0]!.bot_id === "foe", afterFilter.map((e) => e.bot_id));
+
+    // Three bots on one GLOBAL bus form a coalition. They learn each other's ids
+    // (friendlies), pool enemy sightings, and focus the lowest-HP non-ally.
+    const bus = new MemoryBus();
+    const coopA = new Coalition(bus, () => "A");
+    const coopB = new Coalition(bus, () => "B");
+    const coopC = new Coalition(bus, () => "C");
+    await coopA.start();
+    await coopB.start();
+    await coopC.start();
+
+    const pos = [0, 0] as [number, number];
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", pos, hp: 100, enemies: [{ id: "e1", hp: 80, pos }, { id: "e2", hp: 30, pos }], focusVote: "e2" });
+    // C mistakenly reports ally "A" as an enemy at 1 HP — the coalition must NOT
+    // focus-fire it (guards against a friendly-classification race).
+    coopC.report({ ts: Date.now(), botId: "C", name: "C", pos, hp: 100, enemies: [{ id: "A", hp: 1, pos }, { id: "e9", hp: 40, pos }], focusVote: "A" });
+    await new Promise((r) => setTimeout(r, 10)); // flush pub/sub
+
+    check("B learns allies A and C (friendlyIds)", coopB.friendlyIds().has("A") && coopB.friendlyIds().has("C"), [...coopB.friendlyIds()]);
+    check("a bot does not list itself as a friendly", !coopA.friendlyIds().has("A"), [...coopA.friendlyIds()]);
+    check("coalition focus = lowest-HP true enemy (e2 @30)", coopB.focus() === "e2", coopB.focus());
+    check("coalition never focus-fires a friendly (skips A @1)", coopB.focus() !== "A", coopB.focus());
+    check("pooled intel crosses the fog (B sees A-reported e2)", coopB.focus() === "e2", coopB.focus());
+
+    // Coalition rides the global channel, not a per-bot scope.
+    check("coalition uses the global coop channel", Channels.coop === "arena:coop", Channels.coop);
+    coopA.stop();
+    coopB.stop();
+    coopC.stop();
     await bus.close();
   }
 

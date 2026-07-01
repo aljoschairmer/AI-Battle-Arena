@@ -29,6 +29,44 @@ const role = RoleSchema.parse(str("ROLE", "all"));
 const bus = BusSchema.parse(str("BUS", "memory"));
 const arenaHttpBase = str("ARENA_HTTP_BASE", "https://arena.angel-serv.com").replace(/\/$/, "");
 
+// One key per bot. ARENA_API_KEYS (comma-separated) runs several bots in
+// parallel; otherwise fall back to the single ARENA_API_KEY.
+function csv(name: string): string[] {
+  return str(name)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+const apiKeys: string[] = (() => {
+  const many = csv("ARENA_API_KEYS");
+  if (many.length) return many;
+  const one = str("ARENA_API_KEY");
+  return one ? [one] : [];
+})();
+const botNameBase = str("BOT_NAME", "NeuralReaper");
+const botColorBase = str("BOT_COLOR", "#00d4ff");
+const BOT_PALETTE = ["#00d4ff", "#ff5252", "#7c4dff", "#00e676", "#ffab00", "#ff4081", "#18ffff", "#c6ff00"];
+
+export interface BotInstance {
+  index: number;
+  apiKey: string;
+  name: string;
+  color: string;
+  /** Bus channel/KV prefix isolating this bot ("" for a lone bot). */
+  scope: string;
+}
+
+const botInstances: BotInstance[] = apiKeys.map((key, i) => {
+  const multi = apiKeys.length > 1;
+  return {
+    index: i,
+    apiKey: key,
+    name: multi ? `${botNameBase}-${i + 1}` : botNameBase,
+    color: multi ? (BOT_PALETTE[i % BOT_PALETTE.length] as string) : botColorBase,
+    scope: multi ? `bot${i}:` : "",
+  };
+});
+
 export const config = {
   role,
   bus,
@@ -43,13 +81,22 @@ export const config = {
     // Auth method for the bot WebSocket. "message" (default) = direct-message
     // auth, which works; "query" = the documented ?key= path, broken server-side.
     wsAuth: (str("ARENA_WS_AUTH", "message") === "query" ? "query" : "message") as "message" | "query",
-    apiKey: str("ARENA_API_KEY"),
-    botName: str("BOT_NAME", "NeuralReaper"),
-    botColor: str("BOT_COLOR", "#00d4ff"),
+    // First key kept for back-compat/single-bot; `bots` is the full list.
+    apiKey: apiKeys[0] ?? "",
+    botName: botNameBase,
+    botColor: botColorBase,
+    bots: botInstances,
   },
 
   redis: {
     url: str("REDIS_URL", "redis://127.0.0.1:6379"),
+  },
+
+  // Bot-to-bot cooperation: when enabled, all of OUR parallel bots form a
+  // coalition — they don't attack each other, they focus-fire a shared target,
+  // and they share enemy intel over a global bus channel.
+  coop: {
+    enabled: str("BOT_COOP", "false").toLowerCase() === "true",
   },
 
   openrouter: {
@@ -84,10 +131,10 @@ export const runsEngine = role === "engine" || role === "all";
 export const runsBrain = role === "brain" || role === "all";
 
 export function assertConfigForRole(): void {
-  if (runsEngine && !config.arena.apiKey) {
+  if (runsEngine && config.arena.bots.length === 0) {
     throw new Error(
-      "ARENA_API_KEY is required to run the engine. Generate one with `npm run keygen` " +
-        "or POST https://arena.angel-serv.com/api/v1/keys/generate, then set it in .env.",
+      "No bot key configured. Set ARENA_API_KEY (single bot) or ARENA_API_KEYS=key1,key2,... " +
+        "(multiple bots in parallel). Generate keys with `npm run keygen`.",
     );
   }
   if (role === "all" && bus === "redis") {

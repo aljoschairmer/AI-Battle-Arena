@@ -1,11 +1,10 @@
 import { EventEmitter } from "node:events";
 import WebSocket from "ws";
+import type { Logger } from "pino";
 import { child } from "../shared/logger";
 import { wsProxyAgent } from "../shared/proxy";
 import { TokenBucket } from "../shared/ratelimit";
 import type { ClientMessage, ServerMessage } from "../types/protocol";
-
-const log = child("arena:ws");
 
 export interface ArenaSocketEvents {
   connected: [import("../types/protocol").ConnectedMsg];
@@ -47,6 +46,7 @@ export class ArenaSocket extends EventEmitter {
   private authSentThisConn = false;
   private gotServerMessage = false;
   private warnedBackendDown = false;
+  private readonly log: Logger;
 
   constructor(
     private readonly wsUrl: string,
@@ -56,8 +56,11 @@ export class ArenaSocket extends EventEmitter {
     // an auth frame. "query" = legacy ?key= path (broken server-side; kept for
     // when/if the arena fixes it).
     private readonly authMode: "message" | "query" = "message",
+    // Optional per-bot label so parallel bots' socket logs are distinguishable.
+    private readonly label: string = "",
   ) {
     super();
+    this.log = child(this.label ? `arena:ws:${this.label}` : "arena:ws");
   }
 
   start(): void {
@@ -86,7 +89,7 @@ export class ArenaSocket extends EventEmitter {
         : this.wsUrl;
     this.authSentThisConn = false;
     this.gotServerMessage = false;
-    log.info({ attempt: this.reconnectAttempts, authMode: this.authMode }, "connecting to arena");
+    this.log.info({ attempt: this.reconnectAttempts, authMode: this.authMode }, "connecting to arena");
 
     const ws = new WebSocket(url, {
       // Keep the socket warm; the arena AFK timeout is ~3s of game time but the
@@ -108,13 +111,13 @@ export class ArenaSocket extends EventEmitter {
 
     ws.on("open", () => {
       this.reconnectAttempts = 0;
-      log.info("websocket open");
+      this.log.info("websocket open");
       // Authenticate immediately via the working direct-message path. Sent
       // outside the rate limiter — this one frame must land before anything else.
       if (this.authMode === "message" && this.apiKey) {
         this.sendImmediate({ type: "auth", api_key: this.apiKey });
         this.authSentThisConn = true;
-        log.debug("sent auth frame");
+        this.log.debug("sent auth frame");
       }
       this.emit("open");
     });
@@ -123,14 +126,14 @@ export class ArenaSocket extends EventEmitter {
 
     ws.on("close", (code: number, reasonBuf: Buffer) => {
       const reason = reasonBuf.toString();
-      log.warn({ code, reason }, "websocket closed");
+      this.log.warn({ code, reason }, "websocket closed");
       // We upgraded and sent a correctly-formatted auth frame, but the arena
       // dropped the socket without ever replying (no `connected`, no error).
       // The transport + auth are correct, so this is the arena's bot backend
       // failing to accept the session — surface it clearly, once.
       if (this.authSentThisConn && !this.gotServerMessage && !this.warnedBackendDown) {
         this.warnedBackendDown = true;
-        log.error(
+        this.log.error(
           "Upgraded (101) and sent a valid auth frame, but the arena never replied with " +
             "'connected' and closed the socket. The handshake and auth format are correct, so this " +
             "is the arena's bot backend not accepting connections (matches bots_online=0 and an " +
@@ -143,7 +146,7 @@ export class ArenaSocket extends EventEmitter {
     });
 
     ws.on("error", (err: Error) => {
-      log.warn({ err: err.message }, "websocket error");
+      this.log.warn({ err: err.message }, "websocket error");
       // A plain HTTP status (not 101) on the handshake means an intermediary ate
       // the upgrade. Emit an actionable, one-time diagnostic instead of letting
       // the user stare at a cryptic reconnect loop.
@@ -157,7 +160,7 @@ export class ArenaSocket extends EventEmitter {
               "points to a WebSocket-blocking proxy (e.g. Zscaler SSL inspection). Exempt " +
               "arena.angel-serv.com from SSL inspection, run off the inspected network, or set " +
               "HTTPS_PROXY to a proxy that tunnels WebSockets. REST features are unaffected.";
-        log.error({ err: err.message }, `WebSocket upgrade was refused (no 101 Switching Protocols). ${hint}`);
+        this.log.error({ err: err.message }, `WebSocket upgrade was refused (no 101 Switching Protocols). ${hint}`);
       }
       // 'close' fires after 'error'; reconnect is handled there.
     });
@@ -170,7 +173,7 @@ export class ArenaSocket extends EventEmitter {
     this.reconnectAttempts += 1;
     const delay = Math.min(1000 * 2 ** Math.min(this.reconnectAttempts, 5), 30_000);
     const jitter = Math.floor(Math.random() * 500);
-    log.info({ delayMs: delay + jitter }, "scheduling reconnect");
+    this.log.info({ delayMs: delay + jitter }, "scheduling reconnect");
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.shouldRun) this.connect();
@@ -182,7 +185,7 @@ export class ArenaSocket extends EventEmitter {
     try {
       msg = JSON.parse(data.toString()) as ServerMessage;
     } catch (e) {
-      log.warn({ err: (e as Error).message }, "failed to parse server frame");
+      this.log.warn({ err: (e as Error).message }, "failed to parse server frame");
       return;
     }
     this.gotServerMessage = true;
@@ -203,7 +206,7 @@ export class ArenaSocket extends EventEmitter {
     if (!this.bucket.tryTake(1)) {
       this.droppedSinceLastWarn += 1;
       if (this.droppedSinceLastWarn % 20 === 1) {
-        log.debug({ dropped: this.droppedSinceLastWarn }, "rate limiter dropping messages");
+        this.log.debug({ dropped: this.droppedSinceLastWarn }, "rate limiter dropping messages");
       }
       return false;
     }
@@ -211,7 +214,7 @@ export class ArenaSocket extends EventEmitter {
       this.ws.send(JSON.stringify(msg));
       return true;
     } catch (e) {
-      log.warn({ err: (e as Error).message }, "send failed");
+      this.log.warn({ err: (e as Error).message }, "send failed");
       return false;
     }
   }
@@ -222,7 +225,7 @@ export class ArenaSocket extends EventEmitter {
     try {
       this.ws.send(JSON.stringify(msg));
     } catch (e) {
-      log.warn({ err: (e as Error).message }, "immediate send failed");
+      this.log.warn({ err: (e as Error).message }, "immediate send failed");
     }
   }
 

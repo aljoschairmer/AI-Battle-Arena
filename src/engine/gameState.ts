@@ -70,6 +70,9 @@ export class GameState {
   /** Per-enemy velocity estimate [dCol, dRow] per tick, for prediction/leading. */
   private enemyVel: Record<string, GridVec> = {};
 
+  /** Arena bot_ids of our own coalition — never treated as enemies (BOT_COOP). */
+  private friendlies: Set<string> = new Set();
+
   /** Lazily-built, per-tick-cached threat field (see threatField()). */
   private threatCache: { tick: number; field: ThreatField } | null = null;
 
@@ -197,9 +200,15 @@ export class GameState {
     return this.self?.position ?? [0, 0];
   }
 
+  /** Update the coalition friendly set (their arena bot_ids). */
+  setFriendlies(ids: Set<string>): void {
+    this.friendlies = ids;
+  }
+
   enemies(): NearbyBot[] {
     return this.entities.filter(
-      (e): e is NearbyBot => e.type === "bot" && e.bot_id !== this.selfId && e.is_alive,
+      (e): e is NearbyBot =>
+        e.type === "bot" && e.bot_id !== this.selfId && !this.friendlies.has(e.bot_id) && e.is_alive,
     );
   }
 

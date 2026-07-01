@@ -9,6 +9,8 @@ export interface LoadoutAgentInput {
   meta: {
     leaderboardTop: { name: string; elo: number; kills: number }[];
     weaponPopularity: Record<string, number>;
+    /** Live weapon-balance telemetry (tier + meta_score + balance direction). */
+    weaponMeta: { weapon: string; tier: string; meta_score: number; balance: string }[];
     ourStats: {
       elo: number;
       kills: number;
@@ -53,6 +55,9 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       "Balance survivability and damage — glass cannons die to the shrinking zone and ganks.",
       "",
       "Decision priority (apply top-down, stop at first strong signal):",
+      "0. weapon_meta — LIVE balance telemetry: each weapon's tier (S>A>B>C) + meta_score + balance direction",
+      "   (buffing/nerfing). Strongly prefer the highest-tier weapon unless a hard counter-pick applies; a",
+      "   'buffing' S/A weapon is the safest default this round.",
       "1. lobby_weapons_seen — THIS round's enemy weapons. Hard counter-picks: 3+ melee → bow/staff; 3+ ranged → daggers/grapple; mixed → sword/spear.",
       "2. learning_insights.recommended_weapon — proven best weapon for this meta. Use it UNLESS lobby counter-pick strongly disagrees.",
       "3. round_modifier — hazard_storm/fast_zone: ranged + high speed; pickup_surge: high speed (daggers/grapple); double_bounty: high attack (bow/daggers).",
@@ -78,6 +83,7 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
     return JSON.stringify(
       {
         round_modifier: request.context.roundModifier || "none",
+        weapon_meta: meta.weaponMeta.slice(0, 7),
         bots_in_arena: meta.arenaBotsConnected,
         stat_budget: c.statBudget,
         stat_min: c.statMin,
