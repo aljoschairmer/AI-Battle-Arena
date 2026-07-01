@@ -93,25 +93,32 @@ export class Orchestrator {
   constructor(private readonly bus: Bus) {}
 
   async start(): Promise<void> {
-    // Resume version numbering so the Engine's "newer-only" filter keeps working.
-    const seeded = await this.bus.getKV<Directive>(Keys.currentDirective);
-    if (seeded) {
-      this.version = seeded.version;
-      this.directive = seeded;
-    }
+    // Resume state from the KV mirror. Best-effort: a Redis outage at boot must
+    // not kill the brain (defaults are fine; the Engine tolerates a version
+    // reset via its ts-based freshness check).
+    try {
+      // Resume version numbering so the Engine's "newer-only" filter keeps working.
+      const seeded = await this.bus.getKV<Directive>(Keys.currentDirective);
+      if (seeded) {
+        this.version = seeded.version;
+        this.directive = seeded;
+      }
 
-    // Restore persisted insights from previous session if available.
-    const savedInsights = await this.bus.getKV<LearningInsights>(Keys.learningInsights);
-    if (savedInsights) {
-      this.insights = savedInsights;
-      log.info({ lessons: this.insights.lessons.length, round: this.insights.analysedThroughRound }, "restored learning insights");
-    }
+      // Restore persisted insights from previous session if available.
+      const savedInsights = await this.bus.getKV<LearningInsights>(Keys.learningInsights);
+      if (savedInsights) {
+        this.insights = savedInsights;
+        log.info({ lessons: this.insights.lessons.length, round: this.insights.analysedThroughRound }, "restored learning insights");
+      }
 
-    // Restore the live tuning policy so learned knobs survive a restart.
-    const savedPolicy = await this.bus.getKV<EnginePolicy>(Keys.currentPolicy);
-    if (savedPolicy) {
-      this.policy = savedPolicy;
-      log.info({ v: savedPolicy.version }, "restored tuning policy");
+      // Restore the live tuning policy so learned knobs survive a restart.
+      const savedPolicy = await this.bus.getKV<EnginePolicy>(Keys.currentPolicy);
+      if (savedPolicy) {
+        this.policy = savedPolicy;
+        log.info({ v: savedPolicy.version }, "restored tuning policy");
+      }
+    } catch (e) {
+      log.warn({ err: (e as Error).message }, "KV seed read failed — starting on defaults");
     }
 
     this.unsubs.push(
@@ -161,11 +168,24 @@ export class Orchestrator {
       // Update opponent registry with live sightings.
       this.opponents.recordSighting(e.id, e.name, e.weapon, snap.round);
     }
-    // New round -> re-plan strategy.
+    // New round -> re-plan strategy. lastStrategyRound is recorded inside
+    // runStrategist only once it actually starts: if the previous round's
+    // strategist call is still in flight, the next snapshot (~500ms later)
+    // retries instead of the new round silently never getting a plan.
     if (snap.round !== this.lastStrategyRound) {
-      this.lastStrategyRound = snap.round;
       void this.runStrategist(snap);
     }
+  }
+
+  /**
+   * True while `snap` still describes the live round. Agent calls run for
+   * seconds (up to 2 timeouts + retry); a response computed against a snapshot
+   * from a finished round must be discarded, not published — the Engine has a
+   * round guard too, but the version bump alone would let a late tactic
+   * outrank the new round's strategist directive.
+   */
+  private stillCurrent(snap: GameSnapshot): boolean {
+    return this.latest !== null && this.latest.round === snap.round;
   }
 
   /** Periodic tactician pass over the freshest snapshot. */
@@ -179,7 +199,14 @@ export class Orchestrator {
     this.tacticianBusy = true;
     try {
       const out = await this.tactician.run({ snapshot: snap, current: this.directive });
-      if (out) this.applyTactic(out, snap);
+      if (out) {
+        if (this.stillCurrent(snap)) this.applyTactic(out, snap);
+        else
+          log.info(
+            { agent: "tactician", snapRound: snap.round, currentRound: this.latest?.round ?? -1 },
+            "late agent output discarded (round changed mid-call)",
+          );
+      }
     } finally {
       this.tacticianBusy = false;
     }
@@ -188,6 +215,7 @@ export class Orchestrator {
   private async runStrategist(snap: GameSnapshot): Promise<void> {
     if (this.strategistBusy) return;
     this.strategistBusy = true;
+    this.lastStrategyRound = snap.round;
     try {
       await this.refreshMeta();
       const out = await this.strategist.run({
@@ -199,7 +227,14 @@ export class Orchestrator {
           opponentProfiles: this.opponents.forPrompt(8),
         },
       });
-      if (out) this.applyStrategy(out, snap);
+      if (out) {
+        if (this.stillCurrent(snap)) this.applyStrategy(out, snap);
+        else
+          log.info(
+            { agent: "strategist", snapRound: snap.round, currentRound: this.latest?.round ?? -1 },
+            "late agent output discarded (round changed mid-call)",
+          );
+      }
     } finally {
       this.strategistBusy = false;
     }

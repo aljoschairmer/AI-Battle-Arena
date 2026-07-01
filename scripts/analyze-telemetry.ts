@@ -28,6 +28,7 @@ import type {
   TradeEvaluatedEvent,
   DodgeDecisionEvent,
   DodgeResolvedEvent,
+  ActionIssuedEvent,
   RoundBoundaryEvent,
 } from "../src/engine/telemetryLog";
 
@@ -108,6 +109,45 @@ function analyzeFile(path: string) {
           `(avg predicted advantage: ${(
             badEngages.reduce((s, t) => s + t.predictedAdvantage, 0) / badEngages.length
           ).toFixed(2)})`,
+      );
+    }
+  }
+
+  // --- action economy (pass-2 audit) ---
+  // The server silently rejects a shove inside its 1.5s (15-tick) cooldown and
+  // a use_gravity_well without a collected charge; both waste the whole tick.
+  const issued = events.filter((e): e is ActionIssuedEvent => e.t === "action_issued");
+  if (issued.length > 0) {
+    const byAction = new Map<string, number>();
+    for (const a of issued) byAction.set(a.action, (byAction.get(a.action) ?? 0) + 1);
+    console.log(`\nactions issued (${issued.length}):`);
+    for (const [action, count] of [...byAction.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${action.padEnd(18)} ${String(count).padStart(5)}`);
+    }
+    // Shove-cooldown violations: any shove issued <15 ticks after the previous one.
+    const shoveTicks = issued.filter((a) => a.action === "shove").map((a) => a.tick);
+    let shoveViolations = 0;
+    for (let i = 1; i < shoveTicks.length; i++) {
+      if (shoveTicks[i]! - shoveTicks[i - 1]! < 15) shoveViolations++;
+    }
+    if (shoveTicks.length > 0) {
+      console.log(
+        `  shove cooldown violations (<15 ticks apart): ${shoveViolations}/${shoveTicks.length}` +
+          (shoveViolations > 0 ? "  ⚠ rejected server-side, wasted ticks" : ""),
+      );
+    }
+    // Gravity-well spam: longest run of consecutive-tick use_gravity_well.
+    const gwTicks = issued.filter((a) => a.action === "use_gravity_well").map((a) => a.tick);
+    if (gwTicks.length > 0) {
+      let maxRun = 1;
+      let run = 1;
+      for (let i = 1; i < gwTicks.length; i++) {
+        run = gwTicks[i]! - gwTicks[i - 1]! <= 1 ? run + 1 : 1;
+        if (run > maxRun) maxRun = run;
+      }
+      console.log(
+        `  use_gravity_well issued: ${gwTicks.length}, longest consecutive-tick run: ${maxRun}` +
+          (maxRun > 3 ? "  ⚠ stall loop — combat preempted by rejected casts" : ""),
       );
     }
   }

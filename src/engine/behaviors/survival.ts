@@ -13,7 +13,7 @@ import type { GameState } from "../gameState";
 import { tradeAdvantage } from "../combatMath";
 import { profileFor } from "../weapons";
 import { telemetry } from "../telemetryLog";
-import { type DecisionContext, dodge, grappleTo, move, moveTo, shove } from "./context";
+import { attack, attackAt, type DecisionContext, dodge, grappleTo, move, moveTo, shove } from "./context";
 
 /**
  * Top survival priority: don't die to the environment. Handles the shrinking
@@ -316,6 +316,29 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
     return moveTo(tick, health.position);
   }
 
+  // Fire while kiting (ranged only): retreat outranks engage in the cascade,
+  // so without this branch a retreating bow/staff never shoots again at all —
+  // measured as the dominant loss mode for ranged loadouts (every simulated
+  // bow loss spent 18-76% of its ticks here emitting only moves; wins ~0% —
+  // docs/audit/pass2-phase2-observations.md). When the weapon is ready and the
+  // chaser is inside our range but not on top of us, a shot IS the best
+  // retreat tick: it costs no distance we weren't already conceding (one
+  // action per tick either way) and finishing the chaser ends the chase.
+  // Melee gets nothing here — a chaser behind us is out of range by
+  // definition of fleeing.
+  if (ctx.policy.retreatFireWhileKiting && self.weapon_ready && threat) {
+    const profile = profileFor(self.weapon);
+    const range = gs.effectiveAttackRange();
+    const dThreat = dist(me, threat.position);
+    if (profile.ranged && threat.has_los && !threat.is_dodging && dThreat <= range + 0.5 && dThreat > 1.6) {
+      if (self.weapon === "staff") {
+        return attackAt(tick, threat.bot_id, gs.predictEnemyPos(threat, ctx.policy.leadTicks));
+      }
+      const charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
+      return attack(tick, threat.bot_id, charged);
+    }
+  }
+
   // Kite down the threat gradient: step toward the least dangerous adjacent tile
   // (accounts for ALL enemies + zone + hazards, not just the nearest one).
   const fieldStep = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
@@ -374,7 +397,11 @@ function createSeparation(ctx: DecisionContext): ClientAction | null {
 
   const me = gs.position;
   const d = dist(me, threat.position);
-  if (d <= 1.5) return shove(tick, threat.bot_id);
+  // Spec: shove has a 1.5s cooldown the server enforces by rejection — a shove
+  // inside it wastes the whole tick standing still in a confirmed-bad trade,
+  // which is the exact opposite of what this function is for. Fall through to
+  // the grapple option instead when it's not ready.
+  if (d <= 1.5 && gs.shoveReady(tick)) return shove(tick, threat.bot_id);
 
   if (self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
     const away = gs.stepAwayFrom(threat.position);

@@ -36,11 +36,21 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
 
   // --- Spear: never charge a braced enemy — wait them out (Tuner-toggleable) ---
   if (ctx.policy.spearBraceWait && self.weapon === "spear" && target.brace_ready && d <= range + 1) {
-    // Don't attack into a brace — shove to disrupt if adjacent, otherwise wait
-    if (d <= 1.5 && !self.weapon_ready) {
+    // Don't attack into a brace — shove to disrupt if adjacent (respecting the
+    // spec's 1.5s shove cooldown; a shove inside it is rejected server-side).
+    if (d <= 1.5 && !self.weapon_ready && gs.shoveReady(tick)) {
       return shove(tick, target.bot_id);
     }
-    return null;
+    // HOLD the spacing ourselves. Returning null here does NOT mean "wait":
+    // the cascade guarantees positionForCombat claims the tick next, and its
+    // melee branch walks straight INTO the braced enemy — the exact thing
+    // this branch exists to avoid (pass-2 audit C3). Step down the threat
+    // gradient (or plain away) until the brace drops.
+    const holdStep = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+    if (holdStep) return move(tick, holdStep);
+    const back = stepAwayFrom(me, target.position);
+    if (gs.isSafeStep(me[0] + back[0], me[1] + back[1])) return move(tick, back);
+    return null; // truly boxed in — let the movement layer pick something
   }
 
   if (inRange) {
@@ -65,30 +75,41 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
       }
 
       // Daggers: strongly prefer hitting from the rear. Only defer to finish
-      // an ALREADY-nearly-complete flank (one step from the tile
-      // positionForCombat was steering us toward) — not from scratch, which
-      // would give up the current adjacency for an open-ended chase. This was
-      // previously a dead conditional (empty body, always fell through to a
-      // head-on attack) — see docs/audit/phase3-findings.md finding #3.
+      // an ALREADY-nearly-complete flank (one step from the facing-derived
+      // behind tile) — and only for a BOUNDED number of consecutive ticks.
+      // Both constraints are load-bearing: the behind tile moves when the
+      // target turns (and the old approach-angle heuristic moved it whenever
+      // WE stepped), so an unbounded defer chased a moving goalpost forever —
+      // measured as 0 attack actions across entire daggers rounds
+      // (docs/audit/pass2-phase2-observations.md). Past the streak cap we
+      // commit to head-on attacks until the situation changes.
       if (ctx.policy.daggerFlank && self.weapon === "daggers" && !target.rear_exposed) {
-        const behind = flankingPosition(me, target.position);
+        const behind = flankingPosition(me, target.position, target.facing);
         if (behind && chebyshev(me, behind) === 1 && gs.isPassable(behind[0], behind[1])) {
-          return null; // let positionForCombat take the final step
+          if (gs.noteFlankDefer(tick) <= ctx.policy.flankMaxDeferTicks) {
+            return null; // let positionForCombat take the final step
+          }
         }
       }
 
       return attack(tick, target.bot_id, charged);
     }
 
-    // Weapon on cooldown: use the tick productively
+    // Weapon on cooldown: use the tick productively. Shove options respect the
+    // spec's 1.5s shove cooldown (self-tracked; the server never echoes it):
+    // pre-fix this branch re-issued shove EVERY tick of the weapon cooldown
+    // window, and every rejected shove was a tick spent standing point-blank
+    // instead of taking the threat-aware step below (pass-2 audit C2).
     if (d <= 1.5) {
-      // Shove into a wall for bonus knockback/stun
-      if (target.near_impact_surface || directive.posture === "aggressive") {
-        return shove(tick, target.bot_id);
-      }
-      // Shield bash on disrupted target even off cooldown
-      if (self.weapon === "shield" && target.recently_disrupted_ticks > 0) {
-        return shove(tick, target.bot_id);
+      if (gs.shoveReady(tick)) {
+        // Shove into a wall for bonus knockback/stun
+        if (target.near_impact_surface || directive.posture === "aggressive") {
+          return shove(tick, target.bot_id);
+        }
+        // Shield bash on disrupted target even off cooldown
+        if (self.weapon === "shield" && target.recently_disrupted_ticks > 0) {
+          return shove(tick, target.bot_id);
+        }
       }
       // Not aggressive: step away while cooling rather than eat the enemy's
       // next swing point-blank. Threat-field-aware (accounts for every nearby
@@ -147,22 +168,23 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
 
 /**
  * Try to deploy a gravity well if:
- * - We have an active gravity well item (hazard_key_active acts as the trigger)
+ * - We hold a COLLECTED gravity-well charge (spec: use_gravity_well needs a
+ *   charge from a collected gravity_well pickup; without one it's rejected)
  * - There are 2+ enemies clustered within fog radius
  * Returns the action or null.
  *
- * Note: the server gives us gravity_well as a pickup item (use_item) or as a
- * direct action (use_gravity_well). We use the direct action targeting the
- * enemy cluster centroid.
+ * The believed charge count is tracked by GameState from our own issued
+ * actions (use_item on a gravity pickup = +1, use_gravity_well = -1). The
+ * previous gate — "a gravity_well pickup entity is visible on the ground" —
+ * was wrong in both directions (pass-2 audit C1): it cast with no charge
+ * (rejected, and at priority 6 the spam preempted combat), and after actually
+ * collecting the pickup the entity disappeared so a real charge could never
+ * be spent.
  */
 function tryGravityWell(ctx: DecisionContext): ClientAction | null {
   if (!ctx.policy.staffGravityWell) return null;
   const { gs, tick } = ctx;
-  // Only fire if we have the gravity well item active (indicated by a gravity_well pickup entity)
-  const hasGravityWell = gs.entities.some(
-    (e) => e.type === "pickup" && "pickup_type" in e && (e.pickup_type as string).includes("gravity"),
-  );
-  if (!hasGravityWell) return null;
+  if (gs.gravityCharges() <= 0) return null;
 
   const cluster = enemyCluster(ctx, 4);
   if (!cluster) return null;

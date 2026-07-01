@@ -22,6 +22,7 @@ import type {
   ConnectedMsg,
   GridVec,
   NearbyBot,
+  NearbyEntity,
   SelfState,
   StatBlock,
   TickMsg,
@@ -57,6 +58,13 @@ interface SimBot {
   cooldownTicks: number;
   cdRemaining: number;
   dodgeCd: number;
+  /** Spec: shove has a 1.5s cooldown (15 ticks); a shove inside it is rejected.
+   *  Pass-1's sim omitted this, which structurally hid (and rewarded) shove
+   *  spam — see docs/audit/pass2-phase1-trace.md C2. */
+  shoveCd: number;
+  /** Collected-but-unspent gravity_well pickup charges (spec: use_gravity_well
+   *  without one is rejected — the action is simply wasted). */
+  gravityCharges: number;
   invuln: number;
   stun: number;
   alive: boolean;
@@ -66,6 +74,13 @@ interface SimBot {
   ours: boolean;
   controller?: Controller;
   gs?: GameState;
+}
+
+interface SimPickup {
+  id: string;
+  type: string;
+  pos: GridVec;
+  taken: boolean;
 }
 
 // Combat stats come from the EXACT server formulas (shared/derived.ts) applied
@@ -78,7 +93,8 @@ function makeBot(id: string, name: string, weapon: Weapon, pos: GridVec, ours: b
     id, name, pos, hp: d.maxHp, maxHp: d.maxHp, weapon,
     damage: p.damage, attackMult: d.attackMult, defenseRed, range: p.baseRange,
     cooldownTicks: Math.max(1, Math.round(p.cooldown / DT)), cdRemaining: 0,
-    dodgeCd: 0, invuln: 0, stun: 0, alive: true, kills: 0, dmgDealt: 0, dmgTaken: 0, ours,
+    dodgeCd: 0, shoveCd: 0, gravityCharges: 0, invuln: 0, stun: 0, alive: true,
+    kills: 0, dmgDealt: 0, dmgTaken: 0, ours,
   };
 }
 
@@ -95,10 +111,10 @@ function stepToward(from: GridVec, to: GridVec): GridVec {
   return [clamp(from[0] + Math.sign(to[0] - from[0])), clamp(from[1] + Math.sign(to[1] - from[1]))];
 }
 
-function buildTick(self: SimBot, bots: SimBot[], tick: number, zoneRadius: number): TickMsg {
-  const nearby: NearbyBot[] = bots
+function buildTick(self: SimBot, bots: SimBot[], tick: number, zoneRadius: number, pickups: SimPickup[] = []): TickMsg {
+  const nearby: NearbyEntity[] = bots
     .filter((b) => b.alive && b.id !== self.id && euclid(b.pos, self.pos) <= FOG)
-    .map((b) => ({
+    .map<NearbyEntity>((b) => ({
       type: "bot", bot_id: b.id, name: b.name, position: b.pos, hp: b.hp, max_hp: b.maxHp,
       weapon: b.weapon, is_alive: true, avatar_color: "#f00", last_action: "idle",
       is_dodging: b.invuln > 0, is_stunned: b.stun > 0, facing: [1, 0],
@@ -107,6 +123,10 @@ function buildTick(self: SimBot, bots: SimBot[], tick: number, zoneRadius: numbe
       has_los: true, attack_range: b.range, can_attack: b.cdRemaining <= 0,
       threat_score: Math.min(10, profileFor(b.weapon).estDps / 4),
     }));
+  for (const p of pickups) {
+    if (p.taken || euclid(p.pos, self.pos) > FOG) continue;
+    nearby.push({ type: "pickup", pickup_id: p.id, pickup_type: p.type, position: p.pos });
+  }
   const distC = euclid(self.pos, ZONE_CENTER);
   const s: SelfState = {
     bot_id: self.id, position: self.pos, hp: self.hp, max_hp: self.maxHp, speed: 6,
@@ -161,7 +181,7 @@ function baselineDecide(self: SimBot, bots: SimBot[], tick: number, zoneRadius: 
   return { type: "action", tick, action: "move_to", target_position: tgt.pos };
 }
 
-function apply(bot: SimBot, a: ClientAction, bots: SimBot[]): void {
+function apply(bot: SimBot, a: ClientAction, bots: SimBot[], pickups: SimPickup[] = []): void {
   if (bot.stun > 0) return;
   const byId = (id: string) => bots.find((b) => b.id === id && b.alive);
   switch (a.action) {
@@ -176,11 +196,28 @@ function apply(bot: SimBot, a: ClientAction, bots: SimBot[]): void {
       break;
     }
     case "shove": {
+      // Spec: 1.5s cooldown — a shove inside it is rejected (wasted tick).
+      if (bot.shoveCd > 0) break;
       const t = a.target ? byId(a.target) : undefined;
       if (t && cheb(bot.pos, t.pos) <= 1) {
+        bot.shoveCd = 15;
         t.pos = [clamp(2 * t.pos[0] - bot.pos[0]), clamp(2 * t.pos[1] - bot.pos[1])];
         t.stun = 2;
       }
+      break;
+    }
+    case "use_item": {
+      const p = pickups.find((x) => x.id === a.item_id && !x.taken);
+      if (!p || euclid(bot.pos, p.pos) > 2) break;
+      p.taken = true;
+      if (/health/i.test(p.type)) bot.hp = Math.min(bot.maxHp, bot.hp + 30);
+      else if (/gravity/i.test(p.type)) bot.gravityCharges += 1;
+      break;
+    }
+    case "use_gravity_well": {
+      // Spec: needs a collected charge; without one the action is rejected —
+      // the tick is simply wasted (which is exactly the cost being audited).
+      if (bot.gravityCharges > 0) bot.gravityCharges -= 1;
       break;
     }
     case "attack": {
@@ -201,16 +238,32 @@ function apply(bot: SimBot, a: ClientAction, bots: SimBot[]): void {
 
 interface MatchResult { won: boolean; kills: number; dmgDealt: number; dmgTaken: number; survived: number }
 
+// Our loadout is overridable so weapon-specific behavior paths (daggers flank,
+// bow/staff kiting + retreat, staff gravity wells) can actually be exercised —
+// pass 1 only ever ran sword, leaving those paths audited statically only.
+const OUR_WEAPON: Weapon = (() => {
+  const w = process.env.SIM_WEAPON as Weapon | undefined;
+  return w && w in WEAPONS ? w : "sword";
+})();
+// SIM_PICKUPS=1 spawns health + gravity_well pickups so the pickup/gravity
+// subsystems (0% coverage in pass 1) are reachable.
+const WITH_PICKUPS = process.env.SIM_PICKUPS === "1";
+
 function runMatch(policy: EnginePolicy, aggression: number, seed: number, roundId = `sim_${seed}`): MatchResult {
   telemetry.setBotId("ours");
   telemetry.roundStart(roundId);
   const r = rng(seed);
   const spawn = (): GridVec => [10 + Math.floor(r() * 80), 10 + Math.floor(r() * 80)];
   const oppWeapons: Weapon[] = ["sword", "bow", "daggers", "spear", "staff"];
+  const pickups: SimPickup[] = [];
+  if (WITH_PICKUPS) {
+    for (let i = 0; i < 4; i++) pickups.push({ id: `hp${i}`, type: "health_pack", pos: spawn(), taken: false });
+    for (let i = 0; i < 2; i++) pickups.push({ id: `gw${i}`, type: "gravity_well", pos: spawn(), taken: false });
+  }
 
   const bots: SimBot[] = [];
-  // Ours fights with the fight-power-optimal sword build; baselines use neutral.
-  const ours = makeBot("ours", "Ours", "sword", spawn(), true, DEFAULT_STATS.sword);
+  // Ours fights with the fight-power-optimal build for OUR_WEAPON; baselines use neutral.
+  const ours = makeBot("ours", "Ours", OUR_WEAPON, spawn(), true, DEFAULT_STATS[OUR_WEAPON]);
   ours.controller = new Controller();
   ours.gs = new GameState();
   ours.gs.applyConnected({
@@ -219,7 +272,7 @@ function runMatch(policy: EnginePolicy, aggression: number, seed: number, roundI
     stat_max: 10, timeout_seconds: 10, last_loadout: null,
   } as ConnectedMsg);
   ours.gs.setConfirmedAttackRange(ours.range);
-  ours.gs.setSelfCombat({ weaponDamage: ours.damage, attackMult: ours.attackMult, cooldownSeconds: WEAPONS.sword.cooldown, maxHp: ours.maxHp, defenseRed: ours.defenseRed });
+  ours.gs.setSelfCombat({ weaponDamage: ours.damage, attackMult: ours.attackMult, cooldownSeconds: WEAPONS[OUR_WEAPON].cooldown, maxHp: ours.maxHp, defenseRed: ours.defenseRed });
   ours.controller.setPolicy(policy);
   ours.controller.setDirective({ ...DEFAULT_DIRECTIVE, aggression, source: "sim" });
   ours.controller.onRoundStart();
@@ -236,18 +289,19 @@ function runMatch(policy: EnginePolicy, aggression: number, seed: number, roundI
     const actions = new Map<string, ClientAction>();
     for (const b of alive) {
       if (b.ours && b.controller && b.gs) {
-        b.gs.applyTick(buildTick(b, bots, tick, zoneRadius));
+        b.gs.applyTick(buildTick(b, bots, tick, zoneRadius, pickups));
         actions.set(b.id, b.controller.decide(b.gs));
       } else {
         actions.set(b.id, baselineDecide(b, bots, tick, zoneRadius));
       }
     }
-    for (const b of alive) apply(b, actions.get(b.id)!, bots);
+    for (const b of alive) apply(b, actions.get(b.id)!, bots, pickups);
 
     for (const b of bots) {
       if (!b.alive) continue;
       if (b.cdRemaining > 0) b.cdRemaining--;
       if (b.dodgeCd > 0) b.dodgeCd--;
+      if (b.shoveCd > 0) b.shoveCd--;
       if (b.invuln > 0) b.invuln--;
       if (b.stun > 0) b.stun--;
       if (euclid(b.pos, ZONE_CENTER) > zoneRadius) {
@@ -292,7 +346,7 @@ function main(): void {
   // (SIM_MATCHES=3) with TELEMETRY_LOG=1 instead of the full sweep — default
   // behaviour/output is unchanged when unset.
   const MATCHES = Number(process.env.SIM_MATCHES) || 24;
-  console.log(`\nSelf-play sweep — 1 bot (sword) vs 5 baselines, ${MATCHES} matches each\n`);
+  console.log(`\nSelf-play sweep — 1 bot (${OUR_WEAPON}) vs 5 baselines${WITH_PICKUPS ? " + pickups" : ""}, ${MATCHES} matches each\n`);
   const rows: { name: string; r: ReturnType<typeof score> }[] = [];
   for (const cfg of CONFIGS) {
     const policy = mergePolicy(DEFAULT_POLICY, { ...cfg.patch, aggression: cfg.aggression });
