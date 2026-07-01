@@ -1,4 +1,5 @@
-import type { Weapon } from "../types/protocol";
+import type { StatBlock, Weapon } from "../types/protocol";
+import { BUILD_FLOORS, optimizeBuild } from "../shared/derived";
 
 /**
  * Static weapon knowledge used by the reactive controller. Authoritative ranges
@@ -47,13 +48,19 @@ export function profileFor(weapon: Weapon): WeaponProfile {
   return WEAPONS[weapon] ?? WEAPONS.sword;
 }
 
-/** A balanced default stat spread per weapon (sums to the 20 budget, 1..10 each). */
-export const DEFAULT_STATS: Record<Weapon, { hp: number; speed: number; attack: number; defense: number }> = {
-  sword: { hp: 6, speed: 5, attack: 6, defense: 3 },
-  daggers: { hp: 5, speed: 7, attack: 5, defense: 3 },
-  shield: { hp: 8, speed: 4, attack: 3, defense: 5 },
-  spear: { hp: 6, speed: 5, attack: 5, defense: 4 },
-  bow: { hp: 6, speed: 5, attack: 6, defense: 3 },
-  staff: { hp: 6, speed: 5, attack: 6, defense: 3 },
-  grapple: { hp: 6, speed: 6, attack: 5, defense: 3 },
-};
+/**
+ * Fight-power-optimal default stat spread per weapon (budget 20, 1..10 each),
+ * derived from the arena's Stat Simulator formulas (see shared/derived.ts).
+ * Because effective_hp already fully credits defense (and defense only buys
+ * 3%/pt, capped at 30%), the optimum splits the budget ~evenly between HP and
+ * attack over a per-weapon mobility floor and keeps defense low — noticeably
+ * more aggressive than a flat 5/5/5/5, which is what we want. Computed once so
+ * the values stay consistent with the math and can't silently drift.
+ */
+export const DEFAULT_STATS: Record<Weapon, StatBlock> = Object.fromEntries(
+  (Object.keys(WEAPONS) as Weapon[]).map((w) => {
+    const p = WEAPONS[w];
+    const f = BUILD_FLOORS[w];
+    return [w, optimizeBuild(p.damage, p.cooldown, { speedFloor: f.speedFloor, defenseFloor: f.defenseFloor })];
+  }),
+) as Record<Weapon, StatBlock>;

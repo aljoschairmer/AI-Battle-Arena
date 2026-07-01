@@ -33,6 +33,32 @@ multi-bot, free-for-all rounds. Key facts discovered from the live API:
 `connected` → send `select_loadout` within ~10 s → `lobby` → `round_start` → `tick` ×N (you reply
 with one `action` per tick) → `round_end` → repeat. Rate limit: 25 msg/s; AFK timeout ~3 s.
 
+### Stat system (reverse-engineered from the site's Stat Simulator)
+
+The public **Simulator** tab exposes the exact derived-stat formulas. We encoded them in
+[`src/shared/derived.ts`](src/shared/derived.ts) — verified to reproduce every number the
+simulator prints (max HP 150, speed 5.5, atk mult 1.5×, def red 15%, effective HP 176 for a
+5/5/5/5 sword, plus its whole DPS/hits-to-kill table):
+
+| Derived | Formula | Range |
+| --- | --- | --- |
+| Max HP | `100 + 10·hp` | 110–200 |
+| Speed | `3 + 0.5·speed` tiles/s | 3.5–8.0 |
+| Attack mult | `1 + 0.1·attack` | 1.1–2.0× |
+| Defense reduction | `0.03·defense` (capped 30%) | 3–30% |
+| **Effective HP** | `max_hp / (1 − def_red)` | — |
+| Damage/hit | `weapon_base · atk_mult · (1 − enemy_def_red)` | — |
+
+**What this tells us about builds.** Because *effective HP* already fully credits defense, and
+defense only buys 3%/point (max 30%), it's the **weakest** stat per point. Fight power
+(≈ `effective_hp × attack_mult`) is maximized by splitting the budget ~evenly between **HP and
+attack** over a per-weapon mobility floor and keeping defense low — the flat 5/5/5/5 the site
+recommends as a "starter" leaves ~9% fight power on the table. So our default builds
+([`optimizeBuild`](src/shared/derived.ts) brute-forces the fight-power-optimal legal spread) are
+deliberately more aggressive, e.g. sword `hp7 spd5 atk6 def2` (eHP 181, 1.6× atk) instead of a
+defensive spread. The LLM loadout agent gets these formulas and the fallback's real eHP/DPS in
+its prompt, so its picks are grounded in the same math.
+
 ---
 
 ## Architecture
