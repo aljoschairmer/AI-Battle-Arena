@@ -39,6 +39,8 @@ services:
       ARENA_WS_ORIGIN: ${ARENA_WS_ORIGIN:-https://arena.angel-serv.com}
       BOT_NAME: ${BOT_NAME:-NeuralReaper}
       BOT_COLOR: ${BOT_COLOR:-#00d4ff}
+      # Bot-to-bot coalition (needs 2+ keys in ARENA_API_KEYS to matter).
+      BOT_COOP: ${BOT_COOP:-false}
       # Behind a corporate proxy (e.g. Zscaler)? Set these in .env so the engine
       # can route/tunnel WebSockets and bypass SSL inspection for the arena host.
       HTTPS_PROXY: ${HTTPS_PROXY:-}
@@ -64,8 +66,13 @@ services:
       OPENROUTER_MODEL_STRATEGIST: ${OPENROUTER_MODEL_STRATEGIST:-anthropic/claude-sonnet-4.6}
       OPENROUTER_MODEL_LOADOUT: ${OPENROUTER_MODEL_LOADOUT:-anthropic/claude-sonnet-4.6}
       OPENROUTER_MODEL_TACTICIAN: ${OPENROUTER_MODEL_TACTICIAN:-anthropic/claude-haiku-4.5}
+      OPENROUTER_MODEL_COORDINATOR: ${OPENROUTER_MODEL_COORDINATOR:-anthropic/claude-sonnet-4.6}
       TACTICIAN_INTERVAL_MS: ${TACTICIAN_INTERVAL_MS:-2500}
       LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-8000}
+      # Bot-to-bot coalition — must match the engine's setting so the squad-wide
+      # Coordinator agent starts (needs BOT_COOP=true, an LLM key, and 2+ bots).
+      BOT_COOP: ${BOT_COOP:-false}
+      COOP_COORDINATOR_INTERVAL_MS: ${COOP_COORDINATOR_INTERVAL_MS:-3000}
       # Route REST + OpenRouter calls through the corporate proxy if present.
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
