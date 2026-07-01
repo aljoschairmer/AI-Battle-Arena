@@ -9,6 +9,7 @@ import type {
   BountyResponse,
   GenerateKeyResponse,
   LeaderboardResponse,
+  WeaponStatsResponse,
 } from "../types/protocol";
 
 const log = child("arena:rest");
@@ -85,6 +86,10 @@ export class ArenaRest {
     return this.request<BountyResponse>("/api/v1/bounties");
   }
 
+  getWeaponStats(): Promise<WeaponStatsResponse> {
+    return this.request<WeaponStatsResponse>("/api/v1/weapon-stats");
+  }
+
   getMap(): Promise<ArenaMapResponse> {
     return this.request<ArenaMapResponse>("/api/v1/arena/map");
   }
@@ -121,6 +126,15 @@ export class ArenaRest {
       return await this.getBounties();
     } catch (e) {
       log.debug({ err: (e as Error).message }, "bounty fetch failed");
+      return null;
+    }
+  }
+
+  async tryGetWeaponStats(): Promise<WeaponStatsResponse | null> {
+    try {
+      return await this.getWeaponStats();
+    } catch (e) {
+      log.debug({ err: (e as Error).message }, "weapon stats fetch failed");
       return null;
     }
   }

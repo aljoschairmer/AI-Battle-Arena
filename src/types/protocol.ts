@@ -484,6 +484,23 @@ export interface BotConfig {
   default_loadout: LoadoutSelection;
 }
 
+/** Live weapon-balance telemetry from GET /api/v1/weapon-stats. Weapons are
+ * dynamically balanced, so tier/meta_score/damage change round to round. */
+export interface WeaponStatEntry {
+  weapon: Weapon;
+  tier: string; // S | A | B | C | ...
+  meta_score: number;
+  damage_exact?: number;
+  cooldown?: number;
+  grid_range?: number;
+  balance_direction?: string; // buffing | nerfing | steady
+  hit_rate?: number;
+}
+
+export interface WeaponStatsResponse {
+  entries: WeaponStatEntry[];
+}
+
 export interface BotStats {
   bot_id: string;
   name: string;

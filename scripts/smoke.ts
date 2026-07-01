@@ -289,10 +289,23 @@ async function run(): Promise<void> {
     const step = gu.threatField().safestStep([50, 50], (c, r) => gu.isPassable(c, r));
     check("threat field steps away from the cluster (-col)", step !== null && step[0] <= 0, step);
 
-    // Tactical disengage: a losing, un-pinned fight yields a move, not an attack.
+    // Tactical disengage: only when HURT does a losing, un-pinned fight yield a
+    // move instead of an attack (healthy bots commit — the anti-passive change).
     const ctl = new Controller();
-    const a = ctl.decide(gu);
-    check("losing trade -> disengage (move, not attack)", a.action === "move" || a.action === "move_to", a);
+    const hurt = freshGameState();
+    hurt.applyTick(
+      tickFrom(self({ hp: 64, max_hp: 160 }), [
+        enemy({ bot_id: "t", hp: 220, max_hp: 240, position: [52, 50], can_attack: true }),
+        enemy({ bot_id: "g1", position: [51, 49], can_attack: true }),
+        enemy({ bot_id: "g2", position: [51, 51], can_attack: true }),
+      ]),
+    );
+    const a = ctl.decide(hurt);
+    check("losing trade while HURT -> disengage (move, not attack)", a.action === "move" || a.action === "move_to", a);
+
+    // Healthy in the same spot -> commit to the fight (no longer over-defensive).
+    const b = ctl.decide(gu);
+    check("losing trade while HEALTHY -> engages (not a plain retreat move)", b.action !== "move", b);
   }
 
   console.log("\nEnginePolicy (live LLM tuning)");

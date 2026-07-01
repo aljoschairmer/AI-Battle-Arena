@@ -90,8 +90,12 @@ export class Controller {
     //    pinned to it, in which case disengage toward safer ground.
     const target = selectTarget(ctx);
     if (target) {
+      // Only bail from a bad trade when we're actually HURT — while healthy we
+      // commit to fights (a bot that disengages every marginal trade reads as
+      // passive and hands over ground + damage uptime). A pinned target is never
+      // abandoned.
       const forced = this.directive.primaryTargetId === target.bot_id;
-      if (!forced && !shouldEngage(ctx, target)) {
+      if (!forced && gs.hpFraction() < 0.6 && !shouldEngage(ctx, target)) {
         const bail = tacticalDisengage(ctx);
         if (bail) return bail;
       }

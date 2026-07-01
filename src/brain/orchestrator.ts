@@ -31,6 +31,7 @@ const log = child("brain");
 interface MetaCache {
   leaderboardTop: { name: string; elo: number; kills: number }[];
   bounties: { name: string; bounty: number }[];
+  weaponMeta: { weapon: string; tier: string; meta_score: number; balance: string }[];
   fetchedAt: number;
 }
 
@@ -78,7 +79,7 @@ export class Orchestrator {
   private policy: EnginePolicy = { ...DEFAULT_POLICY };
 
   private readonly weaponSeen = new Map<string, number>();
-  private meta: MetaCache = { leaderboardTop: [], bounties: [], fetchedAt: 0 };
+  private meta: MetaCache = { leaderboardTop: [], bounties: [], weaponMeta: [], fetchedAt: 0 };
   private ourStats: OurStats | null = null;
 
   // Self-improvement state
@@ -221,6 +222,7 @@ export class Orchestrator {
       meta: {
         leaderboardTop: this.meta.leaderboardTop,
         weaponPopularity: this.weaponPopularity(),
+        weaponMeta: this.meta.weaponMeta,
         ourStats: req.context.ourStats,
         arenaBotsConnected: req.context.arenaBotsConnected,
         insights: this.insights,
@@ -393,9 +395,10 @@ export class Orchestrator {
 
   private async refreshMeta(): Promise<void> {
     if (Date.now() - this.meta.fetchedAt < 30_000) return;
-    const [lb, bounty] = await Promise.all([
+    const [lb, bounty, wstats] = await Promise.all([
       arenaRest.tryGetLeaderboard(16),
       arenaRest.tryGetBounties(),
+      arenaRest.tryGetWeaponStats(),
     ]);
     if (lb) {
       // Sync all leaderboard entries into the opponent registry.
@@ -412,6 +415,11 @@ export class Orchestrator {
       bounties: Array.isArray(bounty?.entries)
         ? bounty!.entries.map((e) => ({ name: e.name, bounty: e.bounty ?? 0 }))
         : this.meta.bounties,
+      weaponMeta: Array.isArray(wstats?.entries)
+        ? wstats!.entries
+            .map((e) => ({ weapon: e.weapon, tier: e.tier, meta_score: e.meta_score, balance: e.balance_direction ?? "steady" }))
+            .sort((a, b) => b.meta_score - a.meta_score)
+        : this.meta.weaponMeta,
       fetchedAt: Date.now(),
     };
   }
