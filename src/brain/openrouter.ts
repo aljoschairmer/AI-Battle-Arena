@@ -34,6 +34,37 @@ export class OpenRouter {
     return this.apiKey.length > 0;
   }
 
+  /**
+   * Boot-time connectivity check: a cheap authenticated GET /models. Confirms
+   * the key is valid AND the network path (incl. any corporate proxy / Zscaler)
+   * actually reaches openrouter.ai — so a silent "no LLM calls" surfaces as a
+   * concrete error at startup instead of a mystery.
+   */
+  async healthCheck(): Promise<{ ok: boolean; detail: string }> {
+    if (!this.enabled) return { ok: false, detail: "OPENROUTER_API_KEY is empty" };
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8000);
+    try {
+      const res = await fetch(`${this.base}/models`, {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      if (!res.ok) return { ok: false, detail: `HTTP ${res.status}: ${text.slice(0, 160)}` };
+      let count = 0;
+      try {
+        count = (JSON.parse(text) as { data?: unknown[] }).data?.length ?? 0;
+      } catch {
+        /* ignore body parse */
+      }
+      return { ok: true, detail: `reachable, ${count} models` };
+    } catch (e) {
+      return { ok: false, detail: (e as Error).message };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
   async chat(req: ChatRequest): Promise<string> {
     const timeout = req.timeoutMs ?? config.openrouter.timeoutMs;
     let lastErr: unknown;

@@ -31,6 +31,35 @@ export const FallbackBehaviorEnum = z.enum([
   "hunter",
 ]);
 
+// --- lenient coercers --------------------------------------------------------
+// LLMs routinely overshoot a max length or a numeric bound. Rejecting the whole
+// object over that (Zod's default) silently drops an otherwise-good decision —
+// which is exactly the "agent output failed validation" bug. These helpers
+// TRUNCATE / CLAMP instead of failing, so a cosmetic overflow never costs us a
+// turn. Hard constraints (enums, required shape) are still enforced.
+
+/** Free text: coerce to string and truncate to `max`; never rejects. */
+const looseText = (max: number) =>
+  z.preprocess(
+    (v) => (typeof v === "string" ? v.slice(0, max) : v == null ? "" : String(v).slice(0, max)),
+    z.string(),
+  );
+
+/** Array of short strings: clamp count + per-item length; never rejects. */
+const looseStrArray = (maxItems: number, maxLen: number) =>
+  z.preprocess(
+    (v) =>
+      Array.isArray(v) ? v.slice(0, maxItems).map((x) => String(x).slice(0, maxLen)) : [],
+    z.array(z.string()),
+  );
+
+/** Number clamped to [lo, hi] with a fallback for non-numbers; never rejects. */
+const clampedNum = (lo: number, hi: number, fallback: number) =>
+  z.preprocess(
+    (v) => (typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback),
+    z.number(),
+  );
+
 export const StatBlockSchema = z.object({
   hp: z.number(),
   speed: z.number(),
@@ -42,7 +71,7 @@ export const LoadoutOutputSchema = z.object({
   weapon: WeaponEnum,
   stats: StatBlockSchema,
   fallback_behavior: FallbackBehaviorEnum,
-  reasoning: z.string().max(500).default(""),
+  reasoning: looseText(500),
 });
 export type LoadoutOutput = z.infer<typeof LoadoutOutputSchema>;
 
@@ -50,31 +79,31 @@ export const StrategyOutputSchema = z.object({
   posture: PostureEnum,
   objective: ObjectiveEnum,
   primaryTargetId: z.string().nullable().default(null),
-  avoidTargetIds: z.array(z.string()).max(8).default([]),
-  hpRetreatFraction: z.number().min(0).max(1).default(0.3),
-  aggression: z.number().min(0).max(1).default(0.6),
-  reasoning: z.string().max(500).default(""),
+  avoidTargetIds: looseStrArray(8, 100),
+  hpRetreatFraction: clampedNum(0, 1, 0.3),
+  aggression: clampedNum(0, 1, 0.6),
+  reasoning: looseText(500),
 });
 export type StrategyOutput = z.infer<typeof StrategyOutputSchema>;
 
 export const TacticOutputSchema = z.object({
   posture: PostureEnum,
   primaryTargetId: z.string().nullable().default(null),
-  avoidTargetIds: z.array(z.string()).max(8).default([]),
-  hpRetreatFraction: z.number().min(0).max(1).default(0.3),
-  aggression: z.number().min(0).max(1).default(0.6),
-  reasoning: z.string().max(400).default(""),
+  avoidTargetIds: looseStrArray(8, 100),
+  hpRetreatFraction: clampedNum(0, 1, 0.3),
+  aggression: clampedNum(0, 1, 0.6),
+  reasoning: looseText(400),
 });
 export type TacticOutput = z.infer<typeof TacticOutputSchema>;
 
 export const PostureEnumSimple = z.enum(["aggressive", "balanced", "defensive"]);
 
 export const AnalystOutputSchema = z.object({
-  lessons: z.array(z.string().max(200)).max(6).default([]),
+  lessons: looseStrArray(6, 200),
   recommendedWeapon: WeaponEnum.nullable().default(null),
-  recommendedWeaponReason: z.string().max(300).default(""),
-  dangerousOpponents: z.array(z.string()).max(5).default([]),
-  weakOpponents: z.array(z.string()).max(5).default([]),
+  recommendedWeaponReason: looseText(300),
+  dangerousOpponents: looseStrArray(5, 100),
+  weakOpponents: looseStrArray(5, 100),
   suggestedPosture: PostureEnumSimple.default("balanced"),
 });
 export type AnalystOutput = z.infer<typeof AnalystOutputSchema>;
@@ -104,6 +133,6 @@ export const PolicyPatchSchema = z.object({
   daggerFlank: z.boolean().optional(),
   spearBraceWait: z.boolean().optional(),
   staffGravityWell: z.boolean().optional(),
-  reasoning: z.string().max(300).default(""),
+  reasoning: looseText(300),
 });
 export type PolicyPatch = z.infer<typeof PolicyPatchSchema>;

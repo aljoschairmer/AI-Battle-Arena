@@ -15,6 +15,7 @@ import { normalizeStats } from "../src/shared/stats";
 import { chooseFallbackLoadout } from "../src/engine/loadout";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
 import { tradeAdvantage } from "../src/engine/combatMath";
+import { PolicyPatchSchema, StrategyOutputSchema, AnalystOutputSchema } from "../src/brain/agents/schemas";
 import type {
   ConnectedMsg,
   NearbyBot,
@@ -347,6 +348,32 @@ async function run(): Promise<void> {
     ctl.setPolicy({ ...DEFAULT_POLICY, posture: "defensive" });
     const defen = ctl.decide(cooling());
     check("policy posture defensive -> not shove (Tuner controls posture)", defen.action !== "shove", defen);
+  }
+
+  console.log("\nAgent output leniency (no dropped decisions)");
+  {
+    // Over-long reasoning must NOT reject the whole Tuner patch (the reported bug).
+    const p = PolicyPatchSchema.safeParse({ dodgeEagerness: 0.7, reasoning: "x".repeat(1200) });
+    check("tuner patch with 1200-char reasoning parses", p.success, p.success ? "ok" : p.error?.issues?.[0]);
+    check("...and reasoning is truncated", p.success === true && p.data.reasoning.length <= 300, p.success && p.data.reasoning.length);
+
+    // Out-of-range numbers get clamped, not rejected.
+    const s = StrategyOutputSchema.safeParse({
+      posture: "aggressive",
+      objective: "free_for_all",
+      aggression: 5, // > 1
+      hpRetreatFraction: -3, // < 0
+      avoidTargetIds: Array.from({ length: 20 }, (_, i) => `bot${i}`), // > 8
+      reasoning: "y".repeat(900),
+    });
+    check("strategy output with bad numbers parses", s.success, s.success ? "ok" : s.error?.issues?.[0]);
+    check("...aggression clamped to <=1", s.success === true && s.data.aggression <= 1, s.success && s.data.aggression);
+    check("...avoidTargetIds clamped to <=8", s.success === true && s.data.avoidTargetIds.length <= 8, s.success && s.data.avoidTargetIds.length);
+
+    // Analyst lessons over the item/length caps are truncated, not rejected.
+    const a = AnalystOutputSchema.safeParse({ lessons: Array.from({ length: 12 }, () => "z".repeat(500)) });
+    check("analyst output with too many long lessons parses", a.success, a.success ? "ok" : a.error?.issues?.[0]);
+    check("...lessons clamped to <=6", a.success === true && a.data.lessons.length <= 6, a.success && a.data.lessons.length);
   }
 
   console.log("\nMemoryBus");
