@@ -47,7 +47,15 @@ async function main(): Promise<void> {
     }
     if (runsEngine) {
       handles.push(
-        await startEngine(bbus, { apiKey: b.apiKey, botName: b.name, botColor: b.color, label: b.name }),
+        await startEngine(bbus, {
+          apiKey: b.apiKey,
+          botName: b.name,
+          botColor: b.color,
+          label: b.name,
+          // Coalition comms ride the GLOBAL (unscoped) bus so every parallel bot
+          // hears every other; scoped buses would isolate them from each other.
+          coopBus: config.coop.enabled ? bus : undefined,
+        }),
       );
     }
   }

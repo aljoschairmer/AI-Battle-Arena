@@ -29,6 +29,7 @@ import { emergencyDodge, retreatAndHeal, survivalBehavior, tacticalDisengage } f
 export class Controller {
   private directive: Directive = { ...DEFAULT_DIRECTIVE };
   private policy: EnginePolicy = { ...DEFAULT_POLICY };
+  private coopFocus: string | null = null;
   private minesPlacedThisRound = 0;
   private lastMineTick = -1000;
 
@@ -47,6 +48,11 @@ export class Controller {
 
   getPolicy(): EnginePolicy {
     return this.policy;
+  }
+
+  /** Coalition focus-fire target (used when the Brain hasn't pinned one). */
+  setCoopFocus(id: string | null): void {
+    this.coopFocus = id;
   }
 
   onRoundStart(): void {
@@ -129,7 +135,10 @@ export class Controller {
       0,
       Math.min(1, p.aggression + (d.aggression - DEFAULT_DIRECTIVE.aggression)),
     );
-    return { ...d, aggression, posture: brainSet ? d.posture : p.posture };
+    // Fall back to the coalition's focus-fire target when the Brain hasn't
+    // pinned one (selectTarget still only commits if it's visible + worthwhile).
+    const primaryTargetId = d.primaryTargetId ?? this.coopFocus;
+    return { ...d, aggression, posture: brainSet ? d.posture : p.posture, primaryTargetId };
   }
 
   /**

@@ -169,6 +169,24 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
   };
 }
 
+/**
+ * Bot-to-bot coalition message, broadcast on the global bus by each of our
+ * parallel bots (when BOT_COOP=true). Lets allies avoid friendly fire, focus a
+ * shared target, and share enemy sightings beyond their own fog.
+ */
+export interface CoopMessage {
+  ts: number;
+  /** Our arena bot_id (so allies know which bot_ids are friendly). */
+  botId: string;
+  name: string;
+  pos: GridVec;
+  hp: number;
+  /** Enemies we currently see (never includes friendlies). */
+  enemies: { id: string; hp: number; pos: GridVec }[];
+  /** Our vote for the focus-fire target (lowest-HP enemy we see), or null. */
+  focusVote: string | null;
+}
+
 /** A chosen loadout plus rationale, produced by the loadout agent. */
 export interface LoadoutPlan extends LoadoutSelection {
   reasoning: string;

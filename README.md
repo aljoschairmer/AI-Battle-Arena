@@ -232,6 +232,30 @@ ARENA_API_KEYS=key1,key2 docker compose up --build
 unset. Each bot runs N× the LLM cost (its own brain), so size your OpenRouter budget
 accordingly.
 
+### Coalition play (`BOT_COOP`)
+
+Set `BOT_COOP=true` to make your parallel bots cooperate instead of fighting as
+strangers. Coalition comms ride a single **global** bus channel (`arena:coop`),
+outside the per-bot scopes, so every one of your bots hears every other. Each bot
+broadcasts its position and visible enemies ~2×/sec; from that pooled view the
+coalition gains three things:
+
+- **No friendly fire** — allies learn each other's arena `bot_id`s and drop them
+  from targeting entirely (they're filtered out of `enemies()`).
+- **Focus fire** — when the Brain hasn't pinned a target, every ally converges on
+  the lowest-HP enemy *anyone* can see, collapsing opponents faster.
+- **Shared intel** — enemy sightings are pooled, so a bot can react to a threat
+  a teammate spotted before it enters its own view.
+
+It's purely additive and best-effort: with a single bot it's a no-op, and if a
+peer goes silent its stale entries time out (allies after 8s, reported enemies
+after 4s) and everyone falls back to fighting solo.
+
+```bash
+# .env:  ARENA_API_KEYS=key1,key2,key3   BOT_COOP=true
+npm run dev
+```
+
 ## Configuration
 
 All via env (see `.env.example`). Highlights:
@@ -241,6 +265,8 @@ All via env (see `.env.example`). Highlights:
 | `ROLE` | `all` | `engine` \| `brain` \| `all` |
 | `BUS` | `memory` | `redis` for split processes; `memory` requires `ROLE=all` |
 | `ARENA_API_KEY` | — | required for the engine; `npm run keygen` |
+| `ARENA_API_KEYS` | — | comma-separated keys ⇒ one bot per key, run in parallel |
+| `BOT_COOP` | `false` | `true` ⇒ your parallel bots form a coalition (no friendly fire, focus fire, shared intel) |
 | `OPENROUTER_API_KEY` | — | empty ⇒ pure deterministic bot (no LLM cost) |
 | `OPENROUTER_MODEL_*` | claude-sonnet-4.6 / claude-haiku-4.5 | any current OpenRouter model slug |
 | `TACTICIAN_INTERVAL_MS` | `2500` | mid-round re-evaluation cadence |

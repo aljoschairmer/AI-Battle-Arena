@@ -21,6 +21,7 @@ import type {
   Weapon,
 } from "../types/protocol";
 import { Controller } from "./controller";
+import { Coalition } from "./coop";
 import { GameState } from "./gameState";
 import { chooseFallbackLoadout } from "./loadout";
 import { buildSnapshot } from "./telemetry";
@@ -28,6 +29,8 @@ import { buildSnapshot } from "./telemetry";
 // Publish a strategy snapshot to the Brain ~2x/sec. The control loop runs every
 // tick (10x/sec) regardless — snapshots are only for the slow LLM layer.
 const SNAPSHOT_EVERY_TICKS = 5;
+// Broadcast to the coalition ~2x/sec.
+const COOP_EVERY_TICKS = 5;
 
 export interface EngineHandle {
   stop(): Promise<void>;
@@ -39,6 +42,8 @@ export interface EngineOptions {
   botName?: string;
   botColor?: string;
   label?: string;
+  /** Global (unscoped) bus for bot-to-bot coalition comms; enables BOT_COOP. */
+  coopBus?: Bus;
 }
 
 export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<EngineHandle> {
@@ -60,6 +65,8 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     config.arena.wsAuth,
     label,
   );
+  // Bot-to-bot coalition (only when a global coop bus was provided).
+  const coop = opts.coopBus ? new Coalition(opts.coopBus, () => gs.selfId) : null;
 
   let loadoutSent = false;
   // The arena locks the loadout once a game/round is active ("Cannot change
@@ -329,6 +336,27 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       roundEnemyWeaponsSeen[e.weapon] = (roundEnemyWeaponsSeen[e.weapon] ?? 0) + 1;
     }
 
+    // Bot-to-bot coalition: exclude allies from targeting, focus-fire a shared
+    // enemy, and periodically broadcast what we see. Best-effort and additive —
+    // if disabled or peers are silent, the bot fights exactly as before.
+    if (coop && gs.selfId) {
+      gs.setFriendlies(coop.friendlyIds());
+      controller.setCoopFocus(coop.focus());
+      if (gs.tick % COOP_EVERY_TICKS === 0) {
+        const seen = gs.enemies().slice(0, 8).map((e) => ({ id: e.bot_id, hp: e.hp, pos: e.position }));
+        const focusVote = seen.slice().sort((a, b) => a.hp - b.hp)[0]?.id ?? null;
+        coop.report({
+          ts: Date.now(),
+          botId: gs.selfId,
+          name: botName,
+          pos: gs.position,
+          hp: gs.self?.hp ?? 0,
+          enemies: seen,
+          focusVote,
+        });
+      }
+    }
+
     const action = controller.decide(gs);
     socket.send(action);
 
@@ -406,8 +434,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     log.warn({ reason: msg.reason }, "kicked by server");
   });
 
+  if (coop) await coop.start();
+
   socket.start();
-  log.info({ publishToBrain, bus: config.bus }, "engine started");
+  log.info({ publishToBrain, bus: config.bus, coop: coop !== null }, "engine started");
 
   return {
     async stop() {
@@ -415,6 +445,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       unsubDirective();
       unsubPolicy();
       unsubLoadout();
+      coop?.stop();
       socket.stop();
       log.info("engine stopped");
     },

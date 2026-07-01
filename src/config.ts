@@ -92,6 +92,13 @@ export const config = {
     url: str("REDIS_URL", "redis://127.0.0.1:6379"),
   },
 
+  // Bot-to-bot cooperation: when enabled, all of OUR parallel bots form a
+  // coalition — they don't attack each other, they focus-fire a shared target,
+  // and they share enemy intel over a global bus channel.
+  coop: {
+    enabled: str("BOT_COOP", "false").toLowerCase() === "true",
+  },
+
   openrouter: {
     apiKey: str("OPENROUTER_API_KEY"),
     base: str("OPENROUTER_BASE", "https://openrouter.ai/api/v1").replace(/\/$/, ""),

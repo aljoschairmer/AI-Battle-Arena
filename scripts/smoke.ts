@@ -10,6 +10,8 @@
  */
 import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
+import { Coalition } from "../src/engine/coop";
+import { Channels } from "../src/bus";
 import { MemoryBus } from "../src/bus/memory";
 import { scoped } from "../src/bus";
 import { normalizeStats } from "../src/shared/stats";
@@ -424,6 +426,52 @@ async function run(): Promise<void> {
     check("scoped KV isolated across bots", (await b.getKV("arena:kv:policy")) === null);
     check("scoped KV readable in same scope", ((await a.getKV<{ p: string }>("arena:kv:policy"))?.p) === "A");
     await root.close();
+  }
+
+  console.log("\nBOT_COOP coalition");
+  {
+    // GameState drops coalition allies from its enemy view.
+    const gs = freshGameState(); // selfId = "me"
+    gs.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "ally", position: [51, 50] }),
+        enemy({ bot_id: "foe", position: [52, 50] }),
+      ]),
+    );
+    check("enemies() sees both bots before friendlies set", gs.enemies().length === 2, gs.enemies().map((e) => e.bot_id));
+    gs.setFriendlies(new Set(["ally"]));
+    const afterFilter = gs.enemies();
+    check("enemies() excludes a friendly ally", afterFilter.length === 1 && afterFilter[0]!.bot_id === "foe", afterFilter.map((e) => e.bot_id));
+
+    // Three bots on one GLOBAL bus form a coalition. They learn each other's ids
+    // (friendlies), pool enemy sightings, and focus the lowest-HP non-ally.
+    const bus = new MemoryBus();
+    const coopA = new Coalition(bus, () => "A");
+    const coopB = new Coalition(bus, () => "B");
+    const coopC = new Coalition(bus, () => "C");
+    await coopA.start();
+    await coopB.start();
+    await coopC.start();
+
+    const pos = [0, 0] as [number, number];
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", pos, hp: 100, enemies: [{ id: "e1", hp: 80, pos }, { id: "e2", hp: 30, pos }], focusVote: "e2" });
+    // C mistakenly reports ally "A" as an enemy at 1 HP — the coalition must NOT
+    // focus-fire it (guards against a friendly-classification race).
+    coopC.report({ ts: Date.now(), botId: "C", name: "C", pos, hp: 100, enemies: [{ id: "A", hp: 1, pos }, { id: "e9", hp: 40, pos }], focusVote: "A" });
+    await new Promise((r) => setTimeout(r, 10)); // flush pub/sub
+
+    check("B learns allies A and C (friendlyIds)", coopB.friendlyIds().has("A") && coopB.friendlyIds().has("C"), [...coopB.friendlyIds()]);
+    check("a bot does not list itself as a friendly", !coopA.friendlyIds().has("A"), [...coopA.friendlyIds()]);
+    check("coalition focus = lowest-HP true enemy (e2 @30)", coopB.focus() === "e2", coopB.focus());
+    check("coalition never focus-fires a friendly (skips A @1)", coopB.focus() !== "A", coopB.focus());
+    check("pooled intel crosses the fog (B sees A-reported e2)", coopB.focus() === "e2", coopB.focus());
+
+    // Coalition rides the global channel, not a per-bot scope.
+    check("coalition uses the global coop channel", Channels.coop === "arena:coop", Channels.coop);
+    coopA.stop();
+    coopB.stop();
+    coopC.stop();
+    await bus.close();
   }
 
   console.log("");
