@@ -3,6 +3,8 @@ import type { LearningInsights } from "../../shared/memory";
 import type { LoadoutRequest } from "../../types/internal";
 import { deriveStats, fightPower } from "../../shared/derived";
 import { WEAPONS } from "../../engine/weapons";
+import { WEAPON_ROLE_META, counterScore } from "../../engine/matchups";
+import type { Weapon } from "../../types/protocol";
 import { Agent } from "./base";
 import { LoadoutOutputSchema, type LoadoutOutput } from "./schemas";
 
@@ -68,7 +70,9 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       "0. weapon_meta — LIVE balance telemetry: each weapon's tier (S>A>B>C) + meta_score + balance direction",
       "   (buffing/nerfing). Strongly prefer the highest-tier weapon unless a hard counter-pick applies; a",
       "   'buffing' S/A weapon is the safest default this round.",
-      "1. lobby_weapons_seen — THIS round's enemy weapons. Hard counter-picks: 3+ melee → bow/staff; 3+ ranged → daggers/grapple; mixed → sword/spear.",
+      "1. matchup_scores — count-weighted matchup edge of each available weapon vs the lobby (from the arena's",
+      "   Strategy matrix, -2..+2). Prefer the HIGHEST matchup_score when the lobby is known; it already encodes the",
+      "   hard counters (daggers hard-counter bow & staff; staff hard-counters shield; bow loses hard to daggers).",
       "2. learning_insights.recommended_weapon — proven best weapon for this meta. Use it UNLESS lobby counter-pick strongly disagrees.",
       "3. round_modifier — hazard_storm/fast_zone: ranged + high speed; pickup_surge: high speed (daggers/grapple); double_bounty: high attack (bow/daggers).",
       "4. our_lifetime_stats — kd_ratio < 1.0: add 2 pts to hp+defense; bots_in_arena > 8: add 1 pt to hp (more chaos = more punishment).",
@@ -105,19 +109,27 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       speed_tiles_s: Number(fbDerived.speed.toFixed(1)),
       fight_power: Math.round(fightPower(fbWeapon.damage, fbWeapon.cooldown, fb.stats)),
     };
+    // Matchup edge of each candidate weapon vs the observed lobby (Strategy
+    // matrix). Only meaningful when we actually saw lobby weapons.
+    const lobby = request.context.lobbyWeapons;
+    const haveLobby = Object.keys(lobby).length > 0;
+    const matchupScores = haveLobby
+      ? (Object.keys(WEAPONS) as Weapon[])
+          .map((w) => ({ weapon: w, score: Number(counterScore(w, lobby).toFixed(2)), counters: WEAPON_ROLE_META[w].counter }))
+          .sort((a, b) => b.score - a.score)
+      : null;
     return JSON.stringify(
       {
         round_modifier: request.context.roundModifier || "none",
         fight_power_optimal_fallback: fallbackDerived,
+        matchup_scores: matchupScores,
         weapon_meta: meta.weaponMeta.slice(0, 7),
         bots_in_arena: meta.arenaBotsConnected,
         stat_budget: c.statBudget,
         stat_min: c.statMin,
         stat_max: c.statMax,
         our_lifetime_stats: meta.ourStats,
-        lobby_weapons_seen: Object.keys(request.context.lobbyWeapons).length > 0
-          ? request.context.lobbyWeapons
-          : null,
+        lobby_weapons_seen: haveLobby ? lobby : null,
         learning_insights: ins.lessons.length > 0 ? {
           lessons: ins.lessons,
           recommended_weapon: ins.recommendedWeapon,

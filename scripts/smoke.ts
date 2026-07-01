@@ -19,6 +19,7 @@ import { chooseFallbackLoadout } from "../src/engine/loadout";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
 import { deriveStats, damagePerHit, dpsInto, fightPower, optimizeBuild } from "../src/shared/derived";
 import { WEAPONS } from "../src/engine/weapons";
+import { matchupRating, counterScore, rankCounterPicks } from "../src/engine/matchups";
 import { tradeAdvantage } from "../src/engine/combatMath";
 import { PolicyPatchSchema, StrategyOutputSchema, AnalystOutputSchema } from "../src/brain/agents/schemas";
 import type {
@@ -469,6 +470,32 @@ async function run(): Promise<void> {
         fightPower(WEAPONS.sword.damage, WEAPONS.sword.cooldown, { hp: 5, speed: 5, attack: 5, defense: 5 }),
       opt,
     );
+  }
+
+  console.log("\nWeapon matchups (Strategy tab) + counter-pick");
+  {
+    // The two hard counters the Strategy tab calls out explicitly.
+    check("daggers hard-counter bow (+2)", matchupRating("daggers", "bow") === 2, matchupRating("daggers", "bow"));
+    check("bow loses hard to daggers (-2)", matchupRating("bow", "daggers") === -2, matchupRating("bow", "daggers"));
+    check("staff hard-counters shield (+2)", matchupRating("staff", "shield") === 2, matchupRating("staff", "shield"));
+    check("mirror is even (0)", matchupRating("sword", "sword") === 0);
+    check("unrated grapple pairing is even (0)", matchupRating("grapple", "bow") === 0);
+
+    // Counter score vs a bow-heavy lobby: daggers strongly positive, bow neutral.
+    const bowLobby = { bow: 3, shield: 1 } as Partial<Record<Weapon, number>>;
+    check("daggers score high vs bow-heavy lobby", counterScore("daggers", bowLobby) > 1, counterScore("daggers", bowLobby));
+    check("bow ~neutral in a bow mirror lobby", counterScore("bow", bowLobby) < counterScore("daggers", bowLobby));
+
+    // rankCounterPicks flips an even base in favour of the counter weapon.
+    const ranked = rankCounterPicks(["bow", "daggers"], bowLobby, () => 0.8);
+    check("counter-pick beats equal-base weapon vs its counter", ranked[0]!.weapon === "daggers", ranked);
+
+    // Deterministic fallback honours the lobby: a bow-heavy lobby -> daggers.
+    const lo = chooseFallbackLoadout({ lobbyWeapons: { bow: 4 } });
+    check("fallback counter-picks daggers vs 4 bows", lo.weapon === "daggers", lo.weapon);
+    // With no lobby intel it falls back to the standalone meta pick.
+    const loNoIntel = chooseFallbackLoadout({});
+    check("fallback with no lobby is a legal weapon", ["sword", "bow", "daggers", "shield", "spear", "staff", "grapple"].includes(loNoIntel.weapon), loNoIntel.weapon);
   }
 
   console.log("\nBOT_COOP coalition");

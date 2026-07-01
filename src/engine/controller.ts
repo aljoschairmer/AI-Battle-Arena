@@ -154,7 +154,9 @@ export class Controller {
     if (!this.policy.mineWhenChased) return null;
     const self = gs.self;
     if (!self) return null;
-    if (this.minesPlacedThisRound >= 6) return null;
+    // Canonical cap from /api/v1/bot-setup: "Max 3 per bot" — placing more just
+    // wastes the action (server rejects it).
+    if (this.minesPlacedThisRound >= 3) return null;
     if (gs.tick - this.lastMineTick < this.policy.mineCooldownTicks) return null;
 
     const me = gs.position;

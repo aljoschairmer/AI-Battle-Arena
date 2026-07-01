@@ -1,6 +1,7 @@
 import type { FallbackBehavior, LoadoutSelection, Weapon } from "../types/protocol";
 import { normalizeStats } from "../shared/stats";
 import { BUILD_FLOORS, optimizeBuild } from "../shared/derived";
+import { rankCounterPicks } from "./matchups";
 import { WEAPONS } from "./weapons";
 
 /**
@@ -30,6 +31,8 @@ export function chooseFallbackLoadout(opts: {
   budget?: number;
   min?: number;
   max?: number;
+  /** Weapon counts seen in the pre-round lobby — drives the counter-pick. */
+  lobbyWeapons?: Partial<Record<Weapon, number>>;
 }): LoadoutSelection {
   const available = opts.availableWeapons?.length
     ? opts.availableWeapons
@@ -37,9 +40,14 @@ export function chooseFallbackLoadout(opts: {
 
   const mod = (opts.modifier ?? "").toLowerCase();
 
-  const weapon = available
-    .map((w) => ({ w, score: WEAPONS[w].metaScore + modifierBonus(w, mod) }))
-    .sort((a, b) => b.score - a.score)[0]!.w;
+  // Rank by standalone strength (metaScore + modifier fit) blended with the
+  // matchup edge against whatever weapons the lobby is fielding (Strategy-tab
+  // matrix). With no lobby intel the counter term is 0 and this is pure meta.
+  const weapon = rankCounterPicks(
+    available,
+    opts.lobbyWeapons ?? {},
+    (w) => WEAPONS[w].metaScore + modifierBonus(w, mod),
+  )[0]!.weapon;
 
   // Fight-power-optimal spread for the ACTUAL round budget/bounds (the arena can
   // vary them per round), honouring the weapon's mobility/durability floors.

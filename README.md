@@ -59,6 +59,13 @@ deliberately more aggressive, e.g. sword `hp7 spd5 atk6 def2` (eHP 181, 1.6× at
 defensive spread. The LLM loadout agent gets these formulas and the fallback's real eHP/DPS in
 its prompt, so its picks are grounded in the same math.
 
+**Counter-picking.** The dashboard's Strategy tab publishes a weapon-matchup matrix (e.g. daggers
+hard-counter bow & staff; staff hard-counters shield). It's encoded in
+[`src/engine/matchups.ts`](src/engine/matchups.ts): both the deterministic fallback and the LLM
+agent score each weapon's count-weighted matchup edge against the weapons seen in the lobby. A
+fuller dump of the canonical spec (actions, arena systems, pickups, formulas, the matrix) lives in
+[`docs/arena-spec.md`](docs/arena-spec.md), sourced from `GET /api/v1/bot-setup`.
+
 ---
 
 ## Architecture
