@@ -65,14 +65,35 @@ Also unchanged, as expected: dodge-hit-despite-min-danger stayed at 0 (Phase 3 a
 this as unreproduced and low-priority — no fix was attempted for it, consistent with "don't fix
 what the evidence doesn't support fixing").
 
+## Post-Phase-4 follow-ups
+
+### survivalBehavior vs. emergencyDodge (the deferred priority-order call)
+
+Implemented, without reordering `controller.ts`'s cascade. `survivalBehavior` now has one
+narrow exception at its top: if `imminentHitTriggers` (a shared helper extracted from
+`emergencyDodge`, covering only the "a charged shot is already committed and about to land"
+case — deliberately *not* `emergencyDodge`'s broader reactive/pressure triggers like
+`justHit`/`meleePressure`, which stay lower priority than environmental survival) finds
+something and dodging is actually possible, `survivalBehavior` calls `emergencyDodge` itself
+and returns its action directly. Priority 2 still runs first and still normally wins; this is
+a targeted exception inside it, not a reorder of priorities 2 and 3.
+
+Two things worth being precise about:
+
+- **Telemetry attribution**: since `survivalBehavior` can now return a `dodge` action,
+  `controller.ts`'s `tick_decision` logging checks the actual action type and logs it under
+  `emergency_dodge`, not `survive_zone_hazards` — otherwise the priority-claim distribution the
+  whole Phase 2/3 methodology depends on would silently mislabel these ticks.
+- **Not exercised by the offline simulator**: `scripts/simulate.ts`'s `buildTick()` hardcodes
+  every simulated enemy's `charged_shot_ready: false` and `bow_charge_level: 0` — the exact
+  fields this fix's trigger depends on. The full-sweep numbers above are therefore identical
+  before and after this specific fix; it's verified only by the new smoke assertion (a
+  hand-built scenario: outside zone + a charged shot lined up + dodge ready → must dodge, where
+  it previously couldn't even reach that branch), not by the simulation. Flagging this rather
+  than implying the sweep numbers validate it.
+
 ## Explicitly not done in this pass
 
-- The one priority-order judgment call flagged in Phase 3 (whether `survivalBehavior` should
-  ever defer to `emergencyDodge` for an imminent-hit condition while also out-of-zone) was
-  deliberately left alone — it would touch `controller.ts`'s priority cascade itself, which the
-  audit's constraints require calling out explicitly rather than bundling into another fix.
-  Zone-return is now threat-aware (reduces the frequency/severity of the interaction) but the
-  structural preemption of dodge by survival-priority-2 still exists.
 - Tier-3 findings from Phase 3 (mine placement direction-awareness, pickup-safety radius vs.
   gradient, zone-edge-drift-vs-combat oscillation) were not touched — Phase 3 ranked them low
   severity relative to implementation cost, and none had strong empirical support.

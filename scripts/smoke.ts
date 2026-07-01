@@ -222,6 +222,26 @@ async function run(): Promise<void> {
       );
     }
 
+    // 1c. Outside the zone AND a charged shot is already lined up on us ->
+    // must dodge, not blindly walk toward zone centre. Regression test for:
+    // survivalBehavior's zone-return used to unconditionally claim the tick
+    // BEFORE emergencyDodge (priority 2 vs 3) ever ran, so this exact
+    // situation was structurally unreachable — the dodge action existed but
+    // the pipeline could never reach it while out of zone.
+    const gs1c = freshGameState();
+    gs1c.applyTick(
+      tickFrom(
+        self({ in_safe_zone: false, position: [90, 50], zone_center: [50, 50], dodge_cooldown: 0, weapon_ready: false }),
+        [enemy({ weapon: "bow", position: [92, 50], attack_range: 7, charged_shot_ready: true })],
+      ),
+    );
+    const a1c = ctl.decide(gs1c);
+    check(
+      "outside zone + charged shot lined up -> dodges (was structurally unreachable)",
+      a1c.action === "dodge",
+      a1c,
+    );
+
     // 2. Healthy, enemy adjacent, weapon ready -> attack it.
     const gs2 = freshGameState();
     gs2.applyTick(tickFrom(self(), [enemy({ position: [51, 50] })]));

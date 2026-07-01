@@ -125,19 +125,26 @@ export class Controller {
       });
     };
 
-    // 2. Environmental survival (outside zone / on hazard).
+    // 2. Environmental survival (outside zone / on hazard). Can also return a
+    // dodge (survivalBehavior's narrow imminent-hit exception) — attribute
+    // that to emergency_dodge in telemetry, not survive_zone_hazards, so the
+    // priority-claim distribution reflects what actually happened.
     const survive = survivalBehavior(ctx);
     if (survive) {
-      logTick(
-        "survive_zone_hazards",
-        !self.in_safe_zone
-          ? "outside_zone"
-          : self.zone_target_radius < self.zone_radius
-            ? "zone_edge_drift"
-            : gs.hasNegativeEffect()
-              ? "burning"
-              : "hazard_adjacent",
-      );
+      if (survive.action === "dodge") {
+        logTick("emergency_dodge", "imminent_hit_preempts_survival");
+      } else {
+        logTick(
+          "survive_zone_hazards",
+          !self.in_safe_zone
+            ? "outside_zone"
+            : self.zone_target_radius < self.zone_radius
+              ? "zone_edge_drift"
+              : gs.hasNegativeEffect()
+                ? "burning"
+                : "hazard_adjacent",
+        );
+      }
       return survive;
     }
     fellThrough.push("survive_zone_hazards");

@@ -25,6 +25,23 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
   const self = gs.self;
   if (!self) return null;
 
+  // A charged shot already lined up on us outranks even environmental
+  // survival — eating a full charged hit while ALSO taking zone/hazard damage
+  // is strictly worse than spending the dodge now and handling the
+  // environment next tick. Deliberately narrow: only imminentHitIncoming's
+  // "something is about to land on us right now" trigger defers here, not
+  // emergencyDodge's broader reactive/pressure triggers (justHit,
+  // meleePressure) — those stay lower priority than environmental survival,
+  // unchanged, since applying them here would make survival defer to dodge
+  // routinely (any nearby melee-capable enemy) rather than only for the
+  // specific, severe case this addresses. See docs/audit/phase3-findings.md's
+  // explicit call-out of this interaction: this is a targeted exception
+  // inside survivalBehavior, not a controller.ts priority reorder.
+  if (imminentHitIncoming(ctx)) {
+    const dodgeAction = emergencyDodge(ctx);
+    if (dodgeAction) return dodgeAction;
+  }
+
   // 1. Outside the safe zone — get back in immediately. Zone damage stacks fast.
   // Threat-field-aware: the field already scores "outside zone" as dangerous and
   // growing with distance (see ThreatField.build), so a local safestStep both
@@ -76,6 +93,45 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
 }
 
 /**
+ * Detect a shot that's already committed and about to land: a fully charged
+ * attack ready to fire, or a bow charged past level 2. Shared by
+ * emergencyDodge (its highest-priority trigger) and survivalBehavior (the
+ * narrow exception that lets a dodge preempt environmental survival) so the
+ * two never drift out of sync on what counts as "imminent".
+ */
+function imminentHitTriggers(ctx: DecisionContext): {
+  chargedIncoming: NearbyBot | undefined;
+  highChargeBow: NearbyBot | null;
+} {
+  const { gs } = ctx;
+  const me = gs.position;
+  const enemies = gs.enemies();
+
+  const chargedIncoming = enemies.find((e) => {
+    const range = e.attack_range || profileFor(e.weapon).baseRange;
+    return e.charged_shot_ready && e.has_los && dist(me, e.position) <= range + 2;
+  });
+
+  const highChargeBow: NearbyBot | null = chargedIncoming
+    ? null
+    : enemies.find((e) => {
+        const range = e.attack_range || profileFor(e.weapon).baseRange;
+        return e.weapon === "bow" && e.bow_charge_level >= 2 && e.has_los && dist(me, e.position) <= range + 1;
+      }) ?? null;
+
+  return { chargedIncoming, highChargeBow };
+}
+
+/** True when imminentHitTriggers found something and we're actually able to dodge it. */
+function imminentHitIncoming(ctx: DecisionContext): boolean {
+  const self = ctx.gs.self;
+  if (!self) return false;
+  if (self.dodge_cooldown > 0 || self.invuln_ticks > 0 || self.stun_ticks > 0) return false;
+  const { chargedIncoming, highChargeBow } = imminentHitTriggers(ctx);
+  return chargedIncoming !== undefined || highChargeBow !== null;
+}
+
+/**
  * Emergency dodge: spend the 30-tick dodge (2 tiles, 3 ticks invuln) when a hit
  * is imminent and retaliating now wouldn't be worth it.
  *
@@ -95,19 +151,7 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   const myRange = gs.effectiveAttackRange();
   const enemies = gs.enemies();
 
-  // Fully charged shot about to fire.
-  const chargedIncoming = enemies.find((e) => {
-    const range = e.attack_range || profileFor(e.weapon).baseRange;
-    return e.charged_shot_ready && e.has_los && dist(me, e.position) <= range + 2;
-  });
-
-  // Bow enemy at charge level 2+ — fire is imminent; dodge before the shot lands.
-  const highChargeBow: NearbyBot | null = chargedIncoming
-    ? null
-    : enemies.find((e) => {
-        const range = e.attack_range || profileFor(e.weapon).baseRange;
-        return e.weapon === "bow" && e.bow_charge_level >= 2 && e.has_los && dist(me, e.position) <= range + 1;
-      }) ?? null;
+  const { chargedIncoming, highChargeBow } = imminentHitTriggers(ctx);
 
   const justHit = (self.hits_received ?? []).length > 0;
   // Melee pressure: dodge whenever an enemy can attack us in melee, regardless
