@@ -11,6 +11,7 @@
 import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
 import { MemoryBus } from "../src/bus/memory";
+import { scoped } from "../src/bus";
 import { normalizeStats } from "../src/shared/stats";
 import { chooseFallbackLoadout } from "../src/engine/loadout";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
@@ -404,6 +405,25 @@ async function run(): Promise<void> {
     const kv = await bus.getKV<{ v: string }>("k");
     check("KV set/get", kv?.v === "hello", kv);
     await bus.close();
+  }
+
+  console.log("\nScopedBus (parallel-bot isolation)");
+  {
+    const root = new MemoryBus();
+    const a = scoped(root, "bot0:");
+    const b = scoped(root, "bot1:");
+    let gotA: { v: number } | null = null;
+    let gotB: { v: number } | null = null;
+    await a.subscribe<{ v: number }>("arena:directive", (p) => { gotA = p; });
+    await b.subscribe<{ v: number }>("arena:directive", (p) => { gotB = p; });
+    await a.publish("arena:directive", { v: 1 });
+    await new Promise((r) => setTimeout(r, 10));
+    check("scoped publish reaches its own scope", gotA !== null && (gotA as { v: number }).v === 1, gotA);
+    check("scoped publish isolated from other bot", gotB === null, gotB);
+    await a.setKV("arena:kv:policy", { p: "A" });
+    check("scoped KV isolated across bots", (await b.getKV("arena:kv:policy")) === null);
+    check("scoped KV readable in same scope", ((await a.getKV<{ p: string }>("arena:kv:policy"))?.p) === "A");
+    await root.close();
   }
 
   console.log("");

@@ -213,6 +213,25 @@ npm run build        # production bundle via tsup
 
 ---
 
+## Running multiple bots in parallel
+
+Set `ARENA_API_KEYS` to a comma-separated list of keys (one per bot) — the process
+launches an independent bot per key, each with its own identity (`BOT_NAME-1`,
+`BOT_NAME-2`, …), colour, LLM brain, and an isolated bus scope (`bot0:`, `bot1:`, …)
+so their snapshots/directives/policies never collide.
+
+```bash
+npm run keygen   # repeat per bot
+# .env:  ARENA_API_KEYS=key1,key2,key3
+npm run dev
+# or Docker (pass the same list to engine + brain):
+ARENA_API_KEYS=key1,key2 docker compose up --build
+```
+
+`ARENA_API_KEY` (single key) still works and is the default when `ARENA_API_KEYS` is
+unset. Each bot runs N× the LLM cost (its own brain), so size your OpenRouter budget
+accordingly.
+
 ## Configuration
 
 All via env (see `.env.example`). Highlights:

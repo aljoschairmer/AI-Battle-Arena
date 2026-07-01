@@ -1,5 +1,5 @@
 import { config, llmEnabled } from "../config";
-import { arenaRest } from "../arena/rest";
+import { ArenaRest } from "../arena/rest";
 import { ArenaSocket } from "../arena/ws";
 import { type Bus, Channels, Keys } from "../bus";
 import { child } from "../shared/logger";
@@ -25,8 +25,6 @@ import { GameState } from "./gameState";
 import { chooseFallbackLoadout } from "./loadout";
 import { buildSnapshot } from "./telemetry";
 
-const log = child("engine");
-
 // Publish a strategy snapshot to the Brain ~2x/sec. The control loop runs every
 // tick (10x/sec) regardless — snapshots are only for the slow LLM layer.
 const SNAPSHOT_EVERY_TICKS = 5;
@@ -35,14 +33,32 @@ export interface EngineHandle {
   stop(): Promise<void>;
 }
 
-export async function startEngine(bus: Bus): Promise<EngineHandle> {
+/** Per-bot options; defaults to the primary single-bot config. */
+export interface EngineOptions {
+  apiKey?: string;
+  botName?: string;
+  botColor?: string;
+  label?: string;
+}
+
+export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<EngineHandle> {
+  const apiKey = opts.apiKey ?? config.arena.apiKey;
+  const botName = opts.botName ?? config.arena.botName;
+  const botColor = opts.botColor ?? config.arena.botColor;
+  const label = opts.label ?? "";
+  const log = child(label ? `engine:${label}` : "engine");
+  // Per-bot REST client (bot/stats + config are key-scoped, so each bot needs
+  // its own; public endpoints work regardless).
+  const rest = new ArenaRest(config.arena.httpBase, apiKey);
+
   const gs = new GameState();
   const controller = new Controller();
   const socket = new ArenaSocket(
     config.arena.wsUrl,
-    config.arena.apiKey,
+    apiKey,
     config.arena.wsOrigin,
     config.arena.wsAuth,
+    label,
   );
 
   let loadoutSent = false;
@@ -146,13 +162,13 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
 
   async function configureBot(): Promise<void> {
     const botConfig = {
-      name: config.arena.botName,
-      avatar_color: config.arena.botColor,
+      name: botName,
+      avatar_color: botColor,
       default_loadout: fallbackLoadout,
     };
     try {
-      await arenaRest.putConfig(botConfig);
-      log.info({ name: config.arena.botName, avatar_color: config.arena.botColor }, "bot config applied");
+      await rest.putConfig(botConfig);
+      log.info({ name: botName, avatar_color: botColor }, "bot config applied");
     } catch (e) {
       log.warn({ err: (e as Error).message }, "failed to apply bot config");
     }
@@ -191,8 +207,8 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
       Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
 
     const [ourStats, arenaStatus] = await Promise.all([
-      withTimeout(arenaRest.tryGetBotStats(), 1500),
-      withTimeout(arenaRest.tryGetArenaStatus(), 1500),
+      withTimeout(rest.tryGetBotStats(), 1500),
+      withTimeout(rest.tryGetArenaStatus(), 1500),
     ]);
 
     if (ourStats) {
@@ -236,7 +252,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
 
   async function refreshTerrain(): Promise<void> {
     try {
-      const map = await arenaRest.getMap();
+      const map = await rest.getMap();
       if (map.terrain && map.terrain.length > 0) {
         gs.setTerrain(map.terrain);
         log.debug({ rows: map.terrain.length }, "terrain loaded");
@@ -345,7 +361,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
 
   socket.on("round_end", (msg: RoundEndMsg) => {
     const ticksSurvived = gs.tick - roundStartTick;
-    const won = msg.round_winner === config.arena.botName || msg.round_winner === gs.selfId;
+    const won = msg.round_winner === botName || msg.round_winner === gs.selfId;
     const hpAtDeath = roundKilledBy.length > 0 ? (gs.self?.hp ?? 0) : 0;
 
     const outcome: RoundOutcome = {
@@ -372,7 +388,7 @@ export async function startEngine(bus: Bus): Promise<EngineHandle> {
     }
 
     // Fetch updated lifetime stats after each round for next loadout request.
-    void arenaRest.tryGetBotStats().then((stats) => {
+    void rest.tryGetBotStats().then((stats) => {
       if (stats) {
         log.info(
           { elo: stats.elo, kd: stats.kd_ratio, wins: stats.round_wins, rounds: stats.rounds_played },

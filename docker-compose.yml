@@ -31,6 +31,9 @@ services:
       BUS: redis
       REDIS_URL: redis://redis:6379
       ARENA_API_KEY: ${ARENA_API_KEY}
+      # Comma-separated keys to run several bots in parallel from one engine
+      # process (each gets its own identity + brain + bus scope).
+      ARENA_API_KEYS: ${ARENA_API_KEYS:-}
       ARENA_HTTP_BASE: ${ARENA_HTTP_BASE:-https://arena.angel-serv.com}
       ARENA_WS_URL: ${ARENA_WS_URL:-wss://arena.angel-serv.com/ws/bot}
       ARENA_WS_ORIGIN: ${ARENA_WS_ORIGIN:-https://arena.angel-serv.com}
@@ -54,6 +57,8 @@ services:
       ROLE: brain
       BUS: redis
       REDIS_URL: redis://redis:6379
+      # Must match the engine's list so each brain uses the same per-bot bus scope.
+      ARENA_API_KEYS: ${ARENA_API_KEYS:-}
       ARENA_HTTP_BASE: ${ARENA_HTTP_BASE:-https://arena.angel-serv.com}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       OPENROUTER_MODEL_STRATEGIST: ${OPENROUTER_MODEL_STRATEGIST:-anthropic/claude-sonnet-4.6}

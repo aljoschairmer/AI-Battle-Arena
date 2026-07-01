@@ -1,5 +1,5 @@
 import { assertConfigForRole, config, llmEnabled, runsBrain, runsEngine } from "./config";
-import { getBus } from "./bus";
+import { getBus, scoped } from "./bus";
 import { startBrain, type BrainHandle } from "./brain";
 import { startEngine, type EngineHandle } from "./engine";
 import { logger } from "./shared/logger";
@@ -18,8 +18,11 @@ async function main(): Promise<void> {
 
   const bus = getBus();
   const busHealthy = await bus.ping();
+  // One instance per bot; each gets its own bus scope so N bots run in parallel
+  // without their snapshots/directives/policies colliding.
+  const bots = config.arena.bots.length > 0 ? config.arena.bots : [{ index: 0, apiKey: "", name: config.arena.botName, color: config.arena.botColor, scope: "" }];
   logger.info(
-    { role: config.role, bus: config.bus, busHealthy, llm: llmEnabled },
+    { role: config.role, bus: config.bus, busHealthy, llm: llmEnabled, bots: bots.length, names: bots.map((b) => b.name) },
     "starting AI Battle Arena bot",
   );
   if (config.bus === "redis" && !busHealthy) {
@@ -28,21 +31,25 @@ async function main(): Promise<void> {
 
   const handles: Array<EngineHandle | BrainHandle> = [];
 
-  // Start the Brain first so it's subscribed before the Engine connects and
-  // fires its first loadout request.
-  if (runsBrain) {
-    if (llmEnabled) {
-      handles.push(await startBrain(bus));
-    } else {
-      logger.warn(
-        "ROLE includes 'brain' but OPENROUTER_API_KEY is unset — LLM brain disabled; " +
-          "the engine will fight on its deterministic strategy.",
+  for (const b of bots) {
+    const bbus = scoped(bus, b.scope);
+    // Start this bot's Brain first so it's subscribed before its Engine connects
+    // and fires the first loadout request.
+    if (runsBrain) {
+      if (llmEnabled) {
+        handles.push(await startBrain(bbus));
+      } else if (b.index === 0) {
+        logger.warn(
+          "ROLE includes 'brain' but OPENROUTER_API_KEY is unset — LLM brain disabled; " +
+            "engines fight on their deterministic strategy.",
+        );
+      }
+    }
+    if (runsEngine) {
+      handles.push(
+        await startEngine(bbus, { apiKey: b.apiKey, botName: b.name, botColor: b.color, label: b.name }),
       );
     }
-  }
-
-  if (runsEngine) {
-    handles.push(await startEngine(bus));
   }
 
   let shuttingDown = false;
