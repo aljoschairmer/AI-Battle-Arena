@@ -124,8 +124,10 @@ function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): numbe
   const threatPenalty = normThreat * (policy.targetThreatAversion + (1 - directive.aggression) * 30);
   score -= threatPenalty;
 
-  // Favour fights we expect to win (forward trade estimate), penalise losing ones.
-  score += tradeAdvantage(ctx, e) * 30;
+  // Favour fights we expect to win (forward trade estimate), penalise losing
+  // ones. Weight is LLM-tunable like every sibling weight in this function —
+  // it was the last hardcoded one (pass-2 audit T1).
+  score += tradeAdvantage(ctx, e) * policy.targetTradeWeight;
 
   // Objective overrides.
   if (directive.objective === "engage_weakest") score += (1 - hpFrac) * 40;

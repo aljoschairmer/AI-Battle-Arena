@@ -1,4 +1,5 @@
 import type {
+  ClientAction,
   ConnectedMsg,
   GridVec,
   LobbyMsg,
@@ -85,6 +86,23 @@ export class GameState {
   /** Dodge awaiting next-tick resolution (damage-taken), for telemetry only. */
   private pendingDodge: { dodgeId: string; tick: number } | null = null;
 
+  // --- Self-tracked action economy (state the server does NOT echo back) ----
+  // Spec (docs/arena-spec.md): shove has a 1.5s cooldown = 15 ticks at 10 Hz.
+  // The server rejects a shove inside it, wasting the tick; nothing in
+  // SelfState reports it, so we track our own issuance.
+  private lastShoveTick = -1000;
+  /**
+   * Believed gravity-well charges: the spec grants one charge per COLLECTED
+   * gravity_well pickup, consumed by use_gravity_well — also never echoed in
+   * SelfState. Optimistic bookkeeping: +1 when we issue use_item on a gravity
+   * pickup, -1 when we issue use_gravity_well.
+   */
+  private gravityWellCharges = 0;
+
+  /** Consecutive-tick streak of the dagger flank deferral (orbit terminator). */
+  private lastFlankTick = -1000;
+  private flankStreak = 0;
+
   applyConnected(msg: ConnectedMsg): void {
     this.selfId = msg.bot_id;
     this.gridSize = msg.grid_size[0] || 100;
@@ -137,6 +155,50 @@ export class GameState {
     this.pendingDodge = null;
     this.lastTargetId = null;
     this.lastTargetSwitchTick = -1000;
+    this.lastShoveTick = -1000;
+    this.gravityWellCharges = 0;
+    this.lastFlankTick = -1000;
+    this.flankStreak = 0;
+  }
+
+  /**
+   * Count a consecutive tick spent considering the dagger in-range flank
+   * deferral; returns the current streak length. A gap (any tick where the
+   * deferral wasn't considered — target died, gained rear exposure, left
+   * range) resets the streak. combat.ts compares the streak against
+   * policy.flankMaxDeferTicks so an unbounded chase of a moving "behind" tile
+   * terminates in a head-on attack instead of orbiting forever.
+   */
+  noteFlankDefer(tick: number): number {
+    this.flankStreak = tick - this.lastFlankTick <= 1 ? this.flankStreak + 1 : 1;
+    this.lastFlankTick = tick;
+    return this.flankStreak;
+  }
+
+  /**
+   * Record the action the controller actually issued this tick (called once
+   * per decide() from its choke point). Maintains the self-tracked action
+   * economy above; a no-op for every other action type.
+   */
+  noteIssuedAction(a: ClientAction): void {
+    if (a.action === "shove") {
+      this.lastShoveTick = a.tick;
+    } else if (a.action === "use_gravity_well") {
+      this.gravityWellCharges = Math.max(0, this.gravityWellCharges - 1);
+    } else if (a.action === "use_item") {
+      const p = this.pickups().find((x) => x.pickup_id === a.item_id);
+      if (p && /gravity/i.test(p.pickup_type)) this.gravityWellCharges += 1;
+    }
+  }
+
+  /** True when the spec's 1.5s shove cooldown has elapsed since OUR last shove. */
+  shoveReady(tick: number): boolean {
+    return tick - this.lastShoveTick >= 15;
+  }
+
+  /** Gravity-well charges we believe we hold (collected pickups minus spends). */
+  gravityCharges(): number {
+    return this.gravityWellCharges;
   }
 
   applyRespawn(msg: RespawnMsg): void {

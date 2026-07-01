@@ -135,6 +135,20 @@ export interface DodgeResolvedEvent {
   damageTaken: number; // 0 if dodge succeeded
 }
 
+/**
+ * Every action the controller actually issues (one per decision tick), logged
+ * at the single choke point in Controller.decide(). Second-pass audit: lets
+ * the analyzer count action-economy violations the server would reject —
+ * shove re-issued inside its 1.5s cooldown, use_gravity_well spam with no
+ * collected charge — which tick_decision's priority names can't see.
+ */
+export interface ActionIssuedEvent {
+  t: "action_issued";
+  tick: number;
+  ts: number;
+  action: string;
+}
+
 export interface RoundBoundaryEvent {
   t: "round_start" | "round_end";
   ts: number;
@@ -149,6 +163,7 @@ export type TelemetryEvent =
   | TradeEvaluatedEvent
   | DodgeDecisionEvent
   | DodgeResolvedEvent
+  | ActionIssuedEvent
   | RoundBoundaryEvent;
 
 // ---- Sink ---------------------------------------------------------------
@@ -228,6 +243,11 @@ class TelemetryLog {
   dodgeResolved(e: Omit<DodgeResolvedEvent, "t" | "ts">) {
     if (!this.enabled) return;
     this.write({ t: "dodge_resolved", ts: Date.now(), ...e });
+  }
+
+  actionIssued(e: Omit<ActionIssuedEvent, "t" | "ts">) {
+    if (!this.enabled) return;
+    this.write({ t: "action_issued", ts: Date.now(), ...e });
   }
 
   // ---- internals ----

@@ -140,6 +140,27 @@ export interface EnginePolicy {
   disengageUseSeparation: boolean;
   /** Ticks ahead to lead a moving target when aiming/intercepting (0..8). */
   leadTicks: number;
+  /**
+   * Weight applied to combatMath.tradeAdvantage (-1..1) in target scoring —
+   * was a raw hardcoded ×30 in targeting.ts, the last non-tunable weight in
+   * scoreEnemy (every sibling weight was already an EnginePolicy field).
+   */
+  targetTradeWeight: number;
+  /**
+   * Max CONSECUTIVE ticks the dagger in-range flank deferral may hold before
+   * committing to a head-on attack. 0 = never defer (attack head-on always).
+   * Bounds the pass-2 audit's confirmed orbit: an unterminated defer loop let
+   * daggers circle a target indefinitely without ever attacking (0 damage
+   * across every simulated daggers round — pass2-phase2-observations.md).
+   */
+  flankMaxDeferTicks: number;
+  /**
+   * Ranged weapons fire at an in-range chaser (instead of moving) on retreat
+   * ticks where the weapon is ready — kite-and-fire. Without it the retreat
+   * rung, which outranks engage, means a fleeing bow/staff never shoots at
+   * all (confirmed dominant loss mode for ranged, pass2-phase2).
+   */
+  retreatFireWhileKiting: boolean;
   /** Tuner-controlled BASELINE aggression (0..1); the Tactician layers a delta on top. */
   aggression: number;
   /** Tuner-controlled baseline posture (used when no live tactical posture is set). */
@@ -176,6 +197,9 @@ export const DEFAULT_POLICY: EnginePolicy = {
   retreatTradeSensitivity: 0.15,
   disengageUseSeparation: true,
   leadTicks: 3,
+  targetTradeWeight: 30,
+  flankMaxDeferTicks: 6,
+  retreatFireWhileKiting: true,
   aggression: 0.62,
   posture: "balanced",
   bowAlwaysCharge: true,
@@ -223,6 +247,9 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     retreatTradeSensitivity: clampNum(patch.retreatTradeSensitivity, 0, 0.4, base.retreatTradeSensitivity),
     disengageUseSeparation: asBool(patch.disengageUseSeparation, base.disengageUseSeparation),
     leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
+    targetTradeWeight: clampNum(patch.targetTradeWeight, 0, 100, base.targetTradeWeight),
+    flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
+    retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
     aggression: clampNum(patch.aggression, 0, 1, base.aggression),
     posture: patch.posture && POSTURES.includes(patch.posture) ? patch.posture : base.posture,
     bowAlwaysCharge: asBool(patch.bowAlwaysCharge, base.bowAlwaysCharge),

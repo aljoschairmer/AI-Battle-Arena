@@ -27,7 +27,7 @@ export function positionForCombat(ctx: DecisionContext, target: NearbyBot): Clie
   if (!profile.ranged) {
     // Daggers: try to get behind the target for backstab bonus (Tuner-toggleable)
     if (ctx.policy.daggerFlank && self.weapon === "daggers" && !target.rear_exposed) {
-      const behind = flankingPosition(me, target.position);
+      const behind = flankingPosition(me, target.position, target.facing);
       if (behind && gs.isPassable(behind[0], behind[1])) {
         return moveTo(tick, behind);
       }
@@ -314,22 +314,37 @@ function safePerp(perp: GridVec): GridVec {
 
 /**
  * Compute a flanking position behind the target for dagger backstab.
- * "Behind" = opposite direction of the target's facing, offset 1 tile.
+ * "Behind" = opposite direction of the target's facing, offset 1 tile —
+ * `rear_exposed` is a facing-relative read, so facing (known every tick for
+ * every visible enemy) is the ground truth, not our own approach angle.
+ *
+ * The old approach-angle heuristic is kept only as a fallback for a zero
+ * facing vector. Used as the primary rule it was self-defeating: the "flank"
+ * tile was perpendicular to wherever we currently stood, so arriving at it
+ * moved the goalposts and the bot orbited the target indefinitely without
+ * ever attacking (0 damage across every simulated daggers round — see
+ * docs/audit/pass2-phase2-observations.md). Returns null when we already
+ * stand on the behind tile (nothing left to flank — attack).
  *
  * Exported so combat.ts can check how close an in-progress flank is to
  * completion before deciding whether to finish it or attack head-on instead
  * (see combatBehavior's dagger branch) — the two call sites must agree on the
  * same destination tile, not compute it twice with any risk of drifting apart.
  */
-export function flankingPosition(me: GridVec, targetPos: GridVec): GridVec | null {
-  // Approach from the side opposite to where we currently are relative to the target
+export function flankingPosition(me: GridVec, targetPos: GridVec, targetFacing?: GridVec): GridVec | null {
+  if (targetFacing && (targetFacing[0] !== 0 || targetFacing[1] !== 0)) {
+    const behind: GridVec = [
+      targetPos[0] - Math.sign(targetFacing[0]),
+      targetPos[1] - Math.sign(targetFacing[1]),
+    ];
+    if (behind[0] === me[0] && behind[1] === me[1]) return null;
+    return behind;
+  }
+  // Fallback (unknown facing): perpendicular to the current approach angle.
   const dx = me[0] - targetPos[0];
   const dy = me[1] - targetPos[1];
-  // Go around: perpendicular to the current approach angle
   if (Math.abs(dx) >= Math.abs(dy)) {
-    // We're left/right — go above or below
     return [targetPos[0], targetPos[1] + (dy >= 0 ? 1 : -1)];
   }
-  // We're above/below — go left or right
   return [targetPos[0] + (dx >= 0 ? 1 : -1), targetPos[1]];
 }

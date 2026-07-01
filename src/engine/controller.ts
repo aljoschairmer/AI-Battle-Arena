@@ -73,7 +73,22 @@ export class Controller {
     this.lastMineTick = -1000;
   }
 
+  /**
+   * Single choke point wrapping the priority cascade: every issued action
+   * passes through here exactly once, giving (a) telemetry a complete record
+   * of what was actually sent (action-economy analysis: shove cooldown
+   * violations, gravity-well spam — see pass-2 audit) and (b) GameState a
+   * place to track self-inflicted action economy the server doesn't echo
+   * (shove cooldown, believed gravity-well charges).
+   */
   decide(gs: GameState): ClientAction {
+    const action = this.decideInner(gs);
+    gs.noteIssuedAction(action);
+    telemetry.actionIssued({ tick: gs.tick, action: action.action });
+    return action;
+  }
+
+  private decideInner(gs: GameState): ClientAction {
     const self = gs.self;
     const tick = gs.tick;
 
