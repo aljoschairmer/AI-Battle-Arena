@@ -341,6 +341,84 @@ async function run(): Promise<void> {
     );
   }
 
+  console.log("\nDowntime self-care: hints + capture pads (pass-2 follow-up)");
+  {
+    const ctl = new Controller();
+    ctl.setPolicy(DEFAULT_POLICY);
+    ctl.onRoundStart();
+
+    // Hurt + quiet arena + both hint types known -> follows the HEALTH pickup
+    // hint (west), not the bot hint (east). Old rule: nearest bot hint always
+    // won, so a hurt bot marched straight into its next fight.
+    const gHurt = freshGameState();
+    gHurt.applyTick(tickFrom(self({ hp: 80, max_hp: 160 }), []));
+    gHurt.hints = [
+      { hint_type: "bot", direction: [1, 0], distance: 200 },
+      { hint_type: "pickup", pickup_type: "health_pack", direction: [-1, 0], distance: 300 },
+    ];
+    const aHurt = ctl.decide(gHurt);
+    check(
+      "hurt + quiet -> follows health hint, not bot hint",
+      aHurt.action === "move_to" && (aHurt as { target_position: [number, number] }).target_position[0] < 50,
+      aHurt,
+    );
+
+    // Healthy with the bot hint nearer -> still hunts the bot (old behaviour kept).
+    const gHealthy = freshGameState();
+    gHealthy.applyTick(tickFrom(self(), []));
+    gHealthy.hints = [
+      { hint_type: "bot", direction: [1, 0], distance: 200 },
+      { hint_type: "pickup", pickup_type: "damage_boost", direction: [-1, 0], distance: 300 },
+    ];
+    const aHealthy = ctl.decide(gHealthy);
+    check(
+      "healthy + bot hint nearer -> hunts the bot",
+      aHealthy.action === "move_to" && (aHealthy as { target_position: [number, number] }).target_position[0] > 50,
+      aHealthy,
+    );
+
+    // Healthy but a pickup hint strictly closer -> grabs the value on the way.
+    const gValue = freshGameState();
+    gValue.applyTick(tickFrom(self(), []));
+    gValue.hints = [
+      { hint_type: "bot", direction: [1, 0], distance: 400 },
+      { hint_type: "pickup", pickup_type: "damage_boost", direction: [-1, 0], distance: 100 },
+    ];
+    const aValue = ctl.decide(gValue);
+    check(
+      "healthy + pickup hint closer -> collects it first",
+      aValue.action === "move_to" && (aValue as { target_position: [number, number] }).target_position[0] < 50,
+      aValue,
+    );
+
+    // Nothing to fight, loot, or chase — but a capture pad nearby -> heads for
+    // the pad instead of patrolling (idleCapturePads). Terrain 'C' at [53,50].
+    const gPad = freshGameState();
+    const terrain = Array.from({ length: 100 }, () => Array.from({ length: 100 }, () => "."));
+    terrain[50]![53] = "C";
+    gPad.setTerrain(terrain);
+    gPad.applyTick(tickFrom(self(), []));
+    const aPad = ctl.decide(gPad);
+    check(
+      "idle + capture pad nearby -> moves to the pad",
+      aPad.action === "move_to" && (aPad as { target_position: [number, number] }).target_position[0] === 53 && (aPad as { target_position: [number, number] }).target_position[1] === 50,
+      aPad,
+    );
+    // Toggle off -> old patrol behaviour (not the pad).
+    ctl.setPolicy(mergePolicy(DEFAULT_POLICY, { idleCapturePads: false }));
+    const aNoPad = ctl.decide(gPad);
+    const noPadTarget = aNoPad.action === "move_to" ? (aNoPad as { target_position: [number, number] }).target_position : null;
+    check(
+      "idleCapturePads=false -> patrols instead",
+      noPadTarget === null || noPadTarget[0] !== 53 || noPadTarget[1] !== 50,
+      aNoPad,
+    );
+
+    // Clamping for the new knobs.
+    const pc = mergePolicy(DEFAULT_POLICY, { idleHealBelowHpFraction: 7 });
+    check("mergePolicy clamps idleHealBelowHpFraction <= 1", pc.idleHealBelowHpFraction <= 1, pc.idleHealBelowHpFraction);
+  }
+
   console.log("\nSpatial & combat intelligence");
   {
     const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });

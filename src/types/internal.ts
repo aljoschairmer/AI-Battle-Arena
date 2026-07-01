@@ -161,6 +161,19 @@ export interface EnginePolicy {
    * all (confirmed dominant loss mode for ranged, pass2-phase2).
    */
   retreatFireWhileKiting: boolean;
+  /**
+   * Downtime self-care: below this HP fraction, quiet phases (no enemy in
+   * fog) follow the server's PICKUP hints (health first) instead of chasing
+   * the nearest bot hint into the next fight — top up before fighting again.
+   * 0 disables (always hunt bots first, the old behaviour).
+   */
+  idleHealBelowHpFraction: number;
+  /**
+   * Downtime self-improvement: with nothing to fight, loot, or chase, head
+   * for a nearby capture pad (+score, shield, damage buff) instead of aimless
+   * patrol. false = old behaviour (patrol only).
+   */
+  idleCapturePads: boolean;
   /** Tuner-controlled BASELINE aggression (0..1); the Tactician layers a delta on top. */
   aggression: number;
   /** Tuner-controlled baseline posture (used when no live tactical posture is set). */
@@ -200,6 +213,8 @@ export const DEFAULT_POLICY: EnginePolicy = {
   targetTradeWeight: 30,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
+  idleHealBelowHpFraction: 0.75,
+  idleCapturePads: true,
   aggression: 0.62,
   posture: "balanced",
   bowAlwaysCharge: true,
@@ -250,6 +265,8 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     targetTradeWeight: clampNum(patch.targetTradeWeight, 0, 100, base.targetTradeWeight),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
+    idleHealBelowHpFraction: clampNum(patch.idleHealBelowHpFraction, 0, 1, base.idleHealBelowHpFraction),
+    idleCapturePads: asBool(patch.idleCapturePads, base.idleCapturePads),
     aggression: clampNum(patch.aggression, 0, 1, base.aggression),
     posture: patch.posture && POSTURES.includes(patch.posture) ? patch.posture : base.posture,
     bowAlwaysCharge: asBool(patch.bowAlwaysCharge, base.bowAlwaysCharge),

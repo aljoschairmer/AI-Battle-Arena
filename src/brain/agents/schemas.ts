@@ -147,6 +147,8 @@ export const PolicyPatchSchema = z.object({
   targetTradeWeight: z.number().optional(),
   flankMaxDeferTicks: z.number().optional(),
   retreatFireWhileKiting: z.boolean().optional(),
+  idleHealBelowHpFraction: z.number().optional(),
+  idleCapturePads: z.boolean().optional(),
   aggression: z.number().optional(),
   posture: PostureEnum.optional(),
   bowAlwaysCharge: z.boolean().optional(),

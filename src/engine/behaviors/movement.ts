@@ -155,10 +155,20 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   const loot = seekPickup(ctx);
   if (loot) return loot;
 
-  // Follow the server's nav hints (only sent when no enemy is in fog) toward the
-  // nearest bot to start a fight — far better than blind patrol.
+  // Follow the server's nav hints (only sent when no enemy is in fog): toward
+  // the nearest bot to start a fight, or — when hurt / a pickup is closer —
+  // toward hinted pickups to build back up first (see followHint).
   const hinted = followHint(ctx);
   if (hinted) return hinted;
+
+  // Still nothing? Use the quiet phase to improve our position: capture a
+  // nearby pad (+12 score, 20 shield, 1.2x damage — docs/arena-spec.md)
+  // instead of walking aimless patrol circles. Reaching the pad is enough;
+  // the capture progresses while we keep "moving to" our own tile.
+  if (ctx.policy.idleCapturePads) {
+    const pad = gs.nearestCapturePad();
+    if (pad) return moveTo(tick, pad);
+  }
 
   // Nothing to loot either — patrol the zone to find enemies.
   const zoneCenter =
@@ -170,19 +180,34 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
 /**
  * Follow the server's navigation hints. The arena sends `tick.hints` only when
  * no enemy is inside our fog — directions to the nearest few bots and the
- * nearest pickup of each type. We head toward the closest bot (to re-engage) or,
- * failing that, the closest hinted pickup. `direction` is a normalized vector;
- * we project a grid target a few tiles along it and let the server pathfind.
+ * nearest pickup of each type. `direction` is a normalized vector; we project
+ * a grid target a few tiles along it and let the server pathfind.
+ *
+ * Hint choice is state-aware (pass-2 follow-up): the old rule was "nearest
+ * bot hint always wins", so a quiet arena with few bots meant the bot either
+ * marched hurt into its next fight or stood around ignoring known loot.
+ *  - hurt (below idleHealBelowHpFraction): health pickup hints first, then
+ *    any pickup hint, then bots — top HP back up before seeking a fight;
+ *  - healthy: nearest bot hint, unless a pickup hint is strictly closer
+ *    (cheap value on the way — the fight is further out anyway).
  */
 export function followHint(ctx: DecisionContext): ClientAction | null {
   const { gs, tick } = ctx;
   const hints = gs.hints;
   if (!hints || hints.length === 0) return null;
 
-  const bots = hints
-    .filter((h) => h.hint_type === "bot")
-    .sort((a, b) => a.distance - b.distance);
-  const chosen = bots[0] ?? [...hints].sort((a, b) => a.distance - b.distance)[0];
+  const byDist = (a: { distance: number }, b: { distance: number }) => a.distance - b.distance;
+  const bots = hints.filter((h) => h.hint_type === "bot").sort(byDist);
+  const pickups = hints.filter((h) => h.hint_type === "pickup").sort(byDist);
+  const health = pickups.filter((h) => /health|hp|heal/i.test(h.pickup_type ?? ""));
+
+  const hurt = gs.hpFraction() < ctx.policy.idleHealBelowHpFraction;
+  let chosen = hurt
+    ? health[0] ?? pickups[0] ?? bots[0]
+    : bots[0] && pickups[0] && pickups[0].distance < bots[0].distance
+      ? pickups[0]
+      : bots[0] ?? pickups[0];
+  chosen ??= [...hints].sort(byDist)[0];
   if (!chosen) return null;
 
   const cell = gs.cellSize || 20;
