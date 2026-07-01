@@ -12,6 +12,7 @@ import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
 import { retreatAndHeal, tacticalDisengage } from "../src/engine/behaviors/survival";
 import { combatBehavior } from "../src/engine/behaviors/combat";
+import { grabPickup } from "../src/engine/behaviors/movement";
 import { selectTarget } from "../src/engine/behaviors/targeting";
 import { Coalition } from "../src/engine/coop";
 import { Channels } from "../src/bus";
@@ -29,6 +30,8 @@ import { PolicyPatchSchema, StrategyOutputSchema, AnalystOutputSchema } from "..
 import type {
   ConnectedMsg,
   NearbyBot,
+  NearbyEntity,
+  NearbyPickup,
   SelfState,
   TickMsg,
   Weapon,
@@ -117,7 +120,17 @@ function enemy(overrides: Partial<NearbyBot> = {}): NearbyBot {
   };
 }
 
-function tickFrom(s: SelfState, enemies: NearbyBot[] = [], tickNum = 100): TickMsg {
+function pickup(overrides: Partial<NearbyPickup> = {}): NearbyPickup {
+  return {
+    type: "pickup",
+    pickup_id: "p1",
+    pickup_type: "health_pack",
+    position: [55, 50],
+    ...overrides,
+  };
+}
+
+function tickFrom(s: SelfState, entities: NearbyEntity[] = [], tickNum = 100): TickMsg {
   return {
     type: "tick",
     tick: tickNum,
@@ -125,7 +138,7 @@ function tickFrom(s: SelfState, enemies: NearbyBot[] = [], tickNum = 100): TickM
     fog_radius: 7,
     your_state: s,
     nearby_mines: 0,
-    nearby_entities: enemies,
+    nearby_entities: entities,
     safe_zone: {
       center: s.zone_center,
       radius: s.zone_radius,
@@ -442,6 +455,34 @@ async function run(): Promise<void> {
       "weak enemy within range but ahead of the retreat direction -> no mine, just kites",
       aheadResult.action === "move",
       aheadResult,
+    );
+  }
+
+  console.log("\nPickup safety considers recently-seen enemies (Tier 3 fix)");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // grabPickup/seekPickup only ever run with zero CURRENTLY visible enemies
+    // (selectTarget claims priority 7 for any visible enemy first) — so their
+    // old enemyControls() check was, in practice, always checking an empty
+    // list. Regression test for the actually-reachable gap: an enemy seen
+    // moments ago right on top of one pickup, now out of fog, should still
+    // rule that pickup out — while an unrelated pickup with no such history
+    // is still fair game.
+    const gsStale = freshGameState();
+    gsStale.applyTick(tickFrom(self(), [enemy({ bot_id: "seenfoe", position: [55, 50] })], 100));
+    gsStale.applyTick(
+      tickFrom(
+        self(),
+        [pickup({ pickup_id: "risky", position: [55, 50] }), pickup({ pickup_id: "safe", position: [50, 55] })],
+        105, // 5 ticks later, enemy no longer visible but well within the default 15-tick window
+      ),
+    );
+    const picked = grabPickup(ctxOf(gsStale));
+    check(
+      "avoids the pickup where an enemy was seen 5 ticks ago, grabs the unrelated one instead",
+      picked?.action === "move_to" && picked.target_position[0] === 50 && picked.target_position[1] === 55,
+      picked,
     );
   }
 

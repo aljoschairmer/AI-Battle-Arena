@@ -92,8 +92,45 @@ Two things worth being precise about:
   it previously couldn't even reach that branch), not by the simulation. Flagging this rather
   than implying the sweep numbers validate it.
 
-## Explicitly not done in this pass
+### Tier 3: mine placement direction-awareness
 
-- Tier-3 findings from Phase 3 (mine placement direction-awareness, pickup-safety radius vs.
-  gradient, zone-edge-drift-vs-combat oscillation) were not touched — Phase 3 ranked them low
-  severity relative to implementation cost, and none had strong empirical support.
+Implemented. `maybeDropMine` now takes the actual retreat action and only counts an enemy as a
+valid "chaser" if the dot product between our travel direction and the vector to that enemy is
+negative (roughly behind us), not just within `mineChaseRange`. Verified with a scenario built
+from the real retreat direction (not guessed): a distant dominant threat driving a genuine
+`[-1,-1]` flight, plus a second weak enemy within range but ahead of that direction, no longer
+gets mined; the same weak enemy alone (driving its own flight, hence necessarily behind it)
+still does.
+
+### Tier 3: pickup safety — corrected, not just implemented
+
+The original framing ("flat radius vs. threat gradient") turned out to be based on a false
+premise, caught before writing a fix rather than after: **`grabPickup` and `seekPickup` can
+only ever run with zero currently-visible enemies.** `selectTarget` returns non-null for *any*
+visible enemy, however distant or harmless, and priority 7 (engage) always wins over priority
+8 (loot) when that happens — confirmed empirically (a lone enemy 40+ tiles away with no LOS
+still makes the bot beeline for it instead of grabbing an adjacent pickup). This means their
+`enemyControls()` check — and any threat-field replacement for it — was always evaluating an
+empty enemy list. Not a fixable bug as originally scoped; a correction to the finding.
+
+What *is* real and reachable: neither function considered `gs.guessedEnemyPositions()` (enemies
+seen recently but now out of fog) at all — the one enemy-awareness signal actually live at that
+point in the pipeline. Fixed: both now skip a pickup within 1.5 tiles of a position an enemy
+occupied within the last `pickupStaleEnemyTicks` (new `EnginePolicy` field, default 15 ticks).
+Like the survivalBehavior/emergencyDodge fix, `scripts/simulate.ts` never generates pickup
+entities at all, so this isn't exercised by the sweep numbers either — verified by a dedicated
+smoke assertion instead (an enemy seen 5 ticks ago on top of one pickup; the bot correctly
+avoids it and grabs an unrelated one instead).
+
+*A larger, related finding surfaced but deliberately not acted on*: priority 7 unconditionally
+outranks priority 8 for *any* visible enemy, meaning a bot will always approach even a
+harmless, distant, no-LOS enemy instead of grabbing an adjacent, valuable, safe pickup. Fixing
+that would mean deciding whether some enemies are "irrelevant enough" to not claim the tick —
+a real behavior change touching the engage/loot priority boundary, not a contained bug fix.
+Flagged here rather than decided unilaterally.
+
+### Tier 3: zone-edge-drift vs. combat oscillation — not investigated in this pass
+
+Deferred — lower confidence of a real, common-case payoff than the other items above, and no
+telemetry pass has isolated it yet (Phase 3 flagged it as plausible but unmeasured, and it
+remains so).

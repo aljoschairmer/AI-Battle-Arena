@@ -91,6 +91,15 @@ export interface EnginePolicy {
   targetMatchupWeight: number;
   /** Max tiles to detour for an uncontested pickup. */
   pickupDetourMax: number;
+  /**
+   * How many ticks a recently-seen (now out-of-fog) enemy position still
+   * counts as "camping" a nearby pickup. grabPickup/seekPickup only ever run
+   * with zero currently-visible enemies (selectTarget claims the tick
+   * otherwise) — this is the one enemy-awareness signal actually reachable
+   * there. 0 disables it (old behaviour: only currently-visible enemies
+   * count, which in practice never fires while these run at all).
+   */
+  pickupStaleEnemyTicks: number;
   /** Drift to the next zone centre when within this many tiles of the edge. */
   zoneEdgeMargin: number;
   /** Mine behaviour while being chased. */
@@ -146,6 +155,7 @@ export const DEFAULT_POLICY: EnginePolicy = {
   targetSwitchHysteresis: 30,
   targetMatchupWeight: 12,
   pickupDetourMax: 6,
+  pickupStaleEnemyTicks: 15,
   zoneEdgeMargin: 5,
   mineWhenChased: true,
   mineChaseRange: 4,
@@ -190,6 +200,7 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     targetSwitchHysteresis: clampNum(patch.targetSwitchHysteresis, 0, 60, base.targetSwitchHysteresis),
     targetMatchupWeight: clampNum(patch.targetMatchupWeight, 0, 40, base.targetMatchupWeight),
     pickupDetourMax: clampNum(patch.pickupDetourMax, 0, 20, base.pickupDetourMax),
+    pickupStaleEnemyTicks: clampNum(patch.pickupStaleEnemyTicks, 0, 30, base.pickupStaleEnemyTicks),
     zoneEdgeMargin: clampNum(patch.zoneEdgeMargin, 0, 20, base.zoneEdgeMargin),
     mineWhenChased:
       typeof patch.mineWhenChased === "boolean" ? patch.mineWhenChased : base.mineWhenChased,
