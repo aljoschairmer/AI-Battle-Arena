@@ -103,6 +103,14 @@ export class GameState {
   private lastFlankTick = -1000;
   private flankStreak = 0;
 
+  /** Last tick we took damage (any source, incl. attackers outside our fog). */
+  private lastDamageTick = -1000;
+
+  /** Bounded capture-pad parking: consecutive stand streak + per-pad ignore. */
+  private lastPadStandTick = -1000;
+  private padStandStreak = 0;
+  private padIgnoreUntil = new Map<string, number>();
+
   applyConnected(msg: ConnectedMsg): void {
     this.selfId = msg.bot_id;
     this.gridSize = msg.grid_size[0] || 100;
@@ -159,6 +167,48 @@ export class GameState {
     this.gravityWellCharges = 0;
     this.lastFlankTick = -1000;
     this.flankStreak = 0;
+    this.lastDamageTick = -1000;
+    this.lastPadStandTick = -1000;
+    this.padStandStreak = 0;
+    this.padIgnoreUntil.clear();
+  }
+
+  /**
+   * True when we've taken damage within the last `withinTicks` ticks — even
+   * from an attacker we can't see (a bow's range 8 exceeds our fog radius 7,
+   * so a sniper can be invisible). Downtime behaviors use this to keep moving
+   * instead of parking on a pad / ghost position while being shot.
+   */
+  underRecentFire(withinTicks = 30): boolean {
+    return this.tick - this.lastDamageTick <= withinTicks;
+  }
+
+  /** Drop a last-seen enemy memory (e.g. we searched its position — nothing there). */
+  forgetLastSeen(botId: string): void {
+    delete this.lastSeenEnemies[botId];
+  }
+
+  /** False while `pad` is on cooldown after we already captured/camped it. */
+  padAvailable(pad: GridVec): boolean {
+    const until = this.padIgnoreUntil.get(`${pad[0]},${pad[1]}`) ?? -1;
+    return this.tick >= until;
+  }
+
+  /**
+   * Count a consecutive tick standing on `pad`; once we've stood long enough
+   * to have captured it (spec: 20 uncontested ticks; we allow a margin),
+   * ignore this pad for a while — the owner keeps pulsing rewards without
+   * standing there, and parking forever made the bot a stationary free kill
+   * (the "stuck in the middle of the map" bug).
+   */
+  notePadStand(pad: GridVec, tick: number, doneTicks = 30, cooldownTicks = 600): number {
+    this.padStandStreak = tick - this.lastPadStandTick <= 1 ? this.padStandStreak + 1 : 1;
+    this.lastPadStandTick = tick;
+    if (this.padStandStreak >= doneTicks) {
+      this.padIgnoreUntil.set(`${pad[0]},${pad[1]}`, tick + cooldownTicks);
+      this.padStandStreak = 0;
+    }
+    return this.padStandStreak;
   }
 
   /**
@@ -266,6 +316,7 @@ export class GameState {
     this.nearbyMines = msg.nearby_mines ?? 0;
     this.hints = msg.hints ?? [];
     if (this.self?.is_alive) this.isRespawning = false;
+    if ((this.self?.hits_received?.length ?? 0) > 0) this.lastDamageTick = this.tick;
     this.updateSeenEnemies();
   }
 
