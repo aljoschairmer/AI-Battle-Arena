@@ -129,23 +129,21 @@ that would mean deciding whether some enemies are "irrelevant enough" to not cla
 a real behavior change touching the engage/loot priority boundary, not a contained bug fix.
 Flagged here rather than decided unilaterally.
 
-### Tier 3: zone-edge-drift vs. combat oscillation — investigated, real, deliberately not fixed yet
+### Tier 3: zone-edge-drift vs. combat oscillation — now fixed; see the dedicated follow-up
 
-Mined the existing `tick_decision`/`fellThrough` telemetry directly (144-round sample) for the
-specific pattern Phase 3 hypothesized: `engage_target` → `survive_zone_hazards` (reason
-`zone_edge_drift`) → `engage_target` again within 2 ticks. Result: **472 of 1,737
-engage-target sequences (27%) are interrupted this way.** The mechanism is real and now
-measured, not just plausible.
+Originally measured (472/1,737 engagement sequences, 27%, interrupted) and deliberately left
+unfixed pending a decision, since the risk was asymmetric: `emergencyDodge` deferring to combat
+for one tick costs at most one hit, but zone damage compounds if ignored, so getting this wrong
+risked the bot fighting itself into a genuinely fatal zone position rather than a merely
+suboptimal one.
 
-Deliberately not fixed, for a reason the other fixes in this doc didn't have to weigh: the
-risk is asymmetric. `emergencyDodge` deferring to combat for one tick costs at most one hit;
-zone damage that the bot fails to react to compounds over every tick it's ignored, and getting
-this wrong risks the bot fighting itself into a genuinely fatal zone position rather than a
-merely-suboptimal one. Nothing in the current telemetry (tick-level priority claims) says
-whether these interruptions are actually *costing* fights — a `moveTo` nudge that immediately
-resumes combat one tick later may be closer to "working as intended, briefly" than "broken."
-Fixing this credibly would need combat-outcome telemetry the current schema doesn't capture
-(e.g. damage taken/dealt during interrupted vs. uninterrupted engagement ticks), and the fix
-shape itself (should combat ever override zone safety, and under what bound?) is a real
-game-design tradeoff, not a mechanical correction — flagging for a decision rather than
-guessing.
+Revisited in a full deep dive — full writeup, evidence, and implementation in
+[`phase4-followup-zone-edge-drift.md`](./phase4-followup-zone-edge-drift.md). Summary: gathered
+the missing combat-outcome evidence from existing telemetry (no new instrumentation needed),
+found the interruption cost ~0 extra HP but stretched fight duration ~50%, and implemented a
+graduated margin (`zoneEdgeHardMargin`, an inner floor that's never skipped, versus the existing
+`zoneEdgeMargin` as a softer outer band that can defer to an active, not-losing fight) that
+preserves the safety property that mattered while addressing the duration cost. Re-measured at
+scale: **win rate 13.9% → 39.6%**, kills roughly quadrupled — a substantially larger effect than
+the duration-cost reasoning alone predicted, with the likely mechanism and sanity checks against
+this being a hidden regression documented in the follow-up.

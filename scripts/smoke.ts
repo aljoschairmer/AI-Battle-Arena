@@ -458,6 +458,61 @@ async function run(): Promise<void> {
     );
   }
 
+  console.log("\nZone-edge-drift graduated margin (deep dive fix)");
+  {
+    const zoneSelf = (distanceToEdge: number) =>
+      self({
+        position: [50, 50],
+        hp: 160,
+        max_hp: 160,
+        weapon_ready: true,
+        zone_center: [50, 50],
+        zone_radius: 20,
+        zone_target_center: [70, 70],
+        zone_target_radius: 9,
+        distance_to_zone_edge: distanceToEdge,
+      });
+
+    // Inside the hard margin (default 2) -> always drifts, even mid a
+    // trivially-winning fight. This is the safety floor that must never be
+    // skipped (zone damage compounds if ignored).
+    const ctlZ1 = new Controller();
+    ctlZ1.onRoundStart();
+    const gsUrgent = freshGameState();
+    gsUrgent.applyTick(tickFrom(zoneSelf(1), [enemy({ hp: 5, position: [51, 50], can_attack: true })]));
+    const zUrgent = ctlZ1.decide(gsUrgent);
+    check(
+      "within hard zone-edge margin -> always drifts, even mid a great fight",
+      zUrgent.action === "move_to" && zUrgent.target_position[0] === 70 && zUrgent.target_position[1] === 70,
+      zUrgent,
+    );
+
+    // In the softer outer band (between hard margin and zoneEdgeMargin) with
+    // an active, clearly-winning adjacent fight -> defers to combat instead
+    // of interrupting it. Regression test for the deep-dive finding: this
+    // used to interrupt 27% of engagements for ~0 measured HP benefit while
+    // stretching fight duration ~50%.
+    const ctlZ2 = new Controller();
+    ctlZ2.onRoundStart();
+    const gsSoftFight = freshGameState();
+    gsSoftFight.applyTick(tickFrom(zoneSelf(4), [enemy({ hp: 5, position: [51, 50], can_attack: true })]));
+    const zSoftFight = ctlZ2.decide(gsSoftFight);
+    check("soft band + winning fight -> defers to combat (attacks)", zSoftFight.action === "attack", zSoftFight);
+
+    // Same soft band, but nothing to fight -> still drifts. The soft band
+    // only ever defers FOR an active fight, never just skips zone safety.
+    const ctlZ3 = new Controller();
+    ctlZ3.onRoundStart();
+    const gsSoftNoFight = freshGameState();
+    gsSoftNoFight.applyTick(tickFrom(zoneSelf(4), []));
+    const zSoftNoFight = ctlZ3.decide(gsSoftNoFight);
+    check(
+      "soft band + no fight -> still drifts",
+      zSoftNoFight.action === "move_to" && zSoftNoFight.target_position[0] === 70 && zSoftNoFight.target_position[1] === 70,
+      zSoftNoFight,
+    );
+  }
+
   console.log("\nPickup safety considers recently-seen enemies (Tier 3 fix)");
   {
     const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });

@@ -59,9 +59,26 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
   //    caught at the edge when the boundary snaps. Only trigger when the zone IS
   //    actually contracting (target_radius < current radius) and we're close to
   //    the current edge.
+  //
+  //    Graduated: inside zoneEdgeHardMargin, always drift — zone damage
+  //    compounds if ignored, so this floor is never skipped (measured: 27% of
+  //    engagements were being interrupted by this branch before this fix; the
+  //    old single-threshold version treated "just inside the margin" the same
+  //    as "one tile from taking damage"). Between the hard floor and the
+  //    softer zoneEdgeMargin, let an active, not-losing fight continue
+  //    instead — measured separately: skipping the drift here cost ~nothing
+  //    in HP but stretched fight duration ~50% (each interruption tick is a
+  //    tick not spent attacking). Re-checked every tick, so the moment the
+  //    fight ends, goes bad, or the edge becomes urgent, drift resumes.
   const zoneShrinking = self.zone_target_radius < self.zone_radius;
   if (zoneShrinking && self.distance_to_zone_edge >= 0 && self.distance_to_zone_edge <= ctx.policy.zoneEdgeMargin) {
-    return moveTo(tick, self.zone_target_center);
+    const hardMargin = Math.min(ctx.policy.zoneEdgeHardMargin, ctx.policy.zoneEdgeMargin);
+    const urgent = self.distance_to_zone_edge <= hardMargin;
+    if (urgent || !inAcceptableFight(ctx)) {
+      return moveTo(tick, self.zone_target_center);
+    }
+    // else: fall through and let the normal cascade (combat/positioning)
+    // claim this tick instead.
   }
 
   // 3. Standing near a hazard tile — step off, UNLESS we have the hazard key active.
@@ -129,6 +146,23 @@ function imminentHitIncoming(ctx: DecisionContext): boolean {
   if (self.dodge_cooldown > 0 || self.invuln_ticks > 0 || self.stun_ticks > 0) return false;
   const { chargedIncoming, highChargeBow } = imminentHitTriggers(ctx);
   return chargedIncoming !== undefined || highChargeBow !== null;
+}
+
+/**
+ * Is there a nearby enemy worth calling an active, not-losing fight? Used
+ * only by survivalBehavior's soft zone-edge band (never the hard floor) to
+ * decide whether interrupting combat for a proactive zone nudge is worth it.
+ * Reuses the exact "is anyone actually threatening us" scoring nearestAttacker
+ * already does for emergencyDodge, falling back to plain nearest so a fight
+ * against a full-HP enemy at range still counts. Guarantee that matters
+ * elsewhere: whenever this returns true, gs.enemies() is non-empty, which
+ * guarantees selectTarget (priority 7) will claim the tick — so deferring
+ * here never strands a tick doing neither combat nor zone safety.
+ */
+function inAcceptableFight(ctx: DecisionContext): boolean {
+  const threat = nearestAttacker(ctx) ?? ctx.gs.nearestEnemy();
+  if (!threat) return false;
+  return tradeAdvantage(ctx, threat) >= ctx.policy.minTradeAdvantage;
 }
 
 /**
