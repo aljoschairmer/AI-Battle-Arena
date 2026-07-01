@@ -108,6 +108,23 @@ export const AnalystOutputSchema = z.object({
 });
 export type AnalystOutput = z.infer<typeof AnalystOutputSchema>;
 
+export const CoopRoleEnum = z.enum(["hold", "flank", "support"]);
+
+/**
+ * Coordinator brain output — squad-wide military-tactics call: who to focus,
+ * who tanks the front (hold), who exploits the flank, who hangs back on
+ * ranged support, and whether the squad should regroup instead of fighting
+ * scattered. `roles` keys are arena bot_ids; unknown/stale ids are dropped by
+ * the coordinator before publishing.
+ */
+export const CoordinatorOutputSchema = z.object({
+  focusTargetId: z.string().nullable().default(null),
+  roles: z.record(z.string(), CoopRoleEnum).default({}),
+  regroup: z.boolean().default(false),
+  reasoning: looseText(400),
+});
+export type CoordinatorOutput = z.infer<typeof CoordinatorOutputSchema>;
+
 /**
  * A partial patch of the engine's tuning policy produced by the Tuner agent.
  * Every field is optional (omitted = leave unchanged); values are clamped by

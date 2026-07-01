@@ -1,6 +1,6 @@
 import { assertConfigForRole, config, llmEnabled, runsBrain, runsEngine } from "./config";
 import { getBus, scoped } from "./bus";
-import { startBrain, type BrainHandle } from "./brain";
+import { startBrain, startCoopCoordinator, type BrainHandle } from "./brain";
 import { startEngine, type EngineHandle } from "./engine";
 import { logger } from "./shared/logger";
 import { installFetchProxy } from "./shared/proxy";
@@ -70,6 +70,14 @@ async function main(): Promise<void> {
         }),
       );
     }
+  }
+
+  // ONE squad-wide Coordinator brain per coalition (not one per bot — a
+  // fireteam has one commander). Needs an actual squad (2+ bots) and the LLM
+  // brain running; reads/writes the GLOBAL bus so it hears every bot's coop
+  // reports regardless of their individual scopes.
+  if (runsBrain && llmEnabled && config.coop.enabled && bots.length > 1) {
+    handles.push(await startCoopCoordinator(bus));
   }
 
   let shuttingDown = false;

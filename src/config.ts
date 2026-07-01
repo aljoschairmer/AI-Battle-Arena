@@ -97,6 +97,10 @@ export const config = {
   // and they share enemy intel over a global bus channel.
   coop: {
     enabled: str("BOT_COOP", "false").toLowerCase() === "true",
+    // How often the (single, squad-wide) Coordinator brain re-evaluates
+    // focus-fire + roles. Infrequent by design — it reasons over pooled coop
+    // intel, not the hot path.
+    coordinatorIntervalMs: int("COOP_COORDINATOR_INTERVAL_MS", 3000),
   },
 
   openrouter: {
@@ -108,6 +112,7 @@ export const config = {
       strategist: str("OPENROUTER_MODEL_STRATEGIST", "anthropic/claude-sonnet-4.6"),
       loadout: str("OPENROUTER_MODEL_LOADOUT", "anthropic/claude-sonnet-4.6"),
       tactician: str("OPENROUTER_MODEL_TACTICIAN", "anthropic/claude-haiku-4.5"),
+      coordinator: str("OPENROUTER_MODEL_COORDINATOR", "anthropic/claude-sonnet-4.6"),
     },
     tacticianIntervalMs: int("TACTICIAN_INTERVAL_MS", 2500),
     timeoutMs: int("LLM_TIMEOUT_MS", 8000),

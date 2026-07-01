@@ -524,10 +524,10 @@ async function run(): Promise<void> {
     await coopC.start();
 
     const pos = [0, 0] as [number, number];
-    coopA.report({ ts: Date.now(), botId: "A", name: "A", pos, hp: 100, enemies: [{ id: "e1", hp: 80, pos }, { id: "e2", hp: 30, pos }], focusVote: "e2" });
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [{ id: "e1", hp: 80, pos }, { id: "e2", hp: 30, pos }], focusVote: "e2" });
     // C mistakenly reports ally "A" as an enemy at 1 HP — the coalition must NOT
     // focus-fire it (guards against a friendly-classification race).
-    coopC.report({ ts: Date.now(), botId: "C", name: "C", pos, hp: 100, enemies: [{ id: "A", hp: 1, pos }, { id: "e9", hp: 40, pos }], focusVote: "A" });
+    coopC.report({ ts: Date.now(), botId: "C", name: "C", weapon: "bow", pos, hp: 100, enemies: [{ id: "A", hp: 1, pos }, { id: "e9", hp: 40, pos }], focusVote: "A" });
     await new Promise((r) => setTimeout(r, 10)); // flush pub/sub
 
     check("B learns allies A and C (friendlyIds)", coopB.friendlyIds().has("A") && coopB.friendlyIds().has("C"), [...coopB.friendlyIds()]);

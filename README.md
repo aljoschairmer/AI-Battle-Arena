@@ -284,6 +284,24 @@ It's purely additive and best-effort: with a single bot it's a no-op, and if a
 peer goes silent its stale entries time out (allies after 8s, reported enemies
 after 4s) and everyone falls back to fighting solo.
 
+**Coordinator brain (military tactics).** When `BOT_COOP=true` *and* the LLM
+brain is enabled *and* 2+ bots are running, ONE additional agent — the
+Coordinator — starts alongside the per-bot Strategist/Tactician/Tuner/Loadout
+agents. It's squad-wide, not per-bot: it reads the same `arena:coop` pool every
+engine already publishes to and, every few seconds, calls basic fireteam
+tactics over the global `arena:coop_directive` channel:
+
+- **Concentration of fire** — one shared focus target for the whole squad,
+  overriding each bot's own lowest-HP heuristic when it's fresh.
+- **Roles** — assigns each ally `hold` (tanky melee anchors the front),
+  `flank` (mobile weapons exploit an opening), or `support` (ranged hangs
+  back), matched to their weapon.
+- **Regroup calls** — flags when the squad is scattered and low HP instead of
+  fighting piecemeal.
+
+Falls back to the existing lowest-HP heuristic (no roles) the moment it's
+disabled, quiet, or stale — never a hard dependency.
+
 ```bash
 # .env:  ARENA_API_KEYS=key1,key2,key3   BOT_COOP=true
 npm run dev
@@ -301,8 +319,9 @@ All via env (see `.env.example`). Highlights:
 | `ARENA_API_KEYS` | — | comma-separated keys ⇒ one bot per key, run in parallel |
 | `BOT_COOP` | `false` | `true` ⇒ your parallel bots form a coalition (no friendly fire, focus fire, shared intel) |
 | `OPENROUTER_API_KEY` | — | empty ⇒ pure deterministic bot (no LLM cost) |
-| `OPENROUTER_MODEL_*` | claude-sonnet-4.6 / claude-haiku-4.5 | any current OpenRouter model slug |
+| `OPENROUTER_MODEL_*` | claude-sonnet-4.6 / claude-haiku-4.5 | any current OpenRouter model slug (`_STRATEGIST`/`_TACTICIAN`/`_LOADOUT`/`_COORDINATOR`) |
 | `TACTICIAN_INTERVAL_MS` | `2500` | mid-round re-evaluation cadence |
+| `COOP_COORDINATOR_INTERVAL_MS` | `3000` | squad-wide Coordinator re-evaluation cadence (needs `BOT_COOP=true` + 2+ bots) |
 | `LLM_TIMEOUT_MS` | `8000` | hard cap before falling back to deterministic logic |
 
 ---

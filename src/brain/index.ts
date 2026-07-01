@@ -1,5 +1,6 @@
 import type { Bus } from "../bus";
 import { child } from "../shared/logger";
+import { CoopCoordinator } from "./coopCoordinator";
 import { openrouter } from "./openrouter";
 import { Orchestrator } from "./orchestrator";
 
@@ -7,6 +8,22 @@ const log = child("brain");
 
 export interface BrainHandle {
   stop(): Promise<void>;
+}
+
+/**
+ * Starts the ONE squad-wide Coordinator brain for the coalition (military
+ * tactics: focus-fire + hold/flank/support roles). Callers start this at most
+ * once per coalition — pass the GLOBAL (unscoped) bus so it hears every
+ * parallel bot's coop reports, not just one bot's own scope.
+ */
+export async function startCoopCoordinator(bus: Bus): Promise<BrainHandle> {
+  const coordinator = new CoopCoordinator(bus);
+  await coordinator.start();
+  return {
+    async stop() {
+      await coordinator.stop();
+    },
+  };
 }
 
 export async function startBrain(bus: Bus): Promise<BrainHandle> {

@@ -349,6 +349,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       if (coop && gs.selfId) {
         gs.setFriendlies(coop.friendlyIds());
         controller.setCoopFocus(coop.focus());
+        controller.setCoopRole(coop.role());
         if (gs.tick % COOP_EVERY_TICKS === 0) {
           const seen = gs.enemies().slice(0, 8).map((e) => ({ id: e.bot_id, hp: e.hp, pos: e.position }));
           const focusVote = seen.slice().sort((a, b) => a.hp - b.hp)[0]?.id ?? null;
@@ -356,6 +357,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
             ts: Date.now(),
             botId: gs.selfId,
             name: botName,
+            weapon: gs.self?.weapon ?? "sword",
             pos: gs.position,
             hp: gs.self?.hp ?? 0,
             enemies: seen,
