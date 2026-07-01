@@ -5,7 +5,7 @@ import { type Bus, Channels, Keys } from "../bus";
 import { child } from "../shared/logger";
 import type { RoundOutcome } from "../shared/memory";
 import type { Directive, EnginePolicy, LoadoutPlan, LoadoutRequest, RoundContext } from "../types/internal";
-import { DEFAULT_DIRECTIVE, DEFAULT_POLICY } from "../types/internal";
+import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, isFresher, sanitizePolicy, shouldApplyDirective } from "../types/internal";
 import type {
   ConnectedMsg,
   DeathMsg,
@@ -77,8 +77,12 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   let pendingPlan: LoadoutPlan | null = null;
   let fallbackLoadout = chooseFallbackLoadout({});
   let selectionTimer: NodeJS.Timeout | null = null;
+  // Freshness state for directive/policy: version AND ts, so a Brain restart
+  // (version counter reset) can't leave this engine deaf forever — see isFresher.
   let directiveVersion = -1;
+  let directiveTs = -1;
   let policyVersion = -1;
+  let policyTs = -1;
 
   // Whether to publish telemetry (snapshots / loadout requests / round outcomes)
   // to the Brain. CRITICAL: in a split deployment the Engine process has NO
@@ -106,8 +110,17 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   // --- Brain channel wiring (no-ops harmlessly if the Brain isn't running) ---
 
   const unsubDirective = await bus.subscribe<Directive>(Channels.directive, (d) => {
-    if (d.version <= directiveVersion) return; // ignore stale / out-of-order
+    // Stale / out-of-order / wrong-round directives are discarded; a restarted
+    // Brain (version reset) is accepted via the newer-ts path.
+    if (!shouldApplyDirective({ version: directiveVersion, ts: directiveTs }, d, gs.round)) {
+      log.debug(
+        { v: d?.version, round: d?.round, currentRound: gs.round, src: d?.source },
+        "directive discarded (stale version or stale round)",
+      );
+      return;
+    }
     directiveVersion = d.version;
+    directiveTs = d.ts;
     controller.setDirective(d);
     log.debug({ posture: d.posture, objective: d.objective, src: d.source }, "directive applied");
   });
@@ -119,9 +132,14 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   });
 
   // Live behaviour tuning from the LLM Tuner — applied instantly, no restart.
-  const unsubPolicy = await bus.subscribe<EnginePolicy>(Channels.policy, (p) => {
-    if (p.version <= policyVersion) return; // newest wins
+  const unsubPolicy = await bus.subscribe<EnginePolicy>(Channels.policy, (raw) => {
+    if (!raw || typeof raw.version !== "number" || typeof raw.ts !== "number") return;
+    if (!isFresher({ version: policyVersion, ts: policyTs }, raw)) return; // newest wins
+    // Never trust the wire: re-clamp on the consuming side (same clamp table
+    // as the Brain's mergePolicy — a raw KV write can't smuggle wild values in).
+    const p = sanitizePolicy(raw);
     policyVersion = p.version;
+    policyTs = p.ts;
     controller.setPolicy(p);
     log.info(
       { v: p.version, dodge: p.dodgeEagerness, kite: p.kiteRangeBias, src: p.source, why: p.reasoning },
@@ -129,21 +147,31 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     );
   });
 
-  // Seed directive from the KV mirror so a freshly-started engine isn't blind.
-  const seeded = await bus.getKV<Directive>(Keys.currentDirective);
+  // Seed directive/policy from the KV mirror so a freshly-started engine isn't
+  // blind. Best-effort: a Redis outage at boot must not kill startup (the bus
+  // keeps retrying in the background), so fall back to defaults on any failure.
+  let seeded: Directive | null = null;
+  let seededPolicy: EnginePolicy | null = null;
+  try {
+    seeded = await bus.getKV<Directive>(Keys.currentDirective);
+    seededPolicy = await bus.getKV<EnginePolicy>(Keys.currentPolicy);
+  } catch (e) {
+    log.warn({ err: (e as Error).message }, "KV seed read failed — starting on defaults");
+  }
   if (seeded) {
     directiveVersion = seeded.version;
+    directiveTs = seeded.ts;
     controller.setDirective(seeded);
   } else {
     controller.setDirective({ ...DEFAULT_DIRECTIVE });
   }
 
-  // Seed the tuning policy from KV so learned tuning survives an engine restart.
-  const seededPolicy = await bus.getKV<EnginePolicy>(Keys.currentPolicy);
   if (seededPolicy) {
-    policyVersion = seededPolicy.version;
-    controller.setPolicy(seededPolicy);
-    log.info({ v: seededPolicy.version, src: seededPolicy.source }, "restored tuning policy");
+    const p = sanitizePolicy(seededPolicy);
+    policyVersion = p.version;
+    policyTs = p.ts;
+    controller.setPolicy(p);
+    log.info({ v: p.version, src: p.source }, "restored tuning policy");
   } else {
     controller.setPolicy({ ...DEFAULT_POLICY });
   }
@@ -286,10 +314,14 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     try {
       gs.applyConnected(msg);
       telemetryLog.setBotId(msg.bot_id);
-      // Fresh connection = a new selection window opens.
+      // Fresh connection = a new selection window opens. Drop any plan from a
+      // previous connection — requestLoadout below publishes a fresh request,
+      // so the Brain re-decides with current insights instead of us silently
+      // replaying a stale pick (the 8s fallback timer still guarantees a send).
       loadoutSent = false;
       loadoutLocked = false;
       confirmedWeapon = null;
+      pendingPlan = null;
       log.info(
         { botId: msg.bot_id, grid: msg.grid_size, weapons: msg.available_weapons?.length ?? 0 },
         "connected to arena",

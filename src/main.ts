@@ -40,6 +40,18 @@ async function main(): Promise<void> {
   if (config.bus === "redis" && !busHealthy) {
     logger.warn("Redis ping failed — workers will keep retrying in the background");
   }
+  // Split-deployment trap: bus scopes (bot0:, bot1:, ...) are derived from the
+  // key COUNT. A ROLE=brain process whose env lacks the engine process's
+  // ARENA_API_KEYS listens on the UNSCOPED channels while the engines publish
+  // on bot0:/bot1: — every snapshot/directive silently misses. Nothing crashes;
+  // the bots just fight brainless. Surface it loudly at startup.
+  if (runsBrain && !runsEngine && config.bus === "redis" && config.arena.bots.length <= 1) {
+    logger.warn(
+      "ROLE=brain with 0-1 ARENA_API_KEY(S) configured: this brain uses the unscoped bus. " +
+        "If the engine process runs MULTIPLE keys (scoped bot0:/bot1: channels), set the same " +
+        "ARENA_API_KEYS here or the brain will never hear those engines.",
+    );
+  }
 
   const handles: Array<EngineHandle | BrainHandle> = [];
 

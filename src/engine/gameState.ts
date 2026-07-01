@@ -95,6 +95,9 @@ export class GameState {
     this.statMax = msg.stat_max || 10;
     this.lobbyWeapons = {};
     this.isRespawning = false;
+    // A (re)connect may land us in a different round than the one we
+    // disconnected from — everything observed on the old connection is void.
+    this.resetTransientObservations();
   }
 
   applyLobby(msg: LobbyMsg): void {
@@ -113,6 +116,27 @@ export class GameState {
     this.isRespawning = false;
     // Terrain is per-round; invalidate until we (optionally) fetch the new map.
     this.terrain = null;
+    // Everyone teleports to a fresh spawn at round start, so last-seen
+    // positions, velocity estimates and cached entities from the previous
+    // round are all wrong now. Worse, if the server's tick counter resets per
+    // round, old entries have tick > now and the age-based expiry
+    // (now - tick > 30) can NEVER reclaim them — guessedEnemyPositions would
+    // then report phantom "recently seen" enemies at last round's coordinates
+    // until each bot is re-sighted.
+    this.resetTransientObservations();
+  }
+
+  /** Clear every per-round observation: entity cache, fog memory, velocities. */
+  private resetTransientObservations(): void {
+    this.entities = [];
+    this.hints = [];
+    this.nearbyMines = 0;
+    this.lastSeenEnemies = {};
+    this.enemyVel = {};
+    this.threatCache = null;
+    this.pendingDodge = null;
+    this.lastTargetId = null;
+    this.lastTargetSwitchTick = -1000;
   }
 
   applyRespawn(msg: RespawnMsg): void {

@@ -20,7 +20,18 @@ import { MemoryBus } from "../src/bus/memory";
 import { scoped } from "../src/bus";
 import { normalizeStats } from "../src/shared/stats";
 import { chooseFallbackLoadout } from "../src/engine/loadout";
-import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../src/types/internal";
+import {
+  DEFAULT_DIRECTIVE,
+  DEFAULT_POLICY,
+  isFresher,
+  mergePolicy,
+  sanitizePolicy,
+  shouldApplyDirective,
+  type Directive,
+  type EnginePolicy,
+} from "../src/types/internal";
+import { TokenBucket } from "../src/shared/ratelimit";
+import { isServerMessageType } from "../src/arena/ws";
 import { deriveStats, damagePerHit, dpsInto, fightPower, optimizeBuild } from "../src/shared/derived";
 import { WEAPONS } from "../src/engine/weapons";
 import { matchupRating, counterScore, rankCounterPicks } from "../src/engine/matchups";
@@ -32,6 +43,7 @@ import type {
   NearbyBot,
   NearbyEntity,
   NearbyPickup,
+  RoundStartMsg,
   SelfState,
   TickMsg,
   Weapon,
@@ -817,6 +829,136 @@ async function run(): Promise<void> {
     const a = AnalystOutputSchema.safeParse({ lessons: Array.from({ length: 12 }, () => "z".repeat(500)) });
     check("analyst output with too many long lessons parses", a.success, a.success ? "ok" : a.error?.issues?.[0]);
     check("...lessons clamped to <=6", a.success === true && a.data.lessons.length <= 6, a.success && a.data.lessons.length);
+  }
+
+  console.log("\nDirective/policy freshness (bot audit: version-reset + stale-round guards)");
+  {
+    const dir = (over: Partial<Directive>): Directive => ({ ...DEFAULT_DIRECTIVE, ...over });
+
+    // Normal flow: strictly newer version accepted.
+    check(
+      "newer version accepted",
+      shouldApplyDirective({ version: 5, ts: 1000 }, dir({ version: 6, ts: 1001, round: 3 }), 3),
+    );
+    // Duplicate / out-of-order delivery rejected.
+    check(
+      "same version + same ts rejected (duplicate)",
+      !shouldApplyDirective({ version: 6, ts: 1001 }, dir({ version: 6, ts: 1001, round: 3 }), 3),
+    );
+    check(
+      "older version + older ts rejected (out-of-order)",
+      !shouldApplyDirective({ version: 6, ts: 2000 }, dir({ version: 4, ts: 1500, round: 3 }), 3),
+    );
+    // THE version-reset bug: a restarted Brain publishes version 1 while the
+    // engine holds version 50 — must be accepted via the newer-ts path, or the
+    // engine ignores every directive forever.
+    check(
+      "restarted brain (version reset, newer ts) accepted",
+      shouldApplyDirective({ version: 50, ts: 1000 }, dir({ version: 1, ts: 5000, round: 3 }), 3),
+    );
+    check("isFresher: ts breaks a version regression", isFresher({ version: 50, ts: 1000 }, { version: 1, ts: 5000 }));
+    // THE late-LLM-response bug: a tactic computed against round 3's snapshot
+    // lands after round 4 started, with a higher version — must be rejected.
+    check(
+      "late cross-round directive rejected despite higher version",
+      !shouldApplyDirective({ version: 6, ts: 1001 }, dir({ version: 7, ts: 9000, round: 3 }), 4),
+    );
+    // Round-agnostic directives (defaults / pre-round, round = -1) still land.
+    check(
+      "round=-1 directive accepted regardless of current round",
+      shouldApplyDirective({ version: 6, ts: 1001 }, dir({ version: 7, ts: 9000, round: -1 }), 4),
+    );
+
+    // Consumer-side policy clamp: a raw KV write with wild values must be
+    // clamped by the engine on read, preserving version/ts (same revision).
+    const rawPolicy = {
+      ...DEFAULT_POLICY,
+      version: 7,
+      ts: 12345,
+      dodgeEagerness: 99,
+      mineCooldownTicks: -50,
+      aggression: 42,
+      source: "rogue-writer",
+    } as EnginePolicy;
+    const sane = sanitizePolicy(rawPolicy);
+    check("sanitizePolicy clamps dodgeEagerness to <=1", sane.dodgeEagerness <= 1, sane.dodgeEagerness);
+    check("sanitizePolicy clamps mineCooldownTicks to >=5", sane.mineCooldownTicks >= 5, sane.mineCooldownTicks);
+    check("sanitizePolicy clamps aggression to <=1", sane.aggression <= 1, sane.aggression);
+    check("sanitizePolicy preserves version", sane.version === 7, sane.version);
+    check("sanitizePolicy preserves ts", sane.ts === 12345, sane.ts);
+    check("sanitizePolicy preserves source", sane.source === "rogue-writer", sane.source);
+  }
+
+  console.log("\nnormalizeStats: multiply-invalid LLM output (bot audit)");
+  {
+    // Sum 23 AND one stat at 15 at the same time — clamp then rebalance.
+    const s = normalizeStats({ hp: 15, speed: 3, attack: 3, defense: 2 });
+    check("multi-invalid: sums to 20", s.hp + s.speed + s.attack + s.defense === 20, s);
+    check("multi-invalid: every stat in 1..10", Math.max(s.hp, s.speed, s.attack, s.defense) <= 10 && Math.min(s.hp, s.speed, s.attack, s.defense) >= 1, s);
+    // NaN / missing / fractional values coerced, never NaN out.
+    const n = normalizeStats({ hp: Number.NaN, speed: 7.7, attack: undefined as unknown as number, defense: 2 });
+    check("NaN/fractional/missing: sums to 20", n.hp + n.speed + n.attack + n.defense === 20, n);
+    check("NaN/fractional/missing: all integers", [n.hp, n.speed, n.attack, n.defense].every(Number.isInteger), n);
+  }
+
+  console.log("\nTokenBucket (bot audit: burst cap + monotonic refill)");
+  {
+    let clock = 0;
+    const bucket = new TokenBucket(6, 20, () => clock);
+    let taken = 0;
+    for (let i = 0; i < 10; i++) if (bucket.tryTake()) taken += 1;
+    check("burst capped at capacity (6), rapid calls can't exceed it", taken === 6, taken);
+    clock += 100; // 100ms at 20/s -> 2 tokens
+    check("refills from elapsed time (2 tokens after 100ms)", bucket.tryTake() && bucket.tryTake() && !bucket.tryTake());
+    // A stalled/regressed clock must not corrupt the bucket (no free tokens,
+    // no negative balance) and refill must resume once time advances again.
+    clock -= 50;
+    check("clock regression grants no tokens", !bucket.tryTake());
+    clock += 100; // back past the last refill point
+    check("refill resumes after the clock recovers", bucket.tryTake());
+  }
+
+  console.log("\nGameState round transition drops stale observations (bot audit)");
+  {
+    const gs = freshGameState();
+    gs.applyTick(tickFrom(self(), [enemy({ bot_id: "ghost", position: [60, 60] })], 5900));
+    check("enemy tracked before round end", gs.guessedEnemyPositions(30).length === 1);
+    const rs: RoundStartMsg = {
+      type: "round_start",
+      round_number: 2,
+      round_modifier: "",
+      round_modifier_label: "",
+      position: [10, 10],
+      bots_in_round: 4,
+      all_positions: {},
+      safe_zone: { center: [50, 50], radius: 45, target_center: [50, 50], target_radius: 20 },
+    };
+    gs.applyRoundStart(rs);
+    // If the server's tick counter resets per round, old entries had
+    // tick=5900 > now and age-based expiry could NEVER reclaim them.
+    check("round_start clears last-seen enemy memory", gs.guessedEnemyPositions(30).length === 0, gs.guessedEnemyPositions(30));
+    check("round_start clears the entity cache", gs.enemies().length === 0);
+  }
+
+  console.log("\nArenaSocket server-frame whitelist (bot audit)");
+  {
+    check("'tick' is a valid server frame", isServerMessageType("tick"));
+    check("'kick' is a valid server frame", isServerMessageType("kick"));
+    // Spoofable EventEmitter internals / client-side lifecycle events must not
+    // be emittable by a server frame.
+    check("'close' frame is rejected (would spoof lifecycle)", !isServerMessageType("close"));
+    check("'open' frame is rejected (would spoof lifecycle)", !isServerMessageType("open"));
+    check("'newListener' frame is rejected (EventEmitter internal)", !isServerMessageType("newListener"));
+  }
+
+  console.log("\nMemoryBus KV TTL matches Redis EX semantics (bot audit)");
+  {
+    const bus = new MemoryBus({ kvTtlMs: 40 });
+    await bus.setKV("k", { v: 1 });
+    check("KV readable inside TTL", (await bus.getKV<{ v: number }>("k"))?.v === 1);
+    await new Promise((r) => setTimeout(r, 60));
+    check("KV expires after TTL (like Redis EX 300)", (await bus.getKV("k")) === null);
+    await bus.close();
   }
 
   console.log("\nMemoryBus");

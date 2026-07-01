@@ -25,7 +25,11 @@ const ENEMY_TTL_MS = 4000;
  */
 export class CoopCoordinator {
   private readonly agent = new CoordinatorAgent();
-  private readonly members = new Map<string, CoopMessage>();
+  // Staleness is judged by LOCAL receipt time, not the sender's ts — in a split
+  // deployment the reporting engines run in other processes/hosts, and clock
+  // skew against their wall clocks would make members look permanently stale
+  // (never coordinating) or permanently fresh (coordinating on ghosts).
+  private readonly members = new Map<string, { msg: CoopMessage; receivedAt: number }>();
   private readonly enemies = new Map<string, { hp: number; position: [number, number]; ts: number }>();
   private directive: CoopDirective = { ...DEFAULT_COOP_DIRECTIVE };
   private version = 0;
@@ -36,16 +40,21 @@ export class CoopCoordinator {
   constructor(private readonly bus: Bus) {}
 
   async start(): Promise<void> {
-    const seeded = await this.bus.getKV<CoopDirective>(Keys.currentCoopDirective);
-    if (seeded) {
-      this.version = seeded.version;
-      this.directive = seeded;
+    try {
+      const seeded = await this.bus.getKV<CoopDirective>(Keys.currentCoopDirective);
+      if (seeded) {
+        this.version = seeded.version;
+        this.directive = seeded;
+      }
+    } catch (e) {
+      log.warn({ err: (e as Error).message }, "KV seed read failed — starting on defaults");
     }
 
     this.unsub = await this.bus.subscribe<CoopMessage>(Channels.coop, (m) => {
       if (!m || !m.botId) return;
-      this.members.set(m.botId, m);
-      for (const e of m.enemies) this.enemies.set(e.id, { hp: e.hp, position: e.pos, ts: Date.now() });
+      const now = Date.now();
+      this.members.set(m.botId, { msg: m, receivedAt: now });
+      for (const e of m.enemies) this.enemies.set(e.id, { hp: e.hp, position: e.pos, ts: now });
     });
 
     this.timer = setInterval(() => void this.tick(), Math.max(1000, config.coop.coordinatorIntervalMs));
@@ -63,7 +72,7 @@ export class CoopCoordinator {
   private async tick(): Promise<void> {
     if (this.busy) return;
     const now = Date.now();
-    for (const [id, m] of this.members) if (now - m.ts > MEMBER_TTL_MS) this.members.delete(id);
+    for (const [id, m] of this.members) if (now - m.receivedAt > MEMBER_TTL_MS) this.members.delete(id);
     for (const [id, e] of this.enemies) if (now - e.ts > ENEMY_TTL_MS) this.enemies.delete(id);
 
     // Need an actual squad (2+ allies reporting in) and at least one tracked
@@ -73,7 +82,7 @@ export class CoopCoordinator {
     this.busy = true;
     try {
       const out = await this.agent.run({
-        members: [...this.members.values()].map((m) => ({
+        members: [...this.members.values()].map(({ msg: m }) => ({
           botId: m.botId,
           name: m.name,
           weapon: m.weapon,

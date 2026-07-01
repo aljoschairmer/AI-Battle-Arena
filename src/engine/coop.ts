@@ -1,7 +1,7 @@
 import { type Bus, Channels } from "../bus";
 import { child } from "../shared/logger";
 import type { CoopDirective, CoopMessage, CoopRole } from "../types/internal";
-import { DEFAULT_COOP_DIRECTIVE } from "../types/internal";
+import { DEFAULT_COOP_DIRECTIVE, isFresher } from "../types/internal";
 
 const log = child("coop");
 
@@ -42,7 +42,10 @@ export class Coalition {
       for (const e of m.enemies) this.enemies.set(e.id, { hp: e.hp, ts: now });
     });
     this.unsubDirective = await this.bus.subscribe<CoopDirective>(Channels.coopDirective, (d) => {
-      if (!d || d.version <= this.coopDirective.version) return; // newest wins
+      if (!d || typeof d.version !== "number" || typeof d.ts !== "number") return;
+      // Newest wins; a restarted Coordinator (version counter reset) is still
+      // accepted via the newer-ts path instead of being ignored forever.
+      if (!isFresher(this.coopDirective, d)) return;
       this.coopDirective = d;
     });
     log.info("coalition online");

@@ -17,6 +17,12 @@ export class RedisBus implements Bus {
   private readonly pub: Redis;
   private readonly sub: Redis;
   private readonly handlers = new Map<string, Set<(payload: unknown) => void>>();
+  // Channels whose SUBSCRIBE actually reached Redis (ioredis auto-resubscribes
+  // these on reconnect). A channel with handlers but not in here has a retry
+  // pending — see scheduleResubscribe.
+  private readonly wireSubscribed = new Set<string>();
+  private readonly resubTimers = new Map<string, NodeJS.Timeout>();
+  private closed = false;
 
   constructor(url: string) {
     // Redact credentials before logging the URL (redis://user:pass@host:port).
@@ -73,15 +79,30 @@ export class RedisBus implements Bus {
   }
 
   async subscribe<T>(channel: string, handler: (payload: T) => void): Promise<() => void> {
+    // Register the handler FIRST so a failed wire-SUBSCRIBE never leaves an
+    // empty set in the map (which would make every later subscribe() to this
+    // channel think the wire subscription exists and silently never deliver).
     let set = this.handlers.get(channel);
+    const firstForChannel = !set;
     if (!set) {
       set = new Set();
       this.handlers.set(channel, set);
-      await this.sub.subscribe(channel);
-      log.debug({ channel }, "redis subscribed");
     }
     const typed = handler as (payload: unknown) => void;
     set.add(typed);
+
+    if (firstForChannel) {
+      try {
+        await this.sub.subscribe(channel);
+        this.wireSubscribed.add(channel);
+        log.debug({ channel }, "redis subscribed");
+      } catch (e) {
+        // Match MemoryBus semantics: subscribe() itself never fails — delivery
+        // begins once Redis is reachable. Retry in the background.
+        log.warn({ channel, err: (e as Error).message }, "redis subscribe failed — will retry");
+        this.scheduleResubscribe(channel, 1);
+      }
+    }
 
     return () => {
       const s = this.handlers.get(channel);
@@ -89,12 +110,42 @@ export class RedisBus implements Bus {
       s.delete(typed);
       if (s.size === 0) {
         this.handlers.delete(channel);
-        this.sub
-          .unsubscribe(channel)
-          .then(() => log.debug({ channel }, "redis unsubscribed"))
-          .catch((e) => log.warn({ channel, err: (e as Error).message }, "redis unsubscribe failed"));
+        const timer = this.resubTimers.get(channel);
+        if (timer) {
+          clearTimeout(timer);
+          this.resubTimers.delete(channel);
+        }
+        if (this.wireSubscribed.has(channel)) {
+          this.wireSubscribed.delete(channel);
+          this.sub
+            .unsubscribe(channel)
+            .then(() => log.debug({ channel }, "redis unsubscribed"))
+            .catch((e) => log.warn({ channel, err: (e as Error).message }, "redis unsubscribe failed"));
+        }
       }
     };
+  }
+
+  /** Keep retrying a failed wire-SUBSCRIBE with capped backoff until it lands
+   *  (or every handler for the channel unsubscribes / the bus closes). */
+  private scheduleResubscribe(channel: string, attempt: number): void {
+    if (this.closed || !this.handlers.has(channel) || this.resubTimers.has(channel)) return;
+    const delay = Math.min(30_000, 500 * 2 ** Math.min(attempt, 6));
+    const timer = setTimeout(() => {
+      this.resubTimers.delete(channel);
+      if (this.closed || !this.handlers.has(channel)) return;
+      this.sub
+        .subscribe(channel)
+        .then(() => {
+          this.wireSubscribed.add(channel);
+          log.info({ channel, attempt }, "redis subscribe recovered");
+        })
+        .catch((e) => {
+          log.warn({ channel, attempt, err: (e as Error).message }, "redis subscribe retry failed");
+          this.scheduleResubscribe(channel, attempt + 1);
+        });
+    }, delay);
+    this.resubTimers.set(channel, timer);
   }
 
   async setKV<T>(key: string, value: T): Promise<void> {
@@ -122,6 +173,9 @@ export class RedisBus implements Bus {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    for (const t of this.resubTimers.values()) clearTimeout(t);
+    this.resubTimers.clear();
     try {
       this.pub.disconnect();
       this.sub.disconnect();

@@ -22,6 +22,29 @@ export interface ArenaSocketEvents {
   close: [number, string];
 }
 
+// Server frame types we re-emit as events. The discriminant comes off the wire,
+// so it MUST be whitelisted: emitting arbitrary server-provided strings on the
+// EventEmitter would let a frame like {"type":"close"} or {"type":"open"} spoof
+// our internal lifecycle events (a spoofed "close" schedules a reconnect while
+// the real socket is still open — two live sockets, duplicate ticks).
+const SERVER_MESSAGE_TYPES = new Set<string>([
+  "connected",
+  "loadout_confirmed",
+  "lobby",
+  "round_start",
+  "tick",
+  "kill",
+  "death",
+  "respawn",
+  "round_end",
+  "error",
+  "kick",
+]);
+
+export function isServerMessageType(t: string): t is ServerMessage["type"] {
+  return SERVER_MESSAGE_TYPES.has(t);
+}
+
 /**
  * Resilient WebSocket client for the arena bot endpoint.
  *
@@ -41,6 +64,10 @@ export class ArenaSocket extends EventEmitter {
   // 25/sec server cap; we self-limit to 20/sec with a burst of 6 to stay safe.
   private readonly bucket = new TokenBucket(6, 20);
   private droppedSinceLastWarn = 0;
+  // Rolling 1s outbound counter — cheap telemetry proving the self-cap holds
+  // under real load (visible at debug level whenever a window runs hot).
+  private sentInWindow = 0;
+  private windowStart = Date.now();
 
   private warnedUpgradeBlocked = false;
   private authSentThisConn = false;
@@ -189,11 +216,16 @@ export class ArenaSocket extends EventEmitter {
       return;
     }
     this.gotServerMessage = true;
-    if (!msg || typeof (msg as { type?: unknown }).type !== "string") return;
+    const type = (msg as { type?: unknown } | null)?.type;
+    if (typeof type !== "string") return;
+    if (!isServerMessageType(type)) {
+      this.log.debug({ type }, "ignoring unknown server frame type");
+      return;
+    }
     // Re-emit as a typed, per-type event. Listeners attach via on('tick', ...).
     // Use the base emitter directly: the discriminant is only known at runtime,
     // so the strongly-typed override can't narrow it here.
-    super.emit(msg.type, msg);
+    super.emit(type, msg);
   }
 
   /**
@@ -212,11 +244,24 @@ export class ArenaSocket extends EventEmitter {
     }
     try {
       this.ws.send(JSON.stringify(msg));
+      this.countSent();
       return true;
     } catch (e) {
       this.log.warn({ err: (e as Error).message }, "send failed");
       return false;
     }
+  }
+
+  private countSent(): void {
+    const now = Date.now();
+    if (now - this.windowStart >= 1000) {
+      if (this.sentInWindow > 15) {
+        this.log.debug({ perSec: this.sentInWindow }, "outbound rate (rolling 1s window)");
+      }
+      this.sentInWindow = 0;
+      this.windowStart = now;
+    }
+    this.sentInWindow += 1;
   }
 
   /** Send a critical control frame (e.g. auth) bypassing the rate limiter. */

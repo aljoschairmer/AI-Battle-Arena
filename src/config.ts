@@ -115,7 +115,9 @@ export const config = {
       coordinator: str("OPENROUTER_MODEL_COORDINATOR", "anthropic/claude-sonnet-4.6"),
     },
     tacticianIntervalMs: int("TACTICIAN_INTERVAL_MS", 2500),
-    timeoutMs: int("LLM_TIMEOUT_MS", 8000),
+    // Floor of 1s: a zero/negative timeout (typo'd env) would abort every LLM
+    // call instantly and silently reduce the brain to pure fallback logic.
+    timeoutMs: Math.max(1000, int("LLM_TIMEOUT_MS", 8000)),
   },
 
   log: {

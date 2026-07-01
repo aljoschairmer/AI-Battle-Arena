@@ -7,13 +7,18 @@ import type { Bus } from "./types";
  * We still deep-clone via structuredClone to mimic the isolation you'd get over
  * a real wire, so memory-mode behaviour matches Redis-mode behaviour.
  */
+/** Matches RedisBus.setKV's `EX 300` so both buses expire KV identically. */
+export const KV_TTL_MS = 300_000;
+
 export class MemoryBus implements Bus {
   private readonly emitter = new EventEmitter();
-  private readonly kv = new Map<string, unknown>();
+  private readonly kv = new Map<string, { v: unknown; expiresAt: number }>();
+  private readonly kvTtlMs: number;
 
-  constructor() {
+  constructor(opts: { kvTtlMs?: number } = {}) {
     // Many subscribers across both workers can attach to a single channel.
     this.emitter.setMaxListeners(100);
+    this.kvTtlMs = opts.kvTtlMs ?? KV_TTL_MS;
   }
 
   async publish<T>(channel: string, payload: T): Promise<void> {
@@ -30,12 +35,19 @@ export class MemoryBus implements Bus {
   }
 
   async setKV<T>(key: string, value: T): Promise<void> {
-    this.kv.set(key, clone(value));
+    // Expire like RedisBus (EX 300) so stale state from a dead match doesn't
+    // linger here either — BUS=memory must validate BUS=redis behaviour.
+    this.kv.set(key, { v: clone(value), expiresAt: Date.now() + this.kvTtlMs });
   }
 
   async getKV<T>(key: string): Promise<T | null> {
-    const v = this.kv.get(key);
-    return v === undefined ? null : (clone(v) as T);
+    const entry = this.kv.get(key);
+    if (entry === undefined) return null;
+    if (Date.now() >= entry.expiresAt) {
+      this.kv.delete(key);
+      return null;
+    }
+    return clone(entry.v) as T;
   }
 
   async ping(): Promise<boolean> {
