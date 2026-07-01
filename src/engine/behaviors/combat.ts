@@ -1,7 +1,8 @@
 import type { ClientAction, NearbyBot } from "../../types/protocol";
-import { dist, stepAwayFrom } from "../../shared/geometry";
+import { chebyshev, dist, stepAwayFrom } from "../../shared/geometry";
 import { profileFor } from "../weapons";
 import { type DecisionContext, attack, attackAt, grappleTarget, grappleTo, gravityWell, move, shove } from "./context";
+import { flankingPosition } from "./movement";
 import { enemyCluster } from "./targeting";
 
 /**
@@ -63,10 +64,17 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
         return attack(tick, target.bot_id, false);
       }
 
-      // Daggers: strongly prefer hitting from the rear
-      if (self.weapon === "daggers" && !target.rear_exposed && d <= 1.5) {
-        // Reposition to flank — but still attack if it's the only option
-        // (fallthrough to normal attack below)
+      // Daggers: strongly prefer hitting from the rear. Only defer to finish
+      // an ALREADY-nearly-complete flank (one step from the tile
+      // positionForCombat was steering us toward) — not from scratch, which
+      // would give up the current adjacency for an open-ended chase. This was
+      // previously a dead conditional (empty body, always fell through to a
+      // head-on attack) — see docs/audit/phase3-findings.md finding #3.
+      if (ctx.policy.daggerFlank && self.weapon === "daggers" && !target.rear_exposed) {
+        const behind = flankingPosition(me, target.position);
+        if (behind && chebyshev(me, behind) === 1 && gs.isPassable(behind[0], behind[1])) {
+          return null; // let positionForCombat take the final step
+        }
       }
 
       return attack(tick, target.bot_id, charged);
@@ -83,7 +91,12 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
         return shove(tick, target.bot_id);
       }
       // Not aggressive: step away while cooling rather than eat the enemy's
-      // next swing point-blank. Wall-aware so we don't freeze in a corner.
+      // next swing point-blank. Threat-field-aware (accounts for every nearby
+      // enemy + zone + hazards, not just this one target) so cooling down
+      // doesn't step out of this target's range and straight into another's —
+      // mirrors the pattern survival.ts already uses for the same situation.
+      const fieldStep = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
+      if (fieldStep) return move(tick, fieldStep);
       const away = gs.stepAwayFrom(target.position);
       const col = gs.position[0] + away[0];
       const row = gs.position[1] + away[1];

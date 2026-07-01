@@ -10,6 +10,10 @@
  */
 import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
+import { retreatAndHeal, tacticalDisengage } from "../src/engine/behaviors/survival";
+import { combatBehavior } from "../src/engine/behaviors/combat";
+import { grabPickup } from "../src/engine/behaviors/movement";
+import { selectTarget } from "../src/engine/behaviors/targeting";
 import { Coalition } from "../src/engine/coop";
 import { Channels } from "../src/bus";
 import { MemoryBus } from "../src/bus/memory";
@@ -21,10 +25,13 @@ import { deriveStats, damagePerHit, dpsInto, fightPower, optimizeBuild } from ".
 import { WEAPONS } from "../src/engine/weapons";
 import { matchupRating, counterScore, rankCounterPicks } from "../src/engine/matchups";
 import { tradeAdvantage } from "../src/engine/combatMath";
+import { chebyshev } from "../src/shared/geometry";
 import { PolicyPatchSchema, StrategyOutputSchema, AnalystOutputSchema } from "../src/brain/agents/schemas";
 import type {
   ConnectedMsg,
   NearbyBot,
+  NearbyEntity,
+  NearbyPickup,
   SelfState,
   TickMsg,
   Weapon,
@@ -113,7 +120,17 @@ function enemy(overrides: Partial<NearbyBot> = {}): NearbyBot {
   };
 }
 
-function tickFrom(s: SelfState, enemies: NearbyBot[] = [], tickNum = 100): TickMsg {
+function pickup(overrides: Partial<NearbyPickup> = {}): NearbyPickup {
+  return {
+    type: "pickup",
+    pickup_id: "p1",
+    pickup_type: "health_pack",
+    position: [55, 50],
+    ...overrides,
+  };
+}
+
+function tickFrom(s: SelfState, entities: NearbyEntity[] = [], tickNum = 100): TickMsg {
   return {
     type: "tick",
     tick: tickNum,
@@ -121,7 +138,7 @@ function tickFrom(s: SelfState, enemies: NearbyBot[] = [], tickNum = 100): TickM
     fog_radius: 7,
     your_state: s,
     nearby_mines: 0,
-    nearby_entities: enemies,
+    nearby_entities: entities,
     safe_zone: {
       center: s.zone_center,
       radius: s.zone_radius,
@@ -183,11 +200,60 @@ async function run(): Promise<void> {
     const ctl = new Controller();
     ctl.onRoundStart();
 
-    // 1. Outside the safe zone -> head back to centre.
+    // 1. Outside the safe zone, no threats nearby -> step toward centre via the
+    //    threat field (a single "move" now, not a blind "move_to" — see below).
     const gs1 = freshGameState();
     gs1.applyTick(tickFrom(self({ in_safe_zone: false, position: [90, 90], zone_center: [50, 50] })));
     const a1 = ctl.decide(gs1);
-    check("outside zone -> move_to zone centre", a1.action === "move_to", a1);
+    check("outside zone, no threats -> move (threat-field step)", a1.action === "move", a1);
+    check(
+      "...step direction reduces distance to zone centre",
+      a1.action === "move" && a1.direction[0] <= 0 && a1.direction[1] <= 0,
+      a1,
+    );
+
+    // 1b. Outside the zone with a dangerous enemy sitting directly on the
+    // straight line to zone centre -> must NOT step toward/adjacent to it (the
+    // bug this regression-tests: survivalBehavior's zone-return used to be a
+    // raw moveTo(zone_center) with zero threat-field consultation, meaning it
+    // could walk straight through an enemy's coverage to get back in).
+    const gs1b = freshGameState();
+    gs1b.applyTick(
+      tickFrom(
+        self({ in_safe_zone: false, position: [90, 50], zone_center: [50, 50], zone_radius: 20 }),
+        [enemy({ position: [88, 50] })], // directly between self and zone centre
+      ),
+    );
+    const a1b = ctl.decide(gs1b);
+    check("outside zone + enemy on the direct path -> still a threat-field move", a1b.action === "move", a1b);
+    if (a1b.action === "move") {
+      const landing: [number, number] = [90 + a1b.direction[0], 50 + a1b.direction[1]];
+      check(
+        "...does not step adjacent to the enemy blocking the straight line",
+        chebyshev(landing, [88, 50]) > 1,
+        landing,
+      );
+    }
+
+    // 1c. Outside the zone AND a charged shot is already lined up on us ->
+    // must dodge, not blindly walk toward zone centre. Regression test for:
+    // survivalBehavior's zone-return used to unconditionally claim the tick
+    // BEFORE emergencyDodge (priority 2 vs 3) ever ran, so this exact
+    // situation was structurally unreachable — the dodge action existed but
+    // the pipeline could never reach it while out of zone.
+    const gs1c = freshGameState();
+    gs1c.applyTick(
+      tickFrom(
+        self({ in_safe_zone: false, position: [90, 50], zone_center: [50, 50], dodge_cooldown: 0, weapon_ready: false }),
+        [enemy({ weapon: "bow", position: [92, 50], attack_range: 7, charged_shot_ready: true })],
+      ),
+    );
+    const a1c = ctl.decide(gs1c);
+    check(
+      "outside zone + charged shot lined up -> dodges (was structurally unreachable)",
+      a1c.action === "dodge",
+      a1c,
+    );
 
     // 2. Healthy, enemy adjacent, weapon ready -> attack it.
     const gs2 = freshGameState();
@@ -314,6 +380,296 @@ async function run(): Promise<void> {
     check("losing trade while HEALTHY -> engages (not a plain retreat move)", b.action !== "move", b);
   }
 
+  console.log("\nSurvival cluster (Phase 4 fix 1): trade-aware retreat + defensive separation");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // Same 20% HP in both cases — only the trade math against the nearest
+    // threat differs. Regression test for: retreat threshold used to be a
+    // static HP fraction, oblivious to whether the fight is winnable.
+    const favorable = freshGameState();
+    favorable.applyTick(
+      tickFrom(self({ hp: 32, max_hp: 160 }), [enemy({ hp: 5, position: [51, 50], can_attack: true })]),
+    );
+    const rFav = retreatAndHeal(ctxOf(favorable));
+    check("winning trade at 20% HP -> does not retreat purely on HP", rFav === null, rFav);
+
+    const unfavorable = freshGameState();
+    unfavorable.applyTick(
+      tickFrom(self({ hp: 32, max_hp: 160 }), [
+        enemy({ bot_id: "t", hp: 220, max_hp: 240, position: [52, 50], can_attack: true }),
+        enemy({ bot_id: "g1", position: [51, 49], can_attack: true }),
+        enemy({ bot_id: "g2", position: [51, 51], can_attack: true }),
+      ]),
+    );
+    const rUnfav = retreatAndHeal(ctxOf(unfavorable));
+    check("losing/ganked trade at the SAME 20% HP -> does retreat", rUnfav !== null, rUnfav);
+
+    // Cornered: neither the immediate neighbours nor anything within radius 4
+    // beats standing still (tiny zone_radius makes every tile off it worse,
+    // and the only nearby tiles that dodge that penalty are closer to the
+    // threat). Regression test for: grapple/shove previously had NO defensive
+    // use path anywhere in the engine — a cornered, confirmed-losing bot just
+    // silently fell through to fighting.
+    const cornered = freshGameState();
+    cornered.applyTick(
+      tickFrom(self({ position: [0, 0], zone_center: [0, 0], zone_radius: 1 }), [
+        enemy({ position: [1, 1], can_attack: true }),
+      ]),
+    );
+    const bail = tacticalDisengage(ctxOf(cornered));
+    check(
+      "cornered + adjacent threat -> shoves for separation instead of giving up",
+      bail !== null && bail.action === "shove",
+      bail,
+    );
+  }
+
+  console.log("\nMine placement is bearing-aware, not just proximity (Tier 3 fix)");
+  {
+    // A single adjacent chaser is, by construction, behind whatever direction
+    // we flee it in -> places a mine.
+    const ctlMine1 = new Controller();
+    ctlMine1.onRoundStart();
+    const gsChaserBehind = freshGameState();
+    gsChaserBehind.applyTick(tickFrom(self({ hp: 10, max_hp: 160 }), [enemy({ bot_id: "chaser", position: [51, 50] })]));
+    const behindResult = ctlMine1.decide(gsChaserBehind);
+    check("single chaser adjacent (necessarily behind) -> places a mine", behindResult.action === "place_mine", behindResult);
+
+    // A distant, dominant threat drives the flight direction (verified: a
+    // [-1,-1] retreat, away from it); a second, weak enemy sits within
+    // mineChaseRange but AHEAD of that direction, not behind it. Regression
+    // test for: maybeDropMine used to check only proximity, so this weak
+    // bystander directly in our path would have been mined too.
+    const ctlMine2 = new Controller();
+    ctlMine2.onRoundStart();
+    const gsAhead = freshGameState();
+    gsAhead.applyTick(
+      tickFrom(self({ hp: 10, max_hp: 160 }), [
+        enemy({ bot_id: "dominant", position: [56, 50], attack_range: 6, threat_score: 200 }),
+        enemy({ bot_id: "westfoe", position: [47, 50], attack_range: 1, threat_score: 1 }),
+      ]),
+    );
+    const aheadResult = ctlMine2.decide(gsAhead);
+    check(
+      "weak enemy within range but ahead of the retreat direction -> no mine, just kites",
+      aheadResult.action === "move",
+      aheadResult,
+    );
+  }
+
+  console.log("\nPickup safety considers recently-seen enemies (Tier 3 fix)");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // grabPickup/seekPickup only ever run with zero CURRENTLY visible enemies
+    // (selectTarget claims priority 7 for any visible enemy first) — so their
+    // old enemyControls() check was, in practice, always checking an empty
+    // list. Regression test for the actually-reachable gap: an enemy seen
+    // moments ago right on top of one pickup, now out of fog, should still
+    // rule that pickup out — while an unrelated pickup with no such history
+    // is still fair game.
+    const gsStale = freshGameState();
+    gsStale.applyTick(tickFrom(self(), [enemy({ bot_id: "seenfoe", position: [55, 50] })], 100));
+    gsStale.applyTick(
+      tickFrom(
+        self(),
+        [pickup({ pickup_id: "risky", position: [55, 50] }), pickup({ pickup_id: "safe", position: [50, 55] })],
+        105, // 5 ticks later, enemy no longer visible but well within the default 15-tick window
+      ),
+    );
+    const picked = grabPickup(ctxOf(gsStale));
+    check(
+      "avoids the pickup where an enemy was seen 5 ticks ago, grabs the unrelated one instead",
+      picked?.action === "move_to" && picked.target_position[0] === 50 && picked.target_position[1] === 55,
+      picked,
+    );
+  }
+
+  console.log("\nCombat cooldown step (Phase 4 fix 2): threat-field-aware, not single-target");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // Cooling down adjacent to A (at [51,50]) — the naive "step straight away
+    // from A" lands at [49,50], which sits well inside a SECOND enemy B's
+    // coverage at [48,50]. A threat-field-aware step should prefer one of the
+    // perpendicular tiles instead. Regression test for: this branch used to
+    // call gs.stepAwayFrom(target.position) considering only the current
+    // target, ignoring every other enemy on the field (combat.ts #6).
+    const gsCool = freshGameState();
+    gsCool.applyTick(
+      tickFrom(self({ position: [50, 50], weapon_ready: false, dodge_cooldown: 5 }), [
+        enemy({ bot_id: "a", position: [51, 50] }),
+        enemy({ bot_id: "b", position: [48, 50] }),
+      ]),
+    );
+    const coolTarget = gsCool.enemies().find((e) => e.bot_id === "a")!;
+    const coolAction = combatBehavior(ctxOf(gsCool), coolTarget);
+    check("cooling down near A with B further down the retreat line -> steps away", coolAction?.action === "move", coolAction);
+    if (coolAction?.action === "move") {
+      check(
+        "...but not straight away from A (that tile is deeper into B's coverage, not safer)",
+        !(coolAction.direction[0] === -1 && coolAction.direction[1] === 0),
+        coolAction.direction,
+      );
+    }
+  }
+
+  console.log("\nTarget-switch debounce (Phase 4 fix 3)");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+    const gsT = freshGameState();
+
+    // Tick 1: A is decisively better (much lower HP) -> picks A.
+    gsT.applyTick(
+      tickFrom(
+        self(),
+        [
+          enemy({ bot_id: "a", hp: 20, max_hp: 160, position: [55, 50] }),
+          enemy({ bot_id: "b", hp: 150, max_hp: 160, position: [55, 50] }),
+        ],
+        100,
+      ),
+    );
+    const t1 = selectTarget(ctxOf(gsT));
+    check("tick1: picks the decisively-better target A", t1?.bot_id === "a", t1?.bot_id);
+
+    // Tick 2: B edges ahead by only a few HP worth of score -> regression test
+    // for the bug: previously ANY improvement, however small, flipped the
+    // target every tick (confirmed thrashing in Phase 2 telemetry). Must stick
+    // with A.
+    gsT.applyTick(
+      tickFrom(
+        self(),
+        [
+          enemy({ bot_id: "a", hp: 90, max_hp: 160, position: [55, 50] }),
+          enemy({ bot_id: "b", hp: 85, max_hp: 160, position: [55, 50] }),
+        ],
+        101,
+      ),
+    );
+    const t2 = selectTarget(ctxOf(gsT));
+    check("tick2: B only marginally ahead -> sticks with A (hysteresis)", t2?.bot_id === "a", t2?.bot_id);
+
+    // Tick 3: B pulls far enough ahead (near death) that the margin clears the
+    // hysteresis -> a real opportunity still switches, not stuck forever.
+    gsT.applyTick(
+      tickFrom(
+        self(),
+        [
+          enemy({ bot_id: "a", hp: 90, max_hp: 160, position: [55, 50] }),
+          enemy({ bot_id: "b", hp: 10, max_hp: 160, position: [55, 50] }),
+        ],
+        102,
+      ),
+    );
+    const t3 = selectTarget(ctxOf(gsT));
+    check("tick3: B pulls decisively ahead -> switches (clears hysteresis)", t3?.bot_id === "b", t3?.bot_id);
+  }
+
+  console.log("\nDagger backstab positioning (Phase 4 fix 4)");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // Baseline, unaffected case: already rear-exposed -> attack normally.
+    const gsRear = freshGameState();
+    gsRear.applyTick(tickFrom(self({ weapon: "daggers" }), [enemy({ position: [51, 50], rear_exposed: true })]));
+    const actRear = combatBehavior(ctxOf(gsRear), gsRear.enemies()[0]!);
+    check("daggers + rear-exposed target -> attacks normally", actRear?.action === "attack", actRear);
+
+    // Regression test for the dead-code bug: not rear-exposed, and a flanking
+    // tile is actually reachable -> defer to positionForCombat instead of
+    // attacking head-on (this used to be an empty conditional that always
+    // fell through to attack — docs/audit/phase3-findings.md finding #3).
+    const gsFlank = freshGameState();
+    gsFlank.applyTick(
+      tickFrom(self({ weapon: "daggers", position: [50, 50] }), [enemy({ position: [51, 50], rear_exposed: false })]),
+    );
+    const actFlank = combatBehavior(ctxOf(gsFlank), gsFlank.enemies()[0]!);
+    check(
+      "daggers + not rear-exposed, flank reachable -> defers to positioning (null)",
+      actFlank === null,
+      actFlank,
+    );
+
+    // The other half of the original comment's intent ("still attack if it's
+    // the only option"): if the flanking tile isn't reachable, don't get
+    // stuck doing nothing — attack anyway. Grid-edge placement pushes the
+    // computed flank tile off the map.
+    const gsNoFlank = freshGameState();
+    gsNoFlank.applyTick(
+      tickFrom(self({ weapon: "daggers", position: [99, 49] }), [enemy({ position: [99, 50], rear_exposed: false })]),
+    );
+    const actNoFlank = combatBehavior(ctxOf(gsNoFlank), gsNoFlank.enemies()[0]!);
+    check(
+      "daggers + not rear-exposed but flank tile unreachable -> attacks anyway",
+      actNoFlank?.action === "attack",
+      actNoFlank,
+    );
+  }
+
+  console.log("\nDisengage HP gate is now tunable (Phase 4 fix 5)");
+  {
+    // Single hopeless-trade enemy (no gang-up ambiguity) at 90% HP: above the
+    // default 0.6 gate, so trade math is never even consulted and we commit.
+    // Regression test for: this gate used to be a raw `0.6` in controller.ts,
+    // not read from EnginePolicy at all — every sibling threshold in the same
+    // function (minTradeAdvantage, etc.) was already Tuner-adjustable; this one
+    // wasn't.
+    const ctl2 = new Controller();
+    const tanky = () => {
+      const g = freshGameState();
+      g.applyTick(
+        tickFrom(self({ hp: 144, max_hp: 160 }), [
+          enemy({ bot_id: "juggernaut", hp: 2000, max_hp: 2000, position: [51, 50], can_attack: true }),
+        ]),
+      );
+      return g;
+    };
+
+    ctl2.setPolicy(DEFAULT_POLICY);
+    const withDefault = ctl2.decide(tanky());
+    check(
+      "90% HP vs a hopeless trade, default 0.6 gate -> commits (gate not reached)",
+      withDefault.action === "attack",
+      withDefault,
+    );
+
+    ctl2.setPolicy(mergePolicy(DEFAULT_POLICY, { disengageHpThreshold: 0.95 }));
+    const withRaised = ctl2.decide(tanky());
+    check(
+      "same setup, Tuner raises the gate to 0.95 -> now disengages instead",
+      withRaised.action !== "attack",
+      withRaised,
+    );
+  }
+
+  console.log("\nWeapon-matchup wired into targeting (Phase 4 fix 6)");
+  {
+    // Two otherwise-identical targets (same HP, same distance) differing only
+    // in weapon: as daggers, bow is a hard counter (+2) and shield is a slight
+    // disadvantage (-1) per matchups.ts. Regression test for: this matrix was
+    // fully built but never consulted by target scoring at all.
+    const gsMatchup = freshGameState();
+    gsMatchup.applyTick(
+      tickFrom(self({ weapon: "daggers", position: [50, 50] }), [
+        enemy({ bot_id: "bowfoe", weapon: "bow", position: [55, 50] }),
+        enemy({ bot_id: "shieldfoe", weapon: "shield", position: [50, 55] }),
+      ]),
+    );
+    const picked = selectTarget({
+      gs: gsMatchup,
+      directive: DEFAULT_DIRECTIVE,
+      policy: DEFAULT_POLICY,
+      tick: gsMatchup.tick,
+    });
+    check(
+      "daggers vs. equally-appealing bow/shield targets -> prefers the hard-countered bow",
+      picked?.bot_id === "bowfoe",
+      picked?.bot_id,
+    );
+  }
+
   console.log("\nEnginePolicy (live LLM tuning)");
   {
     // mergePolicy clamps wild LLM values into safe ranges and bumps the version.
@@ -321,10 +677,23 @@ async function run(): Promise<void> {
       dodgeEagerness: 9,
       kiteRangeBias: -99,
       mineCooldownTicks: 1,
+      retreatTradeSensitivity: 99,
+      disengageHpThreshold: -5,
+      targetSwitchHysteresis: -20,
+      targetMatchupWeight: 999,
     });
     check("mergePolicy clamps dodgeEagerness <= 1", merged.dodgeEagerness <= 1, merged.dodgeEagerness);
     check("mergePolicy clamps kiteRangeBias >= -3", merged.kiteRangeBias >= -3, merged.kiteRangeBias);
     check("mergePolicy bumps version", merged.version === DEFAULT_POLICY.version + 1, merged.version);
+    // Phase 4 fix knobs: each must clamp into its documented range, not just accept any LLM value.
+    check("mergePolicy clamps retreatTradeSensitivity <= 0.4", merged.retreatTradeSensitivity <= 0.4, merged.retreatTradeSensitivity);
+    check("mergePolicy clamps disengageHpThreshold >= 0", merged.disengageHpThreshold >= 0, merged.disengageHpThreshold);
+    check("mergePolicy clamps targetSwitchHysteresis >= 0", merged.targetSwitchHysteresis >= 0, merged.targetSwitchHysteresis);
+    check("mergePolicy clamps targetMatchupWeight <= 40", merged.targetMatchupWeight <= 40, merged.targetMatchupWeight);
+    check(
+      "mergePolicy carries disengageUseSeparation",
+      mergePolicy(DEFAULT_POLICY, { disengageUseSeparation: false }).disengageUseSeparation === false,
+    );
 
     // A live policy swap changes a real decision WITHOUT restart.
     const ctl = new Controller();

@@ -25,6 +25,7 @@ import { Coalition } from "./coop";
 import { GameState } from "./gameState";
 import { chooseFallbackLoadout } from "./loadout";
 import { buildSnapshot } from "./telemetry";
+import { telemetry as telemetryLog } from "./telemetryLog";
 
 // Publish a strategy snapshot to the Brain ~2x/sec. The control loop runs every
 // tick (10x/sec) regardless — snapshots are only for the slow LLM layer.
@@ -284,6 +285,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   socket.on("connected", (msg: ConnectedMsg) => {
     try {
       gs.applyConnected(msg);
+      telemetryLog.setBotId(msg.bot_id);
       // Fresh connection = a new selection window opens.
       loadoutSent = false;
       loadoutLocked = false;
@@ -341,6 +343,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       gs.applyRoundStart(msg);
       controller.onRoundStart();
       resetRoundTracking();
+      telemetryLog.roundStart(String(msg.round_number));
       log.info(
         { round: msg.round_number, modifier: msg.round_modifier, bots: msg.bots_in_round },
         "round start",
@@ -448,6 +451,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       const ticksSurvived = gs.tick - roundStartTick;
       const won = msg.round_winner === botName || msg.round_winner === gs.selfId;
       const hpAtDeath = roundKilledBy.length > 0 ? (gs.self?.hp ?? 0) : 0;
+      telemetryLog.roundEnd(String(msg.round_number), won ? "win" : "loss");
 
       const outcome: RoundOutcome = {
         round: msg.round_number,

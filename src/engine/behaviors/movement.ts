@@ -112,6 +112,7 @@ export function grabPickup(ctx: DecisionContext): ClientAction | null {
     const effectiveMax = burning && isHealth ? base + 4 : maxDetour;
     if (d > effectiveMax) continue;
     if (enemyControls(gs.enemies(), p.position)) continue;
+    if (recentEnemyNear(gs, p.position, ctx.policy.pickupStaleEnemyTicks)) continue;
     // A pack next to a hazard tile gets us shoved right back off it by
     // survivalBehavior the moment we arrive — the two behaviours would then
     // fight over the same tile every tick. Skip it rather than get stuck.
@@ -210,6 +211,7 @@ function seekPickup(ctx: DecisionContext): ClientAction | null {
 
   for (const p of pickups) {
     if (enemyControls(gs.enemies(), p.position)) continue;
+    if (recentEnemyNear(gs, p.position, ctx.policy.pickupStaleEnemyTicks)) continue;
     if (hazardAdjacent(hazards, p.position)) continue;
     const d = dist(me, p.position);
     const score = pickupScore(p.pickup_type) * 10 - d * 0.5;
@@ -264,6 +266,21 @@ function enemyControls(enemies: NearbyBot[], pos: GridVec): boolean {
   return enemies.some((e) => dist(e.position, pos) <= 1.5);
 }
 
+/**
+ * Was an enemy seen near `pos` within the last `maxAge` ticks, even if it's
+ * since left fog? grabPickup/seekPickup only ever run with ZERO currently-
+ * visible enemies (selectTarget claims priority 7 for any visible enemy,
+ * however distant or harmless, before either can be reached) — so
+ * enemyControls above is, in practice, always checking an empty list. This is
+ * the one enemy-awareness signal that's actually live at that point: don't
+ * walk onto a pickup right where something was standing moments ago just
+ * because it happens to be out of our fog radius this exact tick.
+ */
+function recentEnemyNear(gs: import("../gameState").GameState, pos: GridVec, maxAge: number): boolean {
+  if (maxAge <= 0) return false;
+  return gs.guessedEnemyPositions(maxAge).some((g) => dist(g.position, pos) <= 1.5);
+}
+
 /** Same radius survivalBehavior uses to trigger a hazard escape — avoid locking
  * onto a pickup destination that would immediately get us pulled back off it. */
 function hazardAdjacent(hazards: GridVec[], pos: GridVec): boolean {
@@ -298,8 +315,13 @@ function safePerp(perp: GridVec): GridVec {
 /**
  * Compute a flanking position behind the target for dagger backstab.
  * "Behind" = opposite direction of the target's facing, offset 1 tile.
+ *
+ * Exported so combat.ts can check how close an in-progress flank is to
+ * completion before deciding whether to finish it or attack head-on instead
+ * (see combatBehavior's dagger branch) — the two call sites must agree on the
+ * same destination tile, not compute it twice with any risk of drifting apart.
  */
-function flankingPosition(me: GridVec, targetPos: GridVec): GridVec | null {
+export function flankingPosition(me: GridVec, targetPos: GridVec): GridVec | null {
   // Approach from the side opposite to where we currently are relative to the target
   const dx = me[0] - targetPos[0];
   const dy = me[1] - targetPos[1];

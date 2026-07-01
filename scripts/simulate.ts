@@ -13,6 +13,7 @@
  */
 import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
+import { telemetry } from "../src/engine/telemetryLog";
 import { WEAPONS, DEFAULT_STATS, profileFor } from "../src/engine/weapons";
 import { deriveStats, NEUTRAL_STATS } from "../src/shared/derived";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy, type EnginePolicy } from "../src/types/internal";
@@ -200,7 +201,9 @@ function apply(bot: SimBot, a: ClientAction, bots: SimBot[]): void {
 
 interface MatchResult { won: boolean; kills: number; dmgDealt: number; dmgTaken: number; survived: number }
 
-function runMatch(policy: EnginePolicy, aggression: number, seed: number): MatchResult {
+function runMatch(policy: EnginePolicy, aggression: number, seed: number, roundId = `sim_${seed}`): MatchResult {
+  telemetry.setBotId("ours");
+  telemetry.roundStart(roundId);
   const r = rng(seed);
   const spawn = (): GridVec => [10 + Math.floor(r() * 80), 10 + Math.floor(r() * 80)];
   const oppWeapons: Weapon[] = ["sword", "bow", "daggers", "spear", "staff"];
@@ -254,8 +257,10 @@ function runMatch(policy: EnginePolicy, aggression: number, seed: number): Match
     }
   }
   const aliveNow = bots.filter((b) => b.alive);
+  const won = ours.alive && aliveNow.length === 1;
+  telemetry.roundEnd(roundId, won ? "win" : "loss");
   return {
-    won: ours.alive && aliveNow.length === 1,
+    won,
     kills: ours.kills, dmgDealt: Math.round(ours.dmgDealt), dmgTaken: Math.round(ours.dmgTaken),
     survived,
   };
@@ -283,13 +288,19 @@ const CONFIGS: Cfg[] = [
 ];
 
 function main(): void {
-  const MATCHES = 24;
+  // Overridable so a Phase 2 audit run can pull a "handful" of rounds
+  // (SIM_MATCHES=3) with TELEMETRY_LOG=1 instead of the full sweep — default
+  // behaviour/output is unchanged when unset.
+  const MATCHES = Number(process.env.SIM_MATCHES) || 24;
   console.log(`\nSelf-play sweep — 1 bot (sword) vs 5 baselines, ${MATCHES} matches each\n`);
   const rows: { name: string; r: ReturnType<typeof score> }[] = [];
   for (const cfg of CONFIGS) {
     const policy = mergePolicy(DEFAULT_POLICY, { ...cfg.patch, aggression: cfg.aggression });
     const results: MatchResult[] = [];
-    for (let m = 0; m < MATCHES; m++) results.push(runMatch(policy, cfg.aggression, 1000 + m * 7 + cfg.name.length));
+    for (let m = 0; m < MATCHES; m++) {
+      const seed = 1000 + m * 7 + cfg.name.length;
+      results.push(runMatch(policy, cfg.aggression, seed, `${cfg.name}_m${m}`));
+    }
     rows.push({ name: cfg.name, r: score(results) });
   }
   rows.sort((a, b) => b.r.s - a.r.s);

@@ -77,8 +77,29 @@ export interface EnginePolicy {
   targetLowHpWeight: number;
   targetCloseWeight: number;
   targetThreatAversion: number;
+  /**
+   * Score-point margin a challenger must beat the current target by before
+   * selectTarget switches away from it. 0 disables debouncing (switch on any
+   * improvement, however small — the old behaviour).
+   */
+  targetSwitchHysteresis: number;
+  /**
+   * Weight applied to matchups.ts's weapon matchup rating (-2..+2) when
+   * scoring a candidate target: our_weapon vs their_weapon. 0 disables it
+   * (matchup knowledge previously wasn't consulted by targeting at all).
+   */
+  targetMatchupWeight: number;
   /** Max tiles to detour for an uncontested pickup. */
   pickupDetourMax: number;
+  /**
+   * How many ticks a recently-seen (now out-of-fog) enemy position still
+   * counts as "camping" a nearby pickup. grabPickup/seekPickup only ever run
+   * with zero currently-visible enemies (selectTarget claims the tick
+   * otherwise) — this is the one enemy-awareness signal actually reachable
+   * there. 0 disables it (old behaviour: only currently-visible enemies
+   * count, which in practice never fires while these run at all).
+   */
+  pickupStaleEnemyTicks: number;
   /** Drift to the next zone centre when within this many tiles of the edge. */
   zoneEdgeMargin: number;
   /** Mine behaviour while being chased. */
@@ -87,6 +108,26 @@ export interface EnginePolicy {
   mineCooldownTicks: number;
   /** Engage only when the estimated trade advantage is at least this (-1..1). */
   minTradeAdvantage: number;
+  /**
+   * HP fraction below which a selected-but-unforced target's trade is
+   * re-checked at all (minTradeAdvantage gates the actual bail decision).
+   * Above this fraction we commit to whatever selectTarget picked without
+   * ever consulting trade math — was a raw hardcoded 0.6 in controller.ts.
+   */
+  disengageHpThreshold: number;
+  /**
+   * How much the retreat HP threshold shifts with the live trade estimate against
+   * the nearest threat: effective threshold = hpRetreatFraction - tradeAdvantage *
+   * this. Retreat later vs. a favourable matchup, earlier vs. an unfavourable one.
+   * 0 disables the scaling (static threshold, the old behaviour).
+   */
+  retreatTradeSensitivity: number;
+  /**
+   * When tacticalDisengage finds no safer tile nearby (cornered), try to actively
+   * create separation — shove an adjacent threat back, or grapple away from a
+   * ranged one — instead of silently falling through to fight a confirmed-bad trade.
+   */
+  disengageUseSeparation: boolean;
   /** Ticks ahead to lead a moving target when aiming/intercepting (0..8). */
   leadTicks: number;
   /** Tuner-controlled BASELINE aggression (0..1); the Tactician layers a delta on top. */
@@ -111,12 +152,18 @@ export const DEFAULT_POLICY: EnginePolicy = {
   targetLowHpWeight: 60,
   targetCloseWeight: 2,
   targetThreatAversion: 30,
+  targetSwitchHysteresis: 30,
+  targetMatchupWeight: 12,
   pickupDetourMax: 6,
+  pickupStaleEnemyTicks: 15,
   zoneEdgeMargin: 5,
   mineWhenChased: true,
   mineChaseRange: 4,
   mineCooldownTicks: 15,
   minTradeAdvantage: -0.3,
+  disengageHpThreshold: 0.6,
+  retreatTradeSensitivity: 0.15,
+  disengageUseSeparation: true,
   leadTicks: 3,
   aggression: 0.62,
   posture: "balanced",
@@ -150,13 +197,19 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     targetLowHpWeight: clampNum(patch.targetLowHpWeight, 0, 150, base.targetLowHpWeight),
     targetCloseWeight: clampNum(patch.targetCloseWeight, 0, 10, base.targetCloseWeight),
     targetThreatAversion: clampNum(patch.targetThreatAversion, 0, 120, base.targetThreatAversion),
+    targetSwitchHysteresis: clampNum(patch.targetSwitchHysteresis, 0, 60, base.targetSwitchHysteresis),
+    targetMatchupWeight: clampNum(patch.targetMatchupWeight, 0, 40, base.targetMatchupWeight),
     pickupDetourMax: clampNum(patch.pickupDetourMax, 0, 20, base.pickupDetourMax),
+    pickupStaleEnemyTicks: clampNum(patch.pickupStaleEnemyTicks, 0, 30, base.pickupStaleEnemyTicks),
     zoneEdgeMargin: clampNum(patch.zoneEdgeMargin, 0, 20, base.zoneEdgeMargin),
     mineWhenChased:
       typeof patch.mineWhenChased === "boolean" ? patch.mineWhenChased : base.mineWhenChased,
     mineChaseRange: clampNum(patch.mineChaseRange, 1, 10, base.mineChaseRange),
     mineCooldownTicks: clampNum(patch.mineCooldownTicks, 5, 100, base.mineCooldownTicks),
     minTradeAdvantage: clampNum(patch.minTradeAdvantage, -1, 1, base.minTradeAdvantage),
+    disengageHpThreshold: clampNum(patch.disengageHpThreshold, 0, 1, base.disengageHpThreshold),
+    retreatTradeSensitivity: clampNum(patch.retreatTradeSensitivity, 0, 0.4, base.retreatTradeSensitivity),
+    disengageUseSeparation: asBool(patch.disengageUseSeparation, base.disengageUseSeparation),
     leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
     aggression: clampNum(patch.aggression, 0, 1, base.aggression),
     posture: patch.posture && POSTURES.includes(patch.posture) ? patch.posture : base.posture,

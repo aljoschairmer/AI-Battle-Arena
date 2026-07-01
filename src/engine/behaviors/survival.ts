@@ -1,5 +1,6 @@
 import type { ClientAction, GridVec, NearbyBot } from "../../types/protocol";
 import {
+  DIRECTIONS8,
   chebyshev,
   dist,
   perpendicularStep,
@@ -8,8 +9,11 @@ import {
   stepToward,
   toUnitStep,
 } from "../../shared/geometry";
+import type { GameState } from "../gameState";
+import { tradeAdvantage } from "../combatMath";
 import { profileFor } from "../weapons";
-import { type DecisionContext, dodge, move, moveTo } from "./context";
+import { telemetry } from "../telemetryLog";
+import { type DecisionContext, dodge, grappleTo, move, moveTo, shove } from "./context";
 
 /**
  * Top survival priority: don't die to the environment. Handles the shrinking
@@ -21,8 +25,33 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
   const self = gs.self;
   if (!self) return null;
 
+  // A charged shot already lined up on us outranks even environmental
+  // survival — eating a full charged hit while ALSO taking zone/hazard damage
+  // is strictly worse than spending the dodge now and handling the
+  // environment next tick. Deliberately narrow: only imminentHitIncoming's
+  // "something is about to land on us right now" trigger defers here, not
+  // emergencyDodge's broader reactive/pressure triggers (justHit,
+  // meleePressure) — those stay lower priority than environmental survival,
+  // unchanged, since applying them here would make survival defer to dodge
+  // routinely (any nearby melee-capable enemy) rather than only for the
+  // specific, severe case this addresses. See docs/audit/phase3-findings.md's
+  // explicit call-out of this interaction: this is a targeted exception
+  // inside survivalBehavior, not a controller.ts priority reorder.
+  if (imminentHitIncoming(ctx)) {
+    const dodgeAction = emergencyDodge(ctx);
+    if (dodgeAction) return dodgeAction;
+  }
+
   // 1. Outside the safe zone — get back in immediately. Zone damage stacks fast.
+  // Threat-field-aware: the field already scores "outside zone" as dangerous and
+  // growing with distance (see ThreatField.build), so a local safestStep both
+  // heads back toward the zone AND routes around enemy coverage on the way,
+  // rather than a straight line that can walk through it. Only falls back to the
+  // raw zone-centre move when no local step actually improves on standing still
+  // (e.g. we're already at the best nearby tile and need the longer server path).
   if (!self.in_safe_zone) {
+    const fieldStep = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
+    if (fieldStep) return move(tick, fieldStep);
     return moveTo(tick, self.zone_center);
   }
 
@@ -64,6 +93,45 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
 }
 
 /**
+ * Detect a shot that's already committed and about to land: a fully charged
+ * attack ready to fire, or a bow charged past level 2. Shared by
+ * emergencyDodge (its highest-priority trigger) and survivalBehavior (the
+ * narrow exception that lets a dodge preempt environmental survival) so the
+ * two never drift out of sync on what counts as "imminent".
+ */
+function imminentHitTriggers(ctx: DecisionContext): {
+  chargedIncoming: NearbyBot | undefined;
+  highChargeBow: NearbyBot | null;
+} {
+  const { gs } = ctx;
+  const me = gs.position;
+  const enemies = gs.enemies();
+
+  const chargedIncoming = enemies.find((e) => {
+    const range = e.attack_range || profileFor(e.weapon).baseRange;
+    return e.charged_shot_ready && e.has_los && dist(me, e.position) <= range + 2;
+  });
+
+  const highChargeBow: NearbyBot | null = chargedIncoming
+    ? null
+    : enemies.find((e) => {
+        const range = e.attack_range || profileFor(e.weapon).baseRange;
+        return e.weapon === "bow" && e.bow_charge_level >= 2 && e.has_los && dist(me, e.position) <= range + 1;
+      }) ?? null;
+
+  return { chargedIncoming, highChargeBow };
+}
+
+/** True when imminentHitTriggers found something and we're actually able to dodge it. */
+function imminentHitIncoming(ctx: DecisionContext): boolean {
+  const self = ctx.gs.self;
+  if (!self) return false;
+  if (self.dodge_cooldown > 0 || self.invuln_ticks > 0 || self.stun_ticks > 0) return false;
+  const { chargedIncoming, highChargeBow } = imminentHitTriggers(ctx);
+  return chargedIncoming !== undefined || highChargeBow !== null;
+}
+
+/**
  * Emergency dodge: spend the 30-tick dodge (2 tiles, 3 ticks invuln) when a hit
  * is imminent and retaliating now wouldn't be worth it.
  *
@@ -83,19 +151,7 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   const myRange = gs.effectiveAttackRange();
   const enemies = gs.enemies();
 
-  // Fully charged shot about to fire.
-  const chargedIncoming = enemies.find((e) => {
-    const range = e.attack_range || profileFor(e.weapon).baseRange;
-    return e.charged_shot_ready && e.has_los && dist(me, e.position) <= range + 2;
-  });
-
-  // Bow enemy at charge level 2+ — fire is imminent; dodge before the shot lands.
-  const highChargeBow: NearbyBot | null = chargedIncoming
-    ? null
-    : enemies.find((e) => {
-        const range = e.attack_range || profileFor(e.weapon).baseRange;
-        return e.weapon === "bow" && e.bow_charge_level >= 2 && e.has_los && dist(me, e.position) <= range + 1;
-      }) ?? null;
+  const { chargedIncoming, highChargeBow } = imminentHitTriggers(ctx);
 
   const justHit = (self.hits_received ?? []).length > 0;
   // Melee pressure: dodge whenever an enemy can attack us in melee, regardless
@@ -137,7 +193,55 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
       bestDir = dir;
     }
   }
-  return bestDir ? dodge(tick, bestDir) : null;
+  if (!bestDir) return null;
+
+  logDodgeDecision(ctx, tick, me, field, bestDanger);
+  return dodge(tick, bestDir);
+}
+
+/**
+ * Telemetry only (Phase 2 audit): record the chosen landing tile's danger
+ * alongside the true minimum across all 8 directions — the live decision
+ * above only ever considers {perp, perpNeg, away} relative to one reference
+ * enemy, so this measures whether a safer tile existed outside that narrower
+ * candidate set, without changing which tile is actually picked.
+ */
+function logDodgeDecision(
+  ctx: DecisionContext,
+  tick: number,
+  me: GridVec,
+  field: ReturnType<GameState["threatField"]>,
+  chosenTileDanger: number,
+): void {
+  let minAvailableDanger = chosenTileDanger;
+  let candidateTileCount = 0;
+  for (const dir of DIRECTIONS8) {
+    if (!isDodgeWorthwhile(ctx, dir)) continue;
+    candidateTileCount++;
+    const landing = project(me, dir, 2, ctx.gs.gridSize);
+    const dgr = field.danger(landing[0], landing[1]);
+    if (dgr < minAvailableDanger) minAvailableDanger = dgr;
+  }
+  const dodgeId = String(tick);
+  telemetry.dodgeDecision({ tick, dodgeId, chosenTileDanger, minAvailableDanger, candidateTileCount });
+  ctx.gs.notePendingDodge(dodgeId, tick);
+}
+
+/**
+ * Telemetry only (Phase 2 audit): resolve last tick's dodge (if any) now that
+ * this tick's damage-taken is known — dodge outcomes land one tick after the
+ * decision (see HitReceived on the following tick's self state).
+ *
+ * Called from Controller.decide() itself, before the can't-act guard — NOT
+ * nested inside survivalBehavior — because survivalBehavior is unreachable on
+ * a dead/stunned/respawning tick, and a dodge that gets us killed or stunned
+ * on the very next tick is exactly the outcome this must not silently drop.
+ */
+export function resolvePendingDodge(gs: GameState, tick: number): void {
+  const pending = gs.takePendingDodge();
+  if (!pending) return;
+  const damageTaken = (gs.self?.hits_received ?? []).reduce((sum, h) => sum + h.damage, 0);
+  telemetry.dodgeResolved({ tick, dodgeId: pending.dodgeId, damageTaken });
 }
 
 /**
@@ -149,7 +253,16 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
   const self = gs.self;
   if (!self) return null;
 
-  const lowHp = gs.hpFraction() < directive.hpRetreatFraction;
+  // Trade-aware threshold: retreat earlier (higher effective HP%) against a
+  // matchup we're currently losing, later against one we're winning, instead of
+  // a single static cutoff regardless of who's actually chasing us.
+  const threat = nearestAttacker(ctx) ?? gs.nearestEnemy();
+  const tradeAdj = threat ? tradeAdvantage(ctx, threat) : 0;
+  const effectiveRetreatFraction = Math.max(
+    0,
+    Math.min(1, directive.hpRetreatFraction - tradeAdj * ctx.policy.retreatTradeSensitivity),
+  );
+  const lowHp = gs.hpFraction() < effectiveRetreatFraction;
   if (!lowHp && directive.posture !== "retreat") return null;
 
   const me = gs.position;
@@ -175,7 +288,8 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
   if (fieldStep) return move(tick, fieldStep);
 
   // Fallback: blend away-from-nearest with toward-centre when the field is flat.
-  const threat = gs.nearestEnemy();
+  // Reuses the same reference threat computed above (nearestAttacker, falling
+  // back to nearest) rather than recomputing a plain nearest-enemy.
   if (threat) {
     const away = gs.stepAwayFrom(threat.position);
     const toCentre = gs.stepToward(self.zone_center);
@@ -190,8 +304,10 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
  * Tactical disengage: when the controller has picked a target but the trade is
  * unfavourable (outnumbered / out-DPS'd), step toward safer ground instead of
  * committing — but ONLY if our current tile is actually dangerous AND a strictly
- * safer step exists. If we're cornered (already at a local danger minimum) we
- * return null and let the combat layer fight, since fleeing wouldn't help.
+ * safer step exists. If we're cornered (already at a local danger minimum), try
+ * to actively create separation (shove an adjacent threat back, or grapple away
+ * from a ranged one) before giving up and letting the combat layer fight a
+ * trade we've already confirmed is bad.
  */
 export function tacticalDisengage(ctx: DecisionContext): ClientAction | null {
   const { gs, tick } = ctx;
@@ -202,6 +318,35 @@ export function tacticalDisengage(ctx: DecisionContext): ClientAction | null {
   if (step) return move(tick, step);
   const safe = field.safestTileWithin(me, 4, (c, r) => gs.isPassable(c, r));
   if (safe[0] !== me[0] || safe[1] !== me[1]) return moveTo(tick, safe);
+
+  return createSeparation(ctx);
+}
+
+/**
+ * Cornered fallback for tacticalDisengage: no tile nearby is any safer, so
+ * standing still and stepping away can't help. Instead of falling through to
+ * fight, spend a universal special to buy an opening — shove an adjacent
+ * threat back (2-tick stun, per docs/arena-spec.md) or grapple away from a
+ * ranged one. Neither tool had a defensive use path anywhere in the engine
+ * before this (see docs/audit/phase1-behavior-trace.md, combat.ts #7).
+ */
+function createSeparation(ctx: DecisionContext): ClientAction | null {
+  if (!ctx.policy.disengageUseSeparation) return null;
+  const { gs, tick } = ctx;
+  const self = gs.self;
+  if (!self) return null;
+  const threat = nearestAttacker(ctx) ?? gs.nearestEnemy();
+  if (!threat) return null;
+
+  const me = gs.position;
+  const d = dist(me, threat.position);
+  if (d <= 1.5) return shove(tick, threat.bot_id);
+
+  if (self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
+    const away = gs.stepAwayFrom(threat.position);
+    const dest = project(me, away, 4, gs.gridSize);
+    if (gs.isPassable(dest[0], dest[1])) return grappleTo(tick, dest);
+  }
   return null;
 }
 
