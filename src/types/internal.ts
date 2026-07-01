@@ -102,6 +102,16 @@ export interface EnginePolicy {
   pickupStaleEnemyTicks: number;
   /** Drift to the next zone centre when within this many tiles of the edge. */
   zoneEdgeMargin: number;
+  /**
+   * Inside this many tiles of the edge, always drift regardless of combat —
+   * zone damage compounds if ignored, so this floor is never skipped. Between
+   * this and zoneEdgeMargin (the softer outer band), drift can defer to an
+   * active, not-losing fight instead of interrupting it (measured: skipping
+   * it outright cost nothing in HP but stretched fight duration ~50%,
+   * see docs/audit/phase4-fixes.md). Clamped to zoneEdgeMargin at the call
+   * site regardless of how the two are tuned independently.
+   */
+  zoneEdgeHardMargin: number;
   /** Mine behaviour while being chased. */
   mineWhenChased: boolean;
   mineChaseRange: number;
@@ -157,6 +167,7 @@ export const DEFAULT_POLICY: EnginePolicy = {
   pickupDetourMax: 6,
   pickupStaleEnemyTicks: 15,
   zoneEdgeMargin: 5,
+  zoneEdgeHardMargin: 2,
   mineWhenChased: true,
   mineChaseRange: 4,
   mineCooldownTicks: 15,
@@ -202,6 +213,7 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     pickupDetourMax: clampNum(patch.pickupDetourMax, 0, 20, base.pickupDetourMax),
     pickupStaleEnemyTicks: clampNum(patch.pickupStaleEnemyTicks, 0, 30, base.pickupStaleEnemyTicks),
     zoneEdgeMargin: clampNum(patch.zoneEdgeMargin, 0, 20, base.zoneEdgeMargin),
+    zoneEdgeHardMargin: clampNum(patch.zoneEdgeHardMargin, 0, 20, base.zoneEdgeHardMargin),
     mineWhenChased:
       typeof patch.mineWhenChased === "boolean" ? patch.mineWhenChased : base.mineWhenChased,
     mineChaseRange: clampNum(patch.mineChaseRange, 1, 10, base.mineChaseRange),
