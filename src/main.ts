@@ -5,6 +5,18 @@ import { startEngine, type EngineHandle } from "./engine";
 import { logger } from "./shared/logger";
 import { installFetchProxy } from "./shared/proxy";
 
+// Last-resort safety net: a single unexpected error (a malformed server frame,
+// a rejected bus.publish, ...) must never silently kill the whole match. Every
+// call site we know of already guards itself, but log-and-continue here beats
+// a hard crash (which leaves the bot frozen in the arena until the container
+// restarts and reconnects).
+process.on("uncaughtException", (err) => {
+  logger.error({ err: err.message, stack: err.stack }, "uncaughtException — continuing");
+});
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason instanceof Error ? reason.message : String(reason) }, "unhandledRejection — continuing");
+});
+
 /**
  * Process entrypoint. ROLE decides which workers run:
  *   ROLE=engine -> real-time combat only (talks to Brain over Redis)

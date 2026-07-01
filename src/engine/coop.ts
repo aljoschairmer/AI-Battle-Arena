@@ -42,7 +42,7 @@ export class Coalition {
   report(msg: CoopMessage): void {
     const now = Date.now();
     for (const e of msg.enemies) this.enemies.set(e.id, { hp: e.hp, ts: now });
-    void this.bus.publish(Channels.coop, msg);
+    this.bus.publish(Channels.coop, msg).catch((e) => log.warn({ err: (e as Error).message }, "coop report publish failed"));
   }
 
   /** Arena bot_ids of allies we've heard from recently. */

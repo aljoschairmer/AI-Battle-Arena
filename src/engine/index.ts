@@ -255,7 +255,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       },
     };
     const req: LoadoutRequest = { ts: Date.now(), round, context: ctx, fallback: fallbackLoadout };
-    void bus.publish(Channels.loadoutRequest, req);
+    bus.publish(Channels.loadoutRequest, req).catch((e) => log.warn({ err: (e as Error).message }, "loadout request publish failed"));
   }
 
   async function refreshTerrain(): Promise<void> {
@@ -330,40 +330,50 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   });
 
   socket.on("tick", (msg: TickMsg) => {
-    gs.applyTick(msg);
+    // A single malformed/unexpected server frame must never take the whole
+    // process down mid-match (an uncaught throw here propagates straight out of
+    // ws's own event emission and kills the engine — the bot then sits frozen
+    // in the arena until the container restarts and reconnects). Degrade to a
+    // no-op tick and keep playing instead.
+    try {
+      gs.applyTick(msg);
 
-    // Track all visible enemy weapons for the round telemetry.
-    for (const e of gs.enemies()) {
-      roundEnemyWeaponsSeen[e.weapon] = (roundEnemyWeaponsSeen[e.weapon] ?? 0) + 1;
-    }
-
-    // Bot-to-bot coalition: exclude allies from targeting, focus-fire a shared
-    // enemy, and periodically broadcast what we see. Best-effort and additive —
-    // if disabled or peers are silent, the bot fights exactly as before.
-    if (coop && gs.selfId) {
-      gs.setFriendlies(coop.friendlyIds());
-      controller.setCoopFocus(coop.focus());
-      if (gs.tick % COOP_EVERY_TICKS === 0) {
-        const seen = gs.enemies().slice(0, 8).map((e) => ({ id: e.bot_id, hp: e.hp, pos: e.position }));
-        const focusVote = seen.slice().sort((a, b) => a.hp - b.hp)[0]?.id ?? null;
-        coop.report({
-          ts: Date.now(),
-          botId: gs.selfId,
-          name: botName,
-          pos: gs.position,
-          hp: gs.self?.hp ?? 0,
-          enemies: seen,
-          focusVote,
-        });
+      // Track all visible enemy weapons for the round telemetry.
+      for (const e of gs.enemies()) {
+        roundEnemyWeaponsSeen[e.weapon] = (roundEnemyWeaponsSeen[e.weapon] ?? 0) + 1;
       }
-    }
 
-    const action = controller.decide(gs);
-    socket.send(action);
+      // Bot-to-bot coalition: exclude allies from targeting, focus-fire a shared
+      // enemy, and periodically broadcast what we see. Best-effort and additive —
+      // if disabled or peers are silent, the bot fights exactly as before.
+      if (coop && gs.selfId) {
+        gs.setFriendlies(coop.friendlyIds());
+        controller.setCoopFocus(coop.focus());
+        if (gs.tick % COOP_EVERY_TICKS === 0) {
+          const seen = gs.enemies().slice(0, 8).map((e) => ({ id: e.bot_id, hp: e.hp, pos: e.position }));
+          const focusVote = seen.slice().sort((a, b) => a.hp - b.hp)[0]?.id ?? null;
+          coop.report({
+            ts: Date.now(),
+            botId: gs.selfId,
+            name: botName,
+            pos: gs.position,
+            hp: gs.self?.hp ?? 0,
+            enemies: seen,
+            focusVote,
+          });
+        }
+      }
 
-    if (publishToBrain && gs.tick % SNAPSHOT_EVERY_TICKS === 0) {
-      const snap = buildSnapshot(gs);
-      if (snap) void bus.publish(Channels.snapshot, snap);
+      const action = controller.decide(gs);
+      socket.send(action);
+
+      if (publishToBrain && gs.tick % SNAPSHOT_EVERY_TICKS === 0) {
+        const snap = buildSnapshot(gs);
+        if (snap) bus.publish(Channels.snapshot, snap).catch((e) => log.warn({ err: (e as Error).message }, "snapshot publish failed"));
+      }
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack, tick: gs.tick }, "tick handling threw — sending idle and continuing");
+      socket.send({ type: "action", tick: gs.tick, action: "idle" });
     }
   });
 
@@ -413,7 +423,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     );
 
     if (publishToBrain) {
-      void bus.publish(Channels.roundOutcome, outcome);
+      bus.publish(Channels.roundOutcome, outcome).catch((e) => log.warn({ err: (e as Error).message }, "round outcome publish failed"));
     }
 
     // Fetch updated lifetime stats after each round for next loadout request.
