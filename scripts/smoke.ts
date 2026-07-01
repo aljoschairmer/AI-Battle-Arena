@@ -419,6 +419,51 @@ async function run(): Promise<void> {
     check("mergePolicy clamps idleHealBelowHpFraction <= 1", pc.idleHealBelowHpFraction <= 1, pc.idleHealBelowHpFraction);
   }
 
+  console.log("\nAnti-stuck: low-HP retreat with nothing to retreat from (the ORIGINAL map-centre freeze)");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // Low HP, empty fog, no pickups: retreatAndHeal must DEFER (null), not
+    // walk to the zone centre and stand there. Pre-fix it returned
+    // moveTo(zone_center) forever — and since HP never regenerates, this rung
+    // claimed every tick and the heal-finding downtime layer was unreachable.
+    const gEmpty = freshGameState();
+    gEmpty.applyTick(tickFrom(self({ hp: 20, max_hp: 160, position: [50, 50] }), []));
+    check("low HP + empty arena -> retreat defers instead of parking at centre", retreatAndHeal(ctxOf(gEmpty)) === null);
+
+    // …and end-to-end through the controller: the bot MOVES (patrol), it does
+    // not emit move_to(its own tile at the zone centre).
+    const ctl = new Controller();
+    ctl.setPolicy(DEFAULT_POLICY);
+    ctl.onRoundStart();
+    const aEmpty = ctl.decide(gEmpty);
+    const emptyTarget = aEmpty.action === "move_to" ? (aEmpty as { target_position: [number, number] }).target_position : null;
+    check(
+      "low HP + empty arena -> keeps moving (no own-tile move_to)",
+      !(emptyTarget && emptyTarget[0] === 50 && emptyTarget[1] === 50),
+      aEmpty,
+    );
+
+    // With a health hint available, the low-HP bot can now actually follow it
+    // (pre-fix the retreat rung starved followHint of every tick).
+    const gHint = freshGameState();
+    gHint.applyTick(tickFrom(self({ hp: 20, max_hp: 160, position: [50, 50] }), []));
+    gHint.hints = [{ hint_type: "pickup", pickup_type: "health_pack", direction: [-1, 0], distance: 200 }];
+    const aHint = ctl.decide(gHint);
+    check(
+      "low HP + health hint -> hunts the heal (west)",
+      aHint.action === "move_to" && (aHint as { target_position: [number, number] }).target_position[0] < 50,
+      aHint,
+    );
+
+    // A visible chaser still triggers a real retreat (kite step) — deferring
+    // only happens when there is literally nothing to retreat from.
+    const gChase = freshGameState();
+    gChase.applyTick(tickFrom(self({ hp: 20, max_hp: 160 }), [enemy({ position: [52, 50], can_attack: true })]));
+    const rChase = retreatAndHeal(ctxOf(gChase));
+    check("low HP + visible chaser -> still retreats (kites)", rChase !== null, rChase);
+  }
+
   console.log("\nAnti-stuck: bounded pad parking, ghost forget, serpentine under fire");
   {
     const padTerrain = () => {
