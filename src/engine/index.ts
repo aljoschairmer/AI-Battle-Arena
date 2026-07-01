@@ -272,61 +272,87 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
 
   // --- socket events ---------------------------------------------------------
 
+  // Every socket handler below runs inside `ws`'s own synchronous event
+  // emission. An uncaught throw there — e.g. a malformed/short server frame
+  // missing a field our types assume is always present — propagates straight
+  // out of `ws` and freezes the engine (the bot then sits frozen in the arena
+  // until the container restarts and reconnects; see the identical guard on
+  // "tick" below, added after the same failure mode hit that handler). Wrap
+  // each one so one bad frame degrades gracefully instead of taking the whole
+  // match down.
+
   socket.on("connected", (msg: ConnectedMsg) => {
-    gs.applyConnected(msg);
-    // Fresh connection = a new selection window opens.
-    loadoutSent = false;
-    loadoutLocked = false;
-    confirmedWeapon = null;
-    log.info(
-      { botId: msg.bot_id, grid: msg.grid_size, weapons: msg.available_weapons.length },
-      "connected to arena",
-    );
-    void configureBot();
-    void requestLoadout("", -1);
+    try {
+      gs.applyConnected(msg);
+      // Fresh connection = a new selection window opens.
+      loadoutSent = false;
+      loadoutLocked = false;
+      confirmedWeapon = null;
+      log.info(
+        { botId: msg.bot_id, grid: msg.grid_size, weapons: msg.available_weapons?.length ?? 0 },
+        "connected to arena",
+      );
+      void configureBot();
+      void requestLoadout("", -1);
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "connected handling threw — continuing");
+    }
   });
 
   socket.on("loadout_confirmed", (msg: LoadoutConfirmedMsg) => {
-    gs.setConfirmedAttackRange(msg.computed.attack_range);
-    gs.setSelfCombat({
-      weaponDamage: msg.computed.weapon_damage,
-      attackMult: msg.computed.attack_mult,
-      cooldownSeconds: msg.computed.cooldown_seconds,
-      maxHp: msg.computed.max_hp,
-      defenseRed: msg.computed.defense_red,
-    });
-    confirmedWeapon = msg.weapon;
-    // The server has accepted and locked our loadout for this session.
-    loadoutLocked = true;
-    log.info(
-      { weapon: msg.weapon, maxHp: msg.computed.max_hp, range: msg.computed.attack_range },
-      "loadout confirmed",
-    );
+    try {
+      const computed = msg.computed ?? ({} as LoadoutConfirmedMsg["computed"]);
+      gs.setConfirmedAttackRange(computed.attack_range ?? null);
+      gs.setSelfCombat({
+        weaponDamage: computed.weapon_damage ?? 0,
+        attackMult: computed.attack_mult ?? 1,
+        cooldownSeconds: computed.cooldown_seconds ?? 1,
+        maxHp: computed.max_hp ?? 100,
+        defenseRed: computed.defense_red ?? 0,
+      });
+      confirmedWeapon = msg.weapon;
+      // The server has accepted and locked our loadout for this session.
+      loadoutLocked = true;
+      log.info(
+        { weapon: msg.weapon, maxHp: computed.max_hp, range: computed.attack_range },
+        "loadout confirmed",
+      );
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "loadout_confirmed handling threw — continuing");
+    }
   });
 
   socket.on("lobby", (msg: LobbyMsg) => {
-    gs.applyLobby(msg);
-    log.debug(
-      { connected: msg.bots_connected, needed: msg.bots_needed, weapons: gs.lobbyWeapons },
-      "in lobby",
-    );
-    void refreshTerrain();
-    if (!loadoutSent) sendLoadout(pendingPlan ?? fallbackLoadout);
+    try {
+      gs.applyLobby(msg);
+      log.debug(
+        { connected: msg.bots_connected, needed: msg.bots_needed, weapons: gs.lobbyWeapons },
+        "in lobby",
+      );
+      void refreshTerrain();
+      if (!loadoutSent) sendLoadout(pendingPlan ?? fallbackLoadout);
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "lobby handling threw — continuing");
+    }
   });
 
   socket.on("round_start", (msg: RoundStartMsg) => {
-    gs.applyRoundStart(msg);
-    controller.onRoundStart();
-    resetRoundTracking();
-    log.info(
-      { round: msg.round_number, modifier: msg.round_modifier, bots: msg.bots_in_round },
-      "round start",
-    );
-    void refreshTerrain();
-    // NOTE: do NOT re-select the loadout here. The arena locks it once the game
-    // is active ("Cannot change loadout mid-game"); loadout is chosen once at
-    // connect (using the latest learning insights). The Brain's per-round
-    // strategy still updates via snapshots; only the weapon/stats stay fixed.
+    try {
+      gs.applyRoundStart(msg);
+      controller.onRoundStart();
+      resetRoundTracking();
+      log.info(
+        { round: msg.round_number, modifier: msg.round_modifier, bots: msg.bots_in_round },
+        "round start",
+      );
+      void refreshTerrain();
+      // NOTE: do NOT re-select the loadout here. The arena locks it once the game
+      // is active ("Cannot change loadout mid-game"); loadout is chosen once at
+      // connect (using the latest learning insights). The Brain's per-round
+      // strategy still updates via snapshots; only the weapon/stats stay fixed.
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "round_start handling threw — continuing");
+    }
   });
 
   socket.on("tick", (msg: TickMsg) => {
@@ -380,71 +406,100 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   });
 
   socket.on("kill", (msg: KillMsg) => {
-    log.info({ victim: msg.victim_name, streak: msg.your_kill_streak }, "KILL");
-    // Record what weapon the victim had (best we can do — use last known from entities).
-    const victimEntity = gs.entities.find(
-      (e) => e.type === "bot" && e.bot_id === msg.victim_id,
-    );
-    const weapon: Weapon = (victimEntity as { weapon?: Weapon })?.weapon ?? "sword";
-    roundWeKilled.push({ botId: msg.victim_id, name: msg.victim_name, weapon });
+    try {
+      log.info({ victim: msg.victim_name, streak: msg.your_kill_streak }, "KILL");
+      // Record what weapon the victim had (best we can do — use last known from entities).
+      const victimEntity = gs.entities.find(
+        (e) => e.type === "bot" && e.bot_id === msg.victim_id,
+      );
+      const weapon: Weapon = (victimEntity as { weapon?: Weapon })?.weapon ?? "sword";
+      roundWeKilled.push({ botId: msg.victim_id, name: msg.victim_name, weapon });
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "kill handling threw — continuing");
+    }
   });
 
   socket.on("death", (msg: DeathMsg) => {
-    log.info({ by: msg.killer_name, weapon: msg.weapon_used, respawn: msg.respawn }, "died");
-    roundKilledBy.push({ botId: msg.killed_by, name: msg.killer_name, weapon: msg.weapon_used });
-    if (msg.respawn) gs.isRespawning = true;
+    try {
+      log.info({ by: msg.killer_name, weapon: msg.weapon_used, respawn: msg.respawn }, "died");
+      roundKilledBy.push({ botId: msg.killed_by, name: msg.killer_name, weapon: msg.weapon_used });
+      if (msg.respawn) gs.isRespawning = true;
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "death handling threw — continuing");
+    }
   });
 
   socket.on("respawn", (msg: RespawnMsg) => {
-    gs.applyRespawn(msg);
-    log.info({ hp: msg.hp }, "respawned");
+    try {
+      gs.applyRespawn(msg);
+      log.info({ hp: msg.hp }, "respawned");
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "respawn handling threw — continuing");
+    }
   });
 
   socket.on("round_end", (msg: RoundEndMsg) => {
-    const ticksSurvived = gs.tick - roundStartTick;
-    const won = msg.round_winner === botName || msg.round_winner === gs.selfId;
-    const hpAtDeath = roundKilledBy.length > 0 ? (gs.self?.hp ?? 0) : 0;
+    try {
+      // `your_stats` is normally always present, but a bot that was permanently
+      // eliminated mid-round (e.g. a sudden-death void kill with `respawn:
+      // false`) is exactly the case most likely to get a short/partial final
+      // frame from the server — never trust it's there.
+      const yourStats = msg.your_stats ?? { kills: 0, deaths: 0, damage: 0 };
+      const ticksSurvived = gs.tick - roundStartTick;
+      const won = msg.round_winner === botName || msg.round_winner === gs.selfId;
+      const hpAtDeath = roundKilledBy.length > 0 ? (gs.self?.hp ?? 0) : 0;
 
-    const outcome: RoundOutcome = {
-      round: msg.round_number,
-      roundModifier: gs.roundModifier,
-      ourWeapon: confirmedWeapon,
-      kills: msg.your_stats.kills,
-      deaths: msg.your_stats.deaths,
-      killedBy: [...roundKilledBy],
-      weKilled: [...roundWeKilled],
-      enemyWeaponsSeen: { ...roundEnemyWeaponsSeen },
-      won,
-      ticksSurvived,
-      hpAtDeath,
-    };
+      const outcome: RoundOutcome = {
+        round: msg.round_number,
+        roundModifier: gs.roundModifier,
+        ourWeapon: confirmedWeapon,
+        kills: yourStats.kills,
+        deaths: yourStats.deaths,
+        killedBy: [...roundKilledBy],
+        weKilled: [...roundWeKilled],
+        enemyWeaponsSeen: { ...roundEnemyWeaponsSeen },
+        won,
+        ticksSurvived,
+        hpAtDeath,
+      };
 
-    log.info(
-      { round: msg.round_number, winner: msg.round_winner, kills: msg.your_stats.kills, deaths: msg.your_stats.deaths, won },
-      "round end",
-    );
+      log.info(
+        { round: msg.round_number, winner: msg.round_winner, kills: yourStats.kills, deaths: yourStats.deaths, won },
+        "round end",
+      );
 
-    if (publishToBrain) {
-      bus.publish(Channels.roundOutcome, outcome).catch((e) => log.warn({ err: (e as Error).message }, "round outcome publish failed"));
-    }
-
-    // Fetch updated lifetime stats after each round for next loadout request.
-    void rest.tryGetBotStats().then((stats) => {
-      if (stats) {
-        log.info(
-          { elo: stats.elo, kd: stats.kd_ratio, wins: stats.round_wins, rounds: stats.rounds_played },
-          "updated lifetime stats",
-        );
+      if (publishToBrain) {
+        bus.publish(Channels.roundOutcome, outcome).catch((e) => log.warn({ err: (e as Error).message }, "round outcome publish failed"));
       }
-    });
+
+      // Fetch updated lifetime stats after each round for next loadout request.
+      void rest.tryGetBotStats().then((stats) => {
+        if (stats) {
+          log.info(
+            { elo: stats.elo, kd: stats.kd_ratio, wins: stats.round_wins, rounds: stats.rounds_played },
+            "updated lifetime stats",
+          );
+        }
+      });
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "round_end handling threw — continuing");
+    }
   });
 
   socket.on("error", (msg) => {
-    log.warn({ code: msg.code, message: msg.message, details: msg.details }, "server error");
+    try {
+      log.warn({ code: msg.code, message: msg.message, details: msg.details }, "server error");
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "error handling threw — continuing");
+    }
   });
 
   socket.on("kick", (msg: KickMsg) => {
-    log.warn({ reason: msg.reason }, "kicked by server");
+    try {
+      log.warn({ reason: msg.reason }, "kicked by server");
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "kick handling threw — continuing");
+    }
   });
 
   if (coop) await coop.start();
