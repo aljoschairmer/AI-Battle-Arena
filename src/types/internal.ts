@@ -147,12 +147,25 @@ export interface EnginePolicy {
    */
   targetTradeWeight: number;
   /**
-   * Flat score bonus for a target currently carrying an arena bounty (matched
-   * by bot_id or name from the bounty board, fetched out-of-band at round
-   * boundaries). Before this existed the hunt_bounty objective gave +15 to ANY
+   * Flat score bonus for a target currently carrying an arena bounty. Matched
+   * primarily against the live tick beacon (tick.bounty_target /
+   * the fog-exempt bounty_target entity — authoritative), with the REST board
+   * as fallback. Before this existed the hunt_bounty objective gave +15 to ANY
    * enemy — the engine literally could not tell who had the bounty.
    */
   targetBountyWeight: number;
+  /**
+   * Score bonus for an enemy whose live target_id points at ANOTHER bot —
+   * they're mid-fight with someone else, so engaging is a third-party hit on a
+   * distracted target. 0 disables (target_id was unparsed before pass-4).
+   */
+  targetDistractedBonus: number;
+  /**
+   * With nothing to fight/loot and a live bounty beacon on someone else, walk
+   * toward the beacon (its position is global and fog-exempt) instead of
+   * patrolling blind. Gated on healthy HP at the call site.
+   */
+  huntBountyBeacon: boolean;
   /**
    * Gank anticipation radius (tiles): enemies beyond the immediate 5-tile
    * attacker band but inside this radius count a faded share of their DPS in
@@ -256,6 +269,8 @@ export const DEFAULT_POLICY: EnginePolicy = {
   leadTicks: 3,
   targetTradeWeight: 30,
   targetBountyWeight: 25,
+  targetDistractedBonus: 8,
+  huntBountyBeacon: true,
   gankRadius: 9,
   gankApproachWeight: 0.5,
   // DEFAULT OFF after live A/B measurement (pass-3, 2026-07-02): arms with the
@@ -324,6 +339,8 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
     targetTradeWeight: clampNum(patch.targetTradeWeight, 0, 100, base.targetTradeWeight),
     targetBountyWeight: clampNum(patch.targetBountyWeight, 0, 100, base.targetBountyWeight),
+    targetDistractedBonus: clampNum(patch.targetDistractedBonus, 0, 40, base.targetDistractedBonus),
+    huntBountyBeacon: asBool(patch.huntBountyBeacon, base.huntBountyBeacon),
     gankRadius: clampNum(patch.gankRadius, 5, 16, base.gankRadius),
     gankApproachWeight: clampNum(patch.gankApproachWeight, 0, 1, base.gankApproachWeight),
     endgameZoneRadius: clampNum(patch.endgameZoneRadius, 0, 40, base.endgameZoneRadius),
@@ -500,13 +517,23 @@ export interface EnemySnapshot {
   canAttack: boolean;
   isStunned: boolean;
   rearExposed: boolean;
+  /** Who this enemy is locked onto (aggro graph): null/"" when idle. */
+  targetId?: string | null;
 }
 
 /**
  * Condensed game snapshot published by the Engine ~1-2x/sec for the Brain.
  * Small on purpose — the LLM gets the gist, not the firehose.
  */
-export type NearbyHazardType = "burn_field" | "hazard" | "gravity_well" | "mine" | "void";
+export type NearbyHazardType =
+  | "burn_field"
+  | "hazard"
+  | "hazard_zone"
+  | "gravity_well"
+  | "mine"
+  | "void"
+  | "capture_pad"
+  | "teleport_pad";
 
 export interface NearbyHazardSnapshot {
   type: NearbyHazardType;
@@ -533,6 +560,10 @@ export interface GameSnapshot {
   round: number;
   tick: number;
   roundModifier: string;
+  /** Server sudden-death flag: random tiles are becoming instant-death void. */
+  suddenDeath?: boolean;
+  /** Live global bounty beacon (fog-exempt target position), if not us. */
+  bountyBeacon?: { botId: string; name: string; position: GridVec } | null;
   self: {
     id: string;
     weapon: Weapon;
@@ -544,6 +575,8 @@ export interface GameSnapshot {
     inSafeZone: boolean;
     distanceToZoneEdge: number;
     grappleCharges: number;
+    /** WE carry the bounty — every bot in the arena sees our live position. */
+    isBountyTarget?: boolean;
   };
   zone: {
     center: GridVec;
@@ -573,12 +606,17 @@ export interface RoundContext {
   /** Our own lifetime stats (best-effort). */
   ourStats: {
     elo: number;
+    rank?: number;
     kills: number;
     deaths: number;
     kd_ratio: number;
     best_streak: number;
+    current_streak?: number;
     rounds_played: number;
     round_wins: number;
+    damage_dealt?: number;
+    damage_taken?: number;
+    time_alive_seconds?: number;
   } | null;
   /** How many bots are connected in the arena right now (best-effort). */
   arenaBotsConnected: number | null;

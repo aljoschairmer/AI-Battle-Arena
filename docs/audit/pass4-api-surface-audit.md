@@ -1,5 +1,19 @@
 # Pass 4 — Live API surface audit (arena.angel-serv.com)
 
+> **Status (same day):** all findings below are FIXED in the follow-up commit —
+> findings 1–5 (hazard_zone entities incl. map-layout fallback + pulse timing,
+> bounty beacon + is_bounty_target, server-echoed gravity/mine counts,
+> sudden_death handling, BotLiveState type), 6 (spectator feed → Brain global
+> intel, world→grid converted), 7 (capture-pad state machine via
+> capturePadGoal), 8 (armed teleport pads excluded from safe steps), 9 (full
+> /arena/map ingest at intermission), 10 (target_id in targeting/survival +
+> snapshots), 11 (tick round_modifier/round_tick), 12 (relay battery fields),
+> 13 (BotStats extras → round context), 14 (leaderboard types + caveat docs),
+> plus the spec corrections ('~' now impassable, auth comments updated,
+> arena-spec.md refreshed). Verified by replaying the captured live frames
+> (20/20 checks), the offline smoke suite, the simulator, a live spectator
+> intel session, and a full live round played on a throwaway key.
+
 **Date:** 2026-07-02 · **Method:** every REST endpoint fetched live (including
 authenticated ones, via a throwaway key generated and revoked for this audit),
 site frontend JS decompiled for its endpoint usage, and both WebSocket feeds

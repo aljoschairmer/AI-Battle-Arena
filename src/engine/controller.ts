@@ -324,8 +324,10 @@ export class Controller {
     const self = gs.self;
     if (!self) return null;
     // Canonical cap from /api/v1/bot-setup: "Max 3 per bot" — placing more just
-    // wastes the action (server rejects it).
-    if (this.minesPlacedThisRound >= 3) return null;
+    // wastes the action (server rejects it). The server echoes the authoritative
+    // count as your_state.mine_count (pass-4 audit): prefer it — the local
+    // counter misses rejected placements and desyncs across mid-round reconnects.
+    if (gs.minesPlaced(this.minesPlacedThisRound) >= 3) return null;
     if (gs.tick - this.lastMineTick < this.policy.mineCooldownTicks) return null;
 
     const me = gs.position;

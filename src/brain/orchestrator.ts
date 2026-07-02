@@ -1,5 +1,6 @@
 import { config } from "../config";
 import { arenaRest } from "../arena/rest";
+import { getSpectatorFeed, type SpectatorFeed } from "../arena/spectator";
 import { type Bus, Channels, Keys } from "../bus";
 import { child } from "../shared/logger";
 import { normalizeStats } from "../shared/stats";
@@ -94,6 +95,12 @@ export class Orchestrator {
   private tacticianTimer: NodeJS.Timeout | null = null;
   private unsubs: Array<() => void> = [];
 
+  // Global spectator intel (public /ws/spectator feed): full arena state —
+  // every bot's position/hp/target, armed mines, sudden death — with no fog.
+  // Brain-side only by design; the Engine never depends on this socket.
+  // Process-shared singleton (frames are global); null when ARENA_SPECTATOR=false.
+  private spectator: SpectatorFeed | null = null;
+
   constructor(
     private readonly bus: Bus,
     opts: { memoryScope?: string } = {},
@@ -165,6 +172,7 @@ export class Orchestrator {
       Math.max(800, config.openrouter.tacticianIntervalMs),
     );
 
+    this.spectator = getSpectatorFeed();
     void this.refreshMeta();
     log.info(
       {
@@ -224,7 +232,11 @@ export class Orchestrator {
 
     this.tacticianBusy = true;
     try {
-      const out = await this.tactician.run({ snapshot: snap, current: this.directive });
+      const out = await this.tactician.run({
+        snapshot: snap,
+        current: this.directive,
+        globalIntel: this.spectator?.intel(snap.self.id, snap.self.position) ?? null,
+      });
       if (out) {
         if (this.stillCurrent(snap)) this.applyTactic(out, snap);
         else
@@ -252,6 +264,7 @@ export class Orchestrator {
           insights: this.insights,
           opponentProfiles: this.opponents.forPrompt(8),
         },
+        globalIntel: this.spectator?.intel(snap.self.id, snap.self.position) ?? null,
       });
       if (out) {
         if (this.stillCurrent(snap)) this.applyStrategy(out, snap);
