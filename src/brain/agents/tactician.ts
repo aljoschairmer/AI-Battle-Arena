@@ -42,6 +42,8 @@ export class TacticianAgent extends Agent<TacticianInput, TacticOutput> {
       "- If weapon is on cooldown and enemy is melee range, go defensive briefly to kite out.",
       "- Use last_seen_enemies: if no enemies visible, don't set primaryTargetId — let the bot search.",
       "- Avoid enemies with very high threat_score (>7) unless you have a large HP advantage.",
+      "- round_modifier changes the math mid-round: hazard_storm/fast_zone -> defensive, raise hpRetreatFraction;",
+      "  double_bounty -> press kills harder (aggression +0.1-0.2); pickup_surge -> lower aggression, farm between fights.",
       "Only use bot_ids from the enemies list. Respond ONLY with the JSON object.",
     ].join("\n");
   }
@@ -50,6 +52,7 @@ export class TacticianAgent extends Agent<TacticianInput, TacticOutput> {
     const s = input.snapshot;
     return JSON.stringify(
       {
+        round_modifier: s.roundModifier || "none",
         me: s.self,
         zone: s.zone,
         enemies: s.enemies,

@@ -35,7 +35,8 @@ import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
-import type { LoadoutRequest } from "../src/types/internal";
+import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
+import { TacticianAgent } from "../src/brain/agents/tactician";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1685,6 +1686,34 @@ async function run(): Promise<void> {
       new BrainMemoryStore("bot1").load() === null,
     );
     delete process.env.BRAIN_MEMORY_DIR;
+  }
+
+  console.log("\ntactician sees the round modifier");
+  {
+    const tac = new TacticianAgent();
+    const snap = {
+      ts: Date.now(),
+      round: 4,
+      tick: 100,
+      roundModifier: "hazard_storm",
+      self: { id: "me" },
+      zone: {},
+      enemies: [],
+      nearbyPickups: [],
+      nearbyHazards: [],
+      nearbyTerrain: [],
+      lastSeenEnemies: [],
+      recentKills: [],
+    } as unknown as GameSnapshot;
+    const prompt = (tac as unknown as { userPrompt(i: { snapshot: GameSnapshot; current: Directive }): string }).userPrompt({
+      snapshot: snap,
+      current: DEFAULT_DIRECTIVE,
+    });
+    check("tactician prompt carries round_modifier", prompt.includes('"round_modifier":"hazard_storm"'), prompt.slice(0, 80));
+    check(
+      "tactician system prompt instructs modifier reactions",
+      (tac as unknown as { systemPrompt(): string }).systemPrompt().includes("round_modifier"),
+    );
   }
 
   console.log("\noutcome log (win-rate pass measurement infra)");
