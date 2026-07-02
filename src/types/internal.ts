@@ -377,6 +377,26 @@ export function shouldApplyDirective(
 }
 
 /**
+ * Parse operator-provided EnginePolicy overrides (ENGINE_POLICY_OVERRIDES env,
+ * a JSON object of policy fields). The A/B mechanism for live experiments:
+ * run two bots (or two batches) on the SAME build with different knob values
+ * and a POLICY_VARIANT tag each, so infra conditions hit both sides equally.
+ * Values ride mergePolicy's clamp table like every other policy source; junk
+ * input returns null (startup warns and continues on defaults — an override
+ * must never brick the bot).
+ */
+export function parsePolicyOverrides(raw: string | undefined): Partial<EnginePolicy> | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    return parsed as Partial<EnginePolicy>;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Re-clamp a policy object read off the bus/KV on the CONSUMING side. The
  * Brain clamps before publishing, but the KV mirror is writable by anything
  * that can reach Redis, and an older/buggy peer may publish unclamped values —

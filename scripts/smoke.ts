@@ -25,6 +25,7 @@ import {
   DEFAULT_POLICY,
   isFresher,
   mergePolicy,
+  parsePolicyOverrides,
   sanitizePolicy,
   shouldApplyDirective,
   type Directive,
@@ -1686,6 +1687,20 @@ async function run(): Promise<void> {
       new BrainMemoryStore("bot1").load() === null,
     );
     delete process.env.BRAIN_MEMORY_DIR;
+  }
+
+  console.log("\nenv policy overrides (A/B mechanism)");
+  {
+    const good = parsePolicyOverrides('{"gankApproachWeight":0,"endgameZoneRadius":0}');
+    check("valid JSON object parses", good !== null && good.gankApproachWeight === 0);
+    check("junk JSON returns null (never bricks startup)", parsePolicyOverrides("{nope") === null);
+    check("non-object JSON returns null", parsePolicyOverrides("[1,2]") === null && parsePolicyOverrides('"x"') === null);
+    check("unset returns null", parsePolicyOverrides(undefined) === null);
+    const applied = mergePolicy(DEFAULT_POLICY, { ...good!, source: "env-override" });
+    check(
+      "overrides ride the clamp table and disable the new behaviors",
+      applied.gankApproachWeight === 0 && applied.endgameZoneRadius === 0 && applied.source === "env-override",
+    );
   }
 
   console.log("\ntactician sees the round modifier");

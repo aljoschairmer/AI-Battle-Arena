@@ -5,7 +5,7 @@ import { type Bus, Channels, Keys } from "../bus";
 import { child } from "../shared/logger";
 import type { RoundOutcome } from "../shared/memory";
 import type { Directive, EnginePolicy, LoadoutPlan, LoadoutRequest, RoundContext } from "../types/internal";
-import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, isFresher, sanitizePolicy, shouldApplyDirective } from "../types/internal";
+import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, isFresher, mergePolicy, parsePolicyOverrides, sanitizePolicy, shouldApplyDirective } from "../types/internal";
 import type {
   ConnectedMsg,
   DeathMsg,
@@ -179,7 +179,22 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     controller.setPolicy(p);
     log.info({ v: p.version, src: p.source }, "restored tuning policy");
   } else {
-    controller.setPolicy({ ...DEFAULT_POLICY });
+    // Operator A/B overrides (ENGINE_POLICY_OVERRIDES JSON): same build, some
+    // knobs pinned — clamped by the same mergePolicy table as every other
+    // policy source. Only applies when no KV policy was restored; a live
+    // Tuner still supersedes it (this is an experiment default, not a lock).
+    const overrides = parsePolicyOverrides(process.env.ENGINE_POLICY_OVERRIDES);
+    if (overrides) {
+      const p = mergePolicy(DEFAULT_POLICY, { ...overrides, source: "env-override" });
+      policySource = "env-override";
+      controller.setPolicy(p);
+      log.info({ overrides: Object.keys(overrides) }, "policy overrides applied from env (A/B)");
+    } else {
+      if (process.env.ENGINE_POLICY_OVERRIDES) {
+        log.warn("ENGINE_POLICY_OVERRIDES set but not a JSON object — ignored, running defaults");
+      }
+      controller.setPolicy({ ...DEFAULT_POLICY });
+    }
   }
 
   // --- helpers ---------------------------------------------------------------
