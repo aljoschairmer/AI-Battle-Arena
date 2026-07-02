@@ -31,6 +31,10 @@ import {
   type EnginePolicy,
 } from "../src/types/internal";
 import { TokenBucket } from "../src/shared/ratelimit";
+import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isServerMessageType } from "../src/arena/ws";
 import { deriveStats, damagePerHit, dpsInto, fightPower, optimizeBuild } from "../src/shared/derived";
 import { WEAPONS } from "../src/engine/weapons";
@@ -1354,6 +1358,67 @@ async function run(): Promise<void> {
     coopB.stop();
     coopC.stop();
     await bus.close();
+  }
+
+  console.log("\noutcome log (win-rate pass measurement infra)");
+  {
+    const kb = (botId: string, name: string): { botId: string; name: string; weapon: Weapon } => ({
+      botId,
+      name,
+      weapon: "sword",
+    });
+    check("won round classifies as won", classifyCauseOfDeath({ won: true, killedBy: [kb("e1", "Foo")] }) === "won");
+    check(
+      "loss with a bot kill classifies as bot_kill",
+      classifyCauseOfDeath({ won: false, killedBy: [kb("e1", "Foo")] }) === "bot_kill",
+    );
+    check(
+      "loss with no death frame classifies as no_death_recorded",
+      classifyCauseOfDeath({ won: false, killedBy: [] }) === "no_death_recorded",
+    );
+    check(
+      "zone/void killer classifies as environment",
+      classifyCauseOfDeath({ won: false, killedBy: [kb("safe_zone", "The Zone")] }) === "environment" &&
+        classifyCauseOfDeath({ won: false, killedBy: [kb("x", "Void Tile")] }) === "environment",
+    );
+    check(
+      "last hit decides the cause (bot after zone tick)",
+      classifyCauseOfDeath({ won: false, killedBy: [kb("safe_zone", "The Zone"), kb("e2", "Bar")] }) === "bot_kill",
+    );
+
+    // Write-path roundtrip in an isolated dir: entries land as parseable JSONL
+    // tagged with variant + policy version, so A/B comparison is possible.
+    const dir = mkdtempSync(join(tmpdir(), "outcome-log-"));
+    process.env.OUTCOME_LOG_DIR = dir;
+    process.env.POLICY_VARIANT = "smoke-variant";
+    const freshLog = new OutcomeLog();
+    freshLog.record({
+      round: 7,
+      roundModifier: "fast_zone",
+      ourWeapon: "bow",
+      kills: 2,
+      deaths: 1,
+      killedBy: [kb("e9", "Baz")],
+      weKilled: [],
+      enemyWeaponsSeen: { sword: 1 },
+      won: false,
+      ticksSurvived: 1234,
+      hpAtDeath: 0,
+      botId: "me",
+      botName: "Smoke",
+      label: "",
+      policyVersion: 3,
+      policySource: "tuner",
+      aliveAtEnd: false,
+    });
+    await new Promise((r) => setTimeout(r, 150)); // appendFile is async fire-and-forget
+    const lines = readFileSync(join(dir, "outcomes.jsonl"), "utf8").trim().split("\n");
+    const entry = JSON.parse(lines[lines.length - 1]!);
+    check("outcome entry persisted as JSONL", lines.length === 1 && entry.t === "round_outcome", entry);
+    check("outcome entry carries variant tag", entry.variant === "smoke-variant", entry.variant);
+    check("outcome entry carries policy version + source", entry.policyVersion === 3 && entry.policySource === "tuner");
+    check("outcome entry derives cause of death", entry.causeOfDeath === "bot_kill", entry.causeOfDeath);
+    delete process.env.POLICY_VARIANT;
   }
 
   console.log("");

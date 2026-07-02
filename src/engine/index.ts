@@ -26,6 +26,7 @@ import { GameState } from "./gameState";
 import { chooseFallbackLoadout } from "./loadout";
 import { buildSnapshot } from "./telemetry";
 import { telemetry as telemetryLog } from "./telemetryLog";
+import { outcomeLog } from "./outcomeLog";
 
 // Publish a strategy snapshot to the Brain ~2x/sec. The control loop runs every
 // tick (10x/sec) regardless — snapshots are only for the slow LLM layer.
@@ -83,6 +84,9 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   let directiveTs = -1;
   let policyVersion = -1;
   let policyTs = -1;
+  // Provenance of the active policy, recorded alongside each round outcome so
+  // wins/losses can be attributed to the policy variant that produced them.
+  let policySource = "default";
 
   // Whether to publish telemetry (snapshots / loadout requests / round outcomes)
   // to the Brain. CRITICAL: in a split deployment the Engine process has NO
@@ -140,6 +144,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     const p = sanitizePolicy(raw);
     policyVersion = p.version;
     policyTs = p.ts;
+    policySource = p.source ?? "bus";
     controller.setPolicy(p);
     log.info(
       { v: p.version, dodge: p.dodgeEagerness, kite: p.kiteRangeBias, src: p.source, why: p.reasoning },
@@ -170,6 +175,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     const p = sanitizePolicy(seededPolicy);
     policyVersion = p.version;
     policyTs = p.ts;
+    policySource = p.source ?? "seed";
     controller.setPolicy(p);
     log.info({ v: p.version, src: p.source }, "restored tuning policy");
   } else {
@@ -508,14 +514,34 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         bus.publish(Channels.roundOutcome, outcome).catch((e) => log.warn({ err: (e as Error).message }, "round outcome publish failed"));
       }
 
-      // Fetch updated lifetime stats after each round for next loadout request.
-      void rest.tryGetBotStats().then((stats) => {
+      // Fetch updated lifetime stats after each round, then persist the outcome
+      // to the on-disk log. The stats fetch is best-effort with a short cap so
+      // the outcome line lands even when the REST API is slow/down; the ~2.5s
+      // wait is fine — next_round_in gives us a lobby gap and this is not the
+      // tick path.
+      const aliveAtEnd = (gs.self?.hp ?? 0) > 0 && !gs.isRespawning;
+      void Promise.race([
+        rest.tryGetBotStats(),
+        new Promise<null>((r) => setTimeout(() => r(null), 2500)),
+      ]).then((stats) => {
         if (stats) {
           log.info(
             { elo: stats.elo, kd: stats.kd_ratio, wins: stats.round_wins, rounds: stats.rounds_played },
             "updated lifetime stats",
           );
         }
+        outcomeLog.record({
+          ...outcome,
+          botId: gs.selfId ?? "unknown",
+          botName,
+          label,
+          policyVersion,
+          policySource,
+          aliveAtEnd,
+          ...(stats
+            ? { elo: stats.elo, lifetimeRoundWins: stats.round_wins, lifetimeRoundsPlayed: stats.rounds_played }
+            : {}),
+        });
       });
     } catch (e) {
       log.error({ err: (e as Error).message, stack: (e as Error).stack }, "round_end handling threw — continuing");
