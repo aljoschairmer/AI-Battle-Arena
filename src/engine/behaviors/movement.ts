@@ -142,15 +142,19 @@ export function grabPickup(ctx: DecisionContext): ClientAction | null {
 export function defaultReposition(ctx: DecisionContext): ClientAction {
   const { gs, tick, directive } = ctx;
   const self = gs.self!;
+  const zoneCenter =
+    self.zone_target_radius < self.zone_radius ? self.zone_target_center : self.zone_center;
 
   // control_center objective: head toward the capture pad — but only one the
-  // live pad state says is worth standing on (ready & uncontested, or ours
-  // with a control pulse due; capturePadGoal encapsulates the state machine).
+  // live pad state says is worth standing on (capturePadGoal encapsulates the
+  // ready/contested/owner state machine), BOUNDED by capturePadMove's local
+  // stand-streak so we never park forever (the "stuck in the middle of the
+  // map" bug: the central pad turned the bot into a stationary free kill).
   // Skipped during sudden death: squatting a tile while the floor randomizes
   // into void is how bots die to the environment.
   if (directive.objective === "control_center" && !gs.suddenDeath) {
-    const cap = gs.capturePadGoal();
-    if (cap) return moveTo(tick, cap);
+    const cap = capturePadMove(ctx);
+    if (cap) return cap;
   }
 
   // hunt_bounty with a live beacon: its position is global and fog-exempt —
@@ -178,6 +182,16 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   const loot = seekPickup(ctx);
   if (loot) return loot;
 
+  // Taking hits with NO visible enemy (a bow's range 8 beats our fog 7, so a
+  // sniper can be invisible): never stand, park, or walk a straight line —
+  // serpentine toward the nearest hinted bot (forcing fog contact with the
+  // shooter) or toward the zone target. The strafe component flips every few
+  // ticks so we're a genuinely moving target between dodge cooldowns.
+  if (gs.underRecentFire()) {
+    const evade = serpentineStep(ctx, zoneCenter);
+    if (evade) return evade;
+  }
+
   // Follow the server's nav hints (only sent when no enemy is in fog): toward
   // the nearest bot to start a fight, or — when hurt / a pickup is closer —
   // toward hinted pickups to build back up first (see followHint).
@@ -197,20 +211,68 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
 
   // Still nothing? Use the quiet phase to improve our position: capture a
   // nearby pad (+12 score, 20 shield, 1.2x damage — docs/arena-spec.md)
-  // instead of walking aimless patrol circles. Reaching the pad is enough;
-  // the capture progresses while we keep "moving to" our own tile — but only
-  // a pad the live state machine says is worth it (capturePadGoal), and never
-  // during sudden death (standing still on randomizing void tiles).
+  // instead of walking aimless patrol circles. Only a pad the live state
+  // machine says is worth it (capturePadGoal), bounded by capturePadMove's
+  // stand-streak (no infinite parking), and never during sudden death
+  // (standing still on randomizing void tiles).
   if (ctx.policy.idleCapturePads && !gs.suddenDeath) {
-    const pad = gs.capturePadGoal();
-    if (pad) return moveTo(tick, pad);
+    const cap = capturePadMove(ctx);
+    if (cap) return cap;
   }
 
   // Nothing to loot either — patrol the zone to find enemies.
-  const zoneCenter =
-    self.zone_target_radius < self.zone_radius ? self.zone_target_center : self.zone_center;
   const patrolTarget = patrolPoint(gs, tick, zoneCenter);
   return moveTo(tick, patrolTarget);
+}
+
+/**
+ * Bounded capture-pad routine shared by the control_center objective and the
+ * idle branch. Walks to the nearest available pad and holds it just long
+ * enough to capture (spec: 20 uncontested ticks; GameState.notePadStand allows
+ * a margin, then puts the pad on a cooldown so we move on — the owner keeps
+ * receiving control pulses without standing there). Never parks while taking
+ * fire from an unseen attacker.
+ */
+function capturePadMove(ctx: DecisionContext): ClientAction | null {
+  const { gs, tick } = ctx;
+  if (gs.underRecentFire()) return null;
+  // capturePadGoal reads the live pad state machine (ready/contested/owner,
+  // pass-4): a pad on server cooldown or contested by others is already
+  // filtered out here. The local stand-streak below stays as the belt-and-
+  // suspenders bound for when no live pad state is available (terrain-'C'
+  // fallback) or the server state goes stale.
+  const pad = gs.capturePadGoal();
+  if (!pad || !gs.padAvailable(pad)) return null;
+  const me = gs.position;
+  if (me[0] === pad[0] && me[1] === pad[1]) {
+    gs.notePadStand(pad, tick);
+    if (!gs.padAvailable(pad)) return null; // capture done — move on
+    return moveTo(tick, pad); // hold the pad while the capture progresses
+  }
+  return moveTo(tick, pad);
+}
+
+/**
+ * Weaving unit step toward `fallbackGoal` (or the nearest hinted bot): base
+ * direction plus a perpendicular strafe component that flips sign every 5
+ * ticks. Used when we're being hit by something we can't see — standing still
+ * or walking a straight line is exactly what the shooter wants.
+ */
+function serpentineStep(ctx: DecisionContext, fallbackGoal: GridVec): ClientAction | null {
+  const { gs, tick } = ctx;
+  const me = gs.position;
+  const botHint = (gs.hints ?? [])
+    .filter((h) => h.hint_type === "bot")
+    .sort((a, b) => a.distance - b.distance)[0];
+  const goal: GridVec = botHint
+    ? clampToGrid([me[0] + botHint.direction[0] * 6, me[1] + botHint.direction[1] * 6], gs.gridSize)
+    : fallbackGoal;
+  const base = gs.stepToward(goal);
+  const flip = Math.floor(tick / 5) % 2 === 0 ? 1 : -1;
+  const strafe: GridVec = [-base[1] * flip, base[0] * flip];
+  const weave = toUnitStep([base[0] + strafe[0], base[1] + strafe[1]]);
+  const step = pickSafe(ctx, [weave, strafe, base]);
+  return step ? move(tick, step) : null;
 }
 
 /**
@@ -297,18 +359,24 @@ function patrolPoint(gs: import("../gameState").GameState, tick: number, center:
     [-1, 0], [-1, -1], [0, -1], [1, -1],
   ];
   const self = gs.self!;
+  const me = gs.position;
   const radius = Math.max(4, (self.zone_radius ?? 20) * 0.4);
   // Sudden death: rotate waypoints 3x faster so the bot never dwells on a tile
   // while the floor randomizes into instant-death void ("Keep moving!" — spec).
-  const slot = Math.floor(tick / (gs.suddenDeath ? 10 : 30)) % OFFSETS.length;
-  const [dx, dy] = OFFSETS[slot]!;
-  const col = Math.round(center[0] + dx * radius);
-  const row = Math.round(center[1] + dy * radius);
-  const clamped: GridVec = [
-    Math.max(0, Math.min(gs.gridSize - 1, col)),
-    Math.max(0, Math.min(gs.gridSize - 1, row)),
-  ];
-  return gs.isPassable(clamped[0], clamped[1]) ? clamped : center;
+  const baseSlot = Math.floor(tick / (gs.suddenDeath ? 10 : 30)) % OFFSETS.length;
+  // Advance past impassable waypoints AND our own tile — returning the tile
+  // we're standing on turns patrol into standing still.
+  for (let i = 0; i < OFFSETS.length; i++) {
+    const [dx, dy] = OFFSETS[(baseSlot + i) % OFFSETS.length]!;
+    const clamped: GridVec = [
+      Math.max(0, Math.min(gs.gridSize - 1, Math.round(center[0] + dx * radius))),
+      Math.max(0, Math.min(gs.gridSize - 1, Math.round(center[1] + dy * radius))),
+    ];
+    if (!gs.isPassable(clamped[0], clamped[1])) continue;
+    if (clamped[0] === me[0] && clamped[1] === me[1]) continue;
+    return clamped;
+  }
+  return center;
 }
 
 function searchLastSeenEnemy(ctx: DecisionContext): ClientAction | null {
@@ -316,11 +384,17 @@ function searchLastSeenEnemy(ctx: DecisionContext): ClientAction | null {
   if (gs.enemies().length > 0) return null;
 
   const lastSeen = gs.guessedEnemyPositions(30).sort((a, b) => a.since - b.since);
-  if (lastSeen.length === 0) return null;
-
-  const target = lastSeen[0]!;
-  const preferSprint = !gs.terrain || gs.isPassable(target.position[0], target.position[1]);
-  return preferSprint ? sprintTo(tick, target.position) : moveTo(tick, target.position);
+  for (const target of lastSeen) {
+    // Arrived and nothing there: forget the ghost instead of standing on it
+    // until the 30-tick memory expires (another stand-still trap).
+    if (dist(gs.position, target.position) <= 1) {
+      gs.forgetLastSeen(target.bot_id);
+      continue;
+    }
+    const preferSprint = !gs.terrain || gs.isPassable(target.position[0], target.position[1]);
+    return preferSprint ? sprintTo(tick, target.position) : moveTo(tick, target.position);
+  }
+  return null;
 }
 
 // --- helpers ---------------------------------------------------------------

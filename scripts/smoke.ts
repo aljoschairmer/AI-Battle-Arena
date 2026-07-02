@@ -429,6 +429,125 @@ async function run(): Promise<void> {
     check("mergePolicy clamps idleHealBelowHpFraction <= 1", pc.idleHealBelowHpFraction <= 1, pc.idleHealBelowHpFraction);
   }
 
+  console.log("\nAnti-stuck: low-HP retreat with nothing to retreat from (the ORIGINAL map-centre freeze)");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // Low HP, empty fog, no pickups: retreatAndHeal must DEFER (null), not
+    // walk to the zone centre and stand there. Pre-fix it returned
+    // moveTo(zone_center) forever — and since HP never regenerates, this rung
+    // claimed every tick and the heal-finding downtime layer was unreachable.
+    const gEmpty = freshGameState();
+    gEmpty.applyTick(tickFrom(self({ hp: 20, max_hp: 160, position: [50, 50] }), []));
+    check("low HP + empty arena -> retreat defers instead of parking at centre", retreatAndHeal(ctxOf(gEmpty)) === null);
+
+    // …and end-to-end through the controller: the bot MOVES (patrol), it does
+    // not emit move_to(its own tile at the zone centre).
+    const ctl = new Controller();
+    ctl.setPolicy(DEFAULT_POLICY);
+    ctl.onRoundStart();
+    const aEmpty = ctl.decide(gEmpty);
+    const emptyTarget = aEmpty.action === "move_to" ? (aEmpty as { target_position: [number, number] }).target_position : null;
+    check(
+      "low HP + empty arena -> keeps moving (no own-tile move_to)",
+      !(emptyTarget && emptyTarget[0] === 50 && emptyTarget[1] === 50),
+      aEmpty,
+    );
+
+    // With a health hint available, the low-HP bot can now actually follow it
+    // (pre-fix the retreat rung starved followHint of every tick).
+    const gHint = freshGameState();
+    gHint.applyTick(tickFrom(self({ hp: 20, max_hp: 160, position: [50, 50] }), []));
+    gHint.hints = [{ hint_type: "pickup", pickup_type: "health_pack", direction: [-1, 0], distance: 200 }];
+    const aHint = ctl.decide(gHint);
+    check(
+      "low HP + health hint -> hunts the heal (west)",
+      aHint.action === "move_to" && (aHint as { target_position: [number, number] }).target_position[0] < 50,
+      aHint,
+    );
+
+    // A visible chaser still triggers a real retreat (kite step) — deferring
+    // only happens when there is literally nothing to retreat from.
+    const gChase = freshGameState();
+    gChase.applyTick(tickFrom(self({ hp: 20, max_hp: 160 }), [enemy({ position: [52, 50], can_attack: true })]));
+    const rChase = retreatAndHeal(ctxOf(gChase));
+    check("low HP + visible chaser -> still retreats (kites)", rChase !== null, rChase);
+  }
+
+  console.log("\nAnti-stuck: bounded pad parking, ghost forget, serpentine under fire");
+  {
+    const padTerrain = () => {
+      const t = Array.from({ length: 100 }, () => Array.from({ length: 100 }, () => "."));
+      t[50]![53] = "C";
+      return t;
+    };
+
+    // THE stuck-in-the-middle bug: parking on a captured pad forever. Standing
+    // on the pad must end after the capture window (~30 consecutive ticks) —
+    // the pad goes on cooldown and the bot moves on (patrol), instead of
+    // emitting move_to(own tile) until an enemy shows up and kills it.
+    const ctl = new Controller();
+    ctl.setPolicy(DEFAULT_POLICY);
+    ctl.onRoundStart();
+    const gPark = freshGameState();
+    gPark.setTerrain(padTerrain());
+    let leftPad = false;
+    let heldPadFirst = false;
+    for (let t = 0; t < 40; t++) {
+      gPark.applyTick(tickFrom(self({ position: [53, 50] }), [], 600 + t));
+      const a = ctl.decide(gPark);
+      const tp = a.action === "move_to" ? (a as { target_position: [number, number] }).target_position : null;
+      if (t === 0 && tp && tp[0] === 53 && tp[1] === 50) heldPadFirst = true;
+      if (!(tp && tp[0] === 53 && tp[1] === 50)) {
+        leftPad = true;
+        break;
+      }
+    }
+    check("holds the pad while capturing", heldPadFirst);
+    check("...but leaves the pad after the capture window (no infinite parking)", leftPad);
+
+    // Under fire from an UNSEEN attacker (bow range 8 > fog 7): never park on
+    // the pad or stand — serpentine (a `move`, changing heading) instead.
+    const ctlFire = new Controller();
+    ctlFire.setPolicy(DEFAULT_POLICY);
+    ctlFire.onRoundStart();
+    const gFire = freshGameState();
+    gFire.setTerrain(padTerrain());
+    gFire.applyTick(
+      tickFrom(
+        self({ position: [53, 50], hp: 120, max_hp: 160, hits_received: [{ attacker_id: "sniper", damage: 20, weapon: "bow" }] }),
+        [],
+        700,
+      ),
+    );
+    const aFire = ctlFire.decide(gFire);
+    check("hit by unseen sniper -> moves (serpentine), never parks on the pad", aFire.action === "move", aFire);
+    // The weave flips its strafe component across ticks (tick 700 vs 705 windows).
+    gFire.applyTick(tickFrom(self({ position: [53, 50], hp: 120, max_hp: 160 }), [], 705));
+    const aFire2 = ctlFire.decide(gFire);
+    check(
+      "...and keeps weaving on later ticks while the recent-fire window holds",
+      aFire2.action === "move" && (aFire.action !== "move" || aFire2.direction[0] !== (aFire as { direction: [number, number] }).direction[0] || aFire2.direction[1] !== (aFire as { direction: [number, number] }).direction[1]),
+      { first: aFire, second: aFire2 },
+    );
+
+    // Ghost positions are forgotten on arrival instead of being stood upon
+    // until the 30-tick memory expires.
+    const ctlGhost = new Controller();
+    ctlGhost.setPolicy(DEFAULT_POLICY);
+    ctlGhost.onRoundStart();
+    const gGhost = freshGameState();
+    gGhost.applyTick(tickFrom(self({ position: [50, 50] }), [enemy({ bot_id: "ghost", position: [51, 50] })], 800));
+    gGhost.applyTick(tickFrom(self({ position: [50, 50] }), [], 801)); // enemy gone, we're adjacent to the memory
+    const aGhost = ctlGhost.decide(gGhost);
+    const ghostTarget = aGhost.action === "move_to" ? (aGhost as { target_position: [number, number] }).target_position : null;
+    check(
+      "arrived at a last-seen position with nothing there -> memory dropped, moves elsewhere",
+      gGhost.guessedEnemyPositions(30).length === 0 && !(ghostTarget && ghostTarget[0] === 51 && ghostTarget[1] === 50),
+      aGhost,
+    );
+  }
+
   console.log("\nSpatial & combat intelligence");
   {
     const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
