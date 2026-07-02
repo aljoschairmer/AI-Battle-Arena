@@ -17,6 +17,23 @@ export interface DecisionContext {
 /** A behaviour returns an action, or null to defer to the next behaviour. */
 export type Behavior = (ctx: DecisionContext) => ClientAction | null;
 
+/**
+ * Late-round shrinking-zone endgame: the safe zone is small enough that
+ * positioning IS the win condition. Behaviors branch on this to demand
+ * better trades (a lost fight is terminal when there's nowhere to retreat)
+ * and to hold center ground instead of roaming. endgameZoneRadius=0 disables.
+ */
+export function isEndgame(ctx: DecisionContext): boolean {
+  const r = ctx.policy.endgameZoneRadius;
+  if (r <= 0) return false;
+  const self = ctx.gs.self;
+  if (!self) return false;
+  // Deliberately the CURRENT radius, not the shrink target: servers can
+  // advertise the eventual minimum as target_radius all round long, which
+  // would flip the whole match into endgame posture from the first tick.
+  return self.zone_radius <= r;
+}
+
 // --- action constructors (keep the `tick` plumbing in one place) ------------
 
 export function move(tick: number, direction: GridVec): ClientAction {

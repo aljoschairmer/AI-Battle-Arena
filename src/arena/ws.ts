@@ -63,6 +63,14 @@ export class ArenaSocket extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   // 25/sec server cap; we self-limit to 20/sec with a burst of 6 to stay safe.
   private readonly bucket = new TokenBucket(6, 20);
+  /**
+   * ~4-6 queued frames (a per-tick action serializes to well under 200B).
+   * Anything beyond this means the pipe is stalled and queued actions will
+   * arrive stale AND as a window-blowing burst. Not an EnginePolicy knob:
+   * this is a transport constant tied to the server's 25 msg/s cap, not a
+   * behavior the Tuner should move.
+   */
+  private static readonly MAX_BUFFERED_BYTES = 1024;
   private droppedSinceLastWarn = 0;
   // Rolling 1s outbound counter — cheap telemetry proving the self-cap holds
   // under real load (visible at debug level whenever a window runs hot).
@@ -80,8 +88,10 @@ export class ArenaSocket extends EventEmitter {
     private readonly apiKey: string,
     private readonly origin: string = "",
     // "message" (default) = direct-message auth: connect with no key, then send
-    // an auth frame. "query" = legacy ?key= path (broken server-side; kept for
-    // when/if the arena fixes it).
+    // an auth frame. "query" = the documented ?key= path — it was broken
+    // server-side for a while (upgrade answered HTTP 200, not 101) but works
+    // again as of 2026-07-02; message stays the default since it survived the
+    // outage.
     private readonly authMode: "message" | "query" = "message",
     // Optional per-bot label so parallel bots' socket logs are distinguishable.
     private readonly label: string = "",
@@ -108,8 +118,8 @@ export class ArenaSocket extends EventEmitter {
   }
 
   private connect(): void {
-    // Direct-message auth connects WITHOUT a key in the URL (the ?key= path is
-    // broken server-side and refuses the upgrade with HTTP 200).
+    // Direct-message auth connects WITHOUT a key in the URL; query auth puts
+    // the key on the upgrade request (both paths verified working live).
     const url =
       this.authMode === "query" && this.apiKey
         ? `${this.wsUrl}?key=${encodeURIComponent(this.apiKey)}`
@@ -181,8 +191,9 @@ export class ArenaSocket extends EventEmitter {
         this.warnedUpgradeBlocked = true;
         const hint =
           this.authMode === "query"
-            ? "ARENA_WS_AUTH=query uses the arena's ?key= path, which is broken server-side " +
-              "(it returns HTTP 200 instead of 101). Switch to ARENA_WS_AUTH=message (the default)."
+            ? "ARENA_WS_AUTH=query puts the key on the upgrade request; a non-101 response here " +
+              "usually means a WebSocket-blocking proxy or an arena-side regression of the ?key= " +
+              "path (it has broken before). Try ARENA_WS_AUTH=message (the default)."
             : "Using direct-message auth, the handshake upgrades without a key, so a non-101 here " +
               "points to a WebSocket-blocking proxy (e.g. Zscaler SSL inspection). Exempt " +
               "arena.angel-serv.com from SSL inspection, run off the inspected network, or set " +
@@ -235,6 +246,24 @@ export class ArenaSocket extends EventEmitter {
    */
   send(msg: ClientMessage): boolean {
     if (!this.isOpen || !this.ws) return false;
+    // Transport stall guard (pass-3 live finding): when the socket/proxy pipe
+    // stalls, frames queued behind it are eventually flushed as one burst —
+    // observed live as 40 frames landing in ~35ms, blowing the server's
+    // 25 msg/s sliding window and getting the next several SECONDS of fresh
+    // actions rejected (WS_RATE_LIMITED, current_count=25). A per-tick action
+    // computed even half a second ago is worthless on delivery, so when the
+    // pipe is backed up beyond a few frames, drop instead of queue — the next
+    // tick supersedes it, and the fresh action after the stall actually lands.
+    if (this.ws.bufferedAmount > ArenaSocket.MAX_BUFFERED_BYTES) {
+      this.droppedSinceLastWarn += 1;
+      if (this.droppedSinceLastWarn % 20 === 1) {
+        this.log.warn(
+          { buffered: this.ws.bufferedAmount, dropped: this.droppedSinceLastWarn },
+          "socket backlogged — dropping stale per-tick action instead of queueing",
+        );
+      }
+      return false;
+    }
     if (!this.bucket.tryTake(1)) {
       this.droppedSinceLastWarn += 1;
       if (this.droppedSinceLastWarn % 20 === 1) {

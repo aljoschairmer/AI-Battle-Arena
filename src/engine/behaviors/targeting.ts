@@ -129,10 +129,31 @@ function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): numbe
   // it was the last hardcoded one (pass-2 audit T1).
   score += tradeAdvantage(ctx, e) * policy.targetTradeWeight;
 
+  // Bounty: a target that actually carries the bounty is worth extra risk
+  // regardless of objective (bounty kills are direct score). The live tick
+  // beacon makes this precise (isBountyTarget checks it first, then the REST
+  // board); the old hunt_bounty +15-for-anyone heuristic below only applies
+  // when we genuinely don't know who the carrier is.
+  const isCarrier = gs.isBountyTarget(e.bot_id, e.name);
+  if (isCarrier) score += policy.targetBountyWeight;
+
+  // Third-party read (live target_id, pass-4): an enemy locked onto someone
+  // else is distracted — cheap damage for us. One locked onto US is actively
+  // hunting us; fold that into the threat side so the aversion math sees it.
+  if (e.target_id) {
+    if (e.target_id === gs.selfId) score -= policy.targetThreatAversion * 0.2;
+    else if (e.target_id !== "") score += policy.targetDistractedBonus;
+  }
+
   // Objective overrides.
   if (directive.objective === "engage_weakest") score += (1 - hpFrac) * 40;
   if (directive.objective === "survive") score -= Math.max(0, distance - 2) * 6;
-  if (directive.objective === "hunt_bounty" && e.threat_score > 0) score += 15; // bounty targets worth risk
+  if (directive.objective === "hunt_bounty") {
+    // Known carrier in sight: hunt THAT bot. Unknown carrier: the old
+    // any-active-enemy nudge (board unfetchable and no beacon).
+    if (isCarrier) score += 15;
+    else if (gs.bountyBeacon === null && e.threat_score > 0) score += 15;
+  }
 
   return score;
 }

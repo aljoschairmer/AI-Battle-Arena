@@ -69,6 +69,12 @@ export class ArenaRest {
     return this.request<ArenaStatus>("/api/v1/arena/status");
   }
 
+  /**
+   * Live caveats (verified 2026-07-02): any `period` other than all_time
+   * returns a correct `total` but an EMPTY `entries` array (server-side bug —
+   * don't build features on it), and `sort=kd_ratio` silently orders like
+   * kills. `sort=elo|kills|streak` and limit/offset work as expected.
+   */
   getLeaderboard(params: {
     sort?: "elo" | "kills" | "streak" | "kd_ratio";
     limit?: number;
@@ -92,6 +98,12 @@ export class ArenaRest {
 
   getMap(): Promise<ArenaMapResponse> {
     return this.request<ArenaMapResponse>("/api/v1/arena/map");
+  }
+
+  /** The arena's authoritative machine-readable spec (actions, mechanics,
+   * formulas, weapons, protocol) — the source docs/arena-spec.md transcribes. */
+  getBotSetup(): Promise<unknown> {
+    return this.request<unknown>("/api/v1/bot-setup");
   }
 
   // --- authenticated ---

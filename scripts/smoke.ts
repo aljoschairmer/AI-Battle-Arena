@@ -25,12 +25,22 @@ import {
   DEFAULT_POLICY,
   isFresher,
   mergePolicy,
+  parsePolicyOverrides,
   sanitizePolicy,
   shouldApplyDirective,
   type Directive,
   type EnginePolicy,
 } from "../src/types/internal";
 import { TokenBucket } from "../src/shared/ratelimit";
+import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
+import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
+import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
+import { BrainMemoryStore } from "../src/shared/memoryStore";
+import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
+import { TacticianAgent } from "../src/brain/agents/tactician";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isServerMessageType } from "../src/arena/ws";
 import { deriveStats, damagePerHit, dpsInto, fightPower, optimizeBuild } from "../src/shared/derived";
 import { WEAPONS } from "../src/engine/weapons";
@@ -1473,6 +1483,443 @@ async function run(): Promise<void> {
     coopB.stop();
     coopC.stop();
     await bus.close();
+  }
+
+  console.log("\nloadout agent consumes opponent profiles");
+  {
+    const req: LoadoutRequest = {
+      ts: Date.now(),
+      round: 3,
+      context: {
+        ts: Date.now(),
+        round: 3,
+        roundModifier: "",
+        roundModifierLabel: "",
+        botsInRound: 0,
+        leaderboardTop: [],
+        bounties: [],
+        ourStats: null,
+        arenaBotsConnected: 6,
+        lobbyWeapons: {},
+        constraints: { statBudget: 20, statMin: 1, statMax: 10, availableWeapons: [] },
+      },
+      fallback: chooseFallbackLoadout({}),
+    };
+    const agent = new LoadoutAgent();
+    // userPrompt is protected — reach in for the assertion only.
+    const promptOf = (input: LoadoutAgentInput): string =>
+      (agent as unknown as { userPrompt(i: LoadoutAgentInput): string }).userPrompt(input);
+    const baseMeta = {
+      leaderboardTop: [],
+      weaponPopularity: {},
+      weaponMeta: [],
+      ourStats: null,
+      arenaBotsConnected: 6,
+      insights: { ...DEFAULT_INSIGHTS },
+    };
+    const withProfile = promptOf({
+      request: req,
+      meta: {
+        ...baseMeta,
+        opponentProfiles: [
+          { name: "Lancer", elo: 1220, primaryWeapon: "bow", killsVsUs: 3, deathsVsUs: 1, roundsFaced: 4 },
+        ],
+      },
+    });
+    check(
+      "prompt includes matched opponent profile (name + weapon + ledger)",
+      withProfile.includes('"known_opponents"') &&
+        withProfile.includes("Lancer") &&
+        withProfile.includes('"primaryWeapon":"bow"') &&
+        withProfile.includes('"killsVsUs":3'),
+    );
+    const withoutProfile = promptOf({ request: req, meta: { ...baseMeta, opponentProfiles: [] } });
+    check("no profiles -> known_opponents is null (no phantom data)", withoutProfile.includes('"known_opponents":null'));
+    check(
+      "system prompt instructs counter-picking known opponents",
+      (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("known_opponents"),
+    );
+  }
+
+  console.log("\nbounty-aware targeting (win-rate pass)");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // Two otherwise-identical enemies; only B carries a bounty -> B wins.
+    const gsB = freshGameState();
+    gsB.setBounties([{ botId: "b" }]);
+    gsB.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "a", position: [55, 50] }),
+        enemy({ bot_id: "b", position: [55, 50] }),
+      ]),
+    );
+    const pickedBounty = selectTarget(ctxOf(gsB));
+    check("bounty carrier outranks an identical non-carrier", pickedBounty?.bot_id === "b", pickedBounty?.bot_id);
+
+    // Name fallback: the bounty API sometimes omits bot_id.
+    const gsN = freshGameState();
+    gsN.setBounties([{ name: "Bar" }]);
+    check("isBountyTarget matches by name when id is absent", gsN.isBountyTarget("whatever", "Bar"));
+    check("no phantom bounty without id or name match", !gsN.isBountyTarget("a", "Foo"));
+
+    // Board refresh replaces, never accumulates.
+    gsN.setBounties([{ botId: "c" }]);
+    check("setBounties replaces the previous board", !gsN.isBountyTarget("whatever", "Bar") && gsN.isBountyTarget("c"));
+
+    // New knob rides the standard clamp table.
+    const clamped = mergePolicy(DEFAULT_POLICY, { targetBountyWeight: 9999 });
+    check("targetBountyWeight clamped to [0,100]", clamped.targetBountyWeight === 100, clamped.targetBountyWeight);
+    check("targetBountyWeight default is 25", DEFAULT_POLICY.targetBountyWeight === 25);
+  }
+
+  console.log("\ngank anticipation (win-rate pass): closing third bot sours the trade early");
+  {
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+
+    // Scenario A: clean favorable 1v1 (weak adjacent target).
+    const solo = freshGameState();
+    solo.applyTick(tickFrom(self(), [enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] })], 100));
+    const target = solo.enemies()[0]!;
+    const advSolo = tradeAdvantage(ctxOf(solo), target);
+    check("favorable 1v1 reads positive", advSolo > 0, advSolo);
+
+    // Scenario B: same 1v1 plus a third bot at 8 tiles, closing 1 tile/tick
+    // (two ticks establish its velocity estimate). It's outside the old 5-tile
+    // band, so pre-fix it moved the number by exactly 0.
+    const ganked = freshGameState();
+    ganked.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] }),
+        enemy({ bot_id: "g", position: [60, 50] }),
+      ], 100),
+    );
+    ganked.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] }),
+        enemy({ bot_id: "g", position: [58, 50] }),
+      ], 102),
+    );
+    const targetG = ganked.enemies().find((e) => e.bot_id === "t")!;
+    const advGank = tradeAdvantage(ctxOf(ganked), targetG);
+    check("closing ganker at 8 tiles sours the trade vs clean 1v1", advGank < advSolo, { advSolo, advGank });
+
+    // Scenario C: same third bot but stationary — no anticipation charge.
+    const idle = freshGameState();
+    idle.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] }),
+        enemy({ bot_id: "g", position: [58, 50] }),
+      ], 100),
+    );
+    idle.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] }),
+        enemy({ bot_id: "g", position: [58, 50] }),
+      ], 102),
+    );
+    const targetI = idle.enemies().find((e) => e.bot_id === "t")!;
+    const advIdle = tradeAdvantage(ctxOf(idle), targetI);
+    check("stationary distant bot does not charge the trade", Math.abs(advIdle - advSolo) < 1e-9, { advSolo, advIdle });
+
+    // Weight 0 restores the old in-band-only behavior exactly.
+    const off = mergePolicy(DEFAULT_POLICY, { gankApproachWeight: 0 });
+    const advOff = tradeAdvantage(ctxOf(ganked, off), targetG);
+    check("gankApproachWeight=0 restores pre-fix behavior", Math.abs(advOff - advSolo) < 1e-9, { advSolo, advOff });
+
+    // Clamps.
+    const clamped = mergePolicy(DEFAULT_POLICY, { gankRadius: 999, gankApproachWeight: 42 });
+    check("gank knobs clamped (radius<=16, weight<=1)", clamped.gankRadius === 16 && clamped.gankApproachWeight === 1);
+  }
+
+  console.log("\nzone-endgame posture (win-rate pass; default-OFF after live A/B, tested with knob on)");
+  {
+    // Live A/B measured the posture harmful at default-on (0/18 wins vs 7/22
+    // with it off), so DEFAULT_POLICY ships endgameZoneRadius=0. The code
+    // path stays Tuner-reachable — these tests pin the knob on explicitly.
+    const ENDGAME_ON = mergePolicy(DEFAULT_POLICY, { endgameZoneRadius: 12 });
+    // Tiny (10-tile) settled zone, bot at center so the zone-safety rungs stay
+    // quiet; a marginal fight vs a full-HP shield with a second attacker in
+    // range — exactly the endgame overextension that used to be auto-committed.
+    const endgameSelf = (over: Partial<SelfState> = {}) =>
+      self({
+        zone_radius: 10,
+        zone_target_radius: 10,
+        distance_to_zone_edge: 10,
+        ...over,
+      });
+    // Second attacker inside the 5-tile trade band but LOS-blocked so target
+    // selection deterministically stays on the adjacent tank (the trade math
+    // counts in-band attackers regardless of LOS).
+    const crowd = [
+      enemy({ bot_id: "tank", weapon: "shield", hp: 160, max_hp: 160, position: [51, 50] }),
+      enemy({ bot_id: "second", position: [54, 50], has_los: false }),
+    ];
+
+    const ctlE = new Controller();
+    ctlE.onRoundStart();
+    ctlE.setPolicy(ENDGAME_ON);
+    const gsEnd = freshGameState();
+    gsEnd.applyTick(tickFrom(endgameSelf(), crowd));
+    const aEnd = ctlE.decide(gsEnd);
+    check(
+      "endgame + 2 enemies + bad trade -> disengages even at full HP",
+      aEnd.action !== "attack",
+      aEnd,
+    );
+
+    // Identical fight in a big (40-tile) zone -> healthy bot still commits.
+    const ctlBig = new Controller();
+    ctlBig.onRoundStart();
+    const gsBig = freshGameState();
+    gsBig.applyTick(tickFrom(self({ zone_radius: 40, zone_target_radius: 40, distance_to_zone_edge: 25 }), crowd));
+    const aBig = ctlBig.decide(gsBig);
+    check("same fight in a big zone -> commits while healthy (pre-existing behavior)", aBig.action === "attack", aBig);
+
+    // Endgame FINAL 1v1: no extra caution — passivity just splits zone damage.
+    const ctl1v1 = new Controller();
+    ctl1v1.onRoundStart();
+    ctl1v1.setPolicy(ENDGAME_ON);
+    const gs1v1 = freshGameState();
+    gs1v1.applyTick(tickFrom(endgameSelf(), [crowd[0]!]));
+    const a1v1 = ctl1v1.decide(gs1v1);
+    check("endgame final 1v1 -> still fights", a1v1.action === "attack", a1v1);
+
+    // endgameZoneRadius=0 disables the whole posture.
+    const ctlOff = new Controller();
+    ctlOff.onRoundStart();
+    ctlOff.setPolicy(mergePolicy(DEFAULT_POLICY, { endgameZoneRadius: 0 }));
+    const gsOff = freshGameState();
+    gsOff.applyTick(tickFrom(endgameSelf(), crowd));
+    const aOff = ctlOff.decide(gsOff);
+    check("endgameZoneRadius=0 restores commit-while-healthy", aOff.action === "attack", aOff);
+
+    // Idle center-hold: endgame, nothing to fight, bot 8 tiles off-center ->
+    // drifts to the zone center instead of roaming outward.
+    const ctlHold = new Controller();
+    ctlHold.onRoundStart();
+    ctlHold.setPolicy(ENDGAME_ON);
+    const gsHold = freshGameState();
+    gsHold.applyTick(
+      tickFrom(endgameSelf({ position: [58, 50], distance_to_zone_edge: 2.2 }), []),
+    );
+    // distance_to_zone_edge above the hard margin is still inside zoneEdgeMargin,
+    // so pick a settled zone instead: no shrink -> no drift rung; then hold_ground.
+    const aHold = ctlHold.decide(gsHold);
+    check(
+      "endgame idle -> holds the zone center",
+      aHold.action === "move_to" && aHold.target_position[0] === 50 && aHold.target_position[1] === 50,
+      aHold,
+    );
+
+    // Clamps for the three new knobs.
+    const c = mergePolicy(DEFAULT_POLICY, { endgameZoneRadius: 999, endgameTradeCaution: 9, endgameCenterHoldFraction: 9 });
+    check(
+      "endgame knobs clamped (radius<=40, caution<=0.6, holdFraction<=0.9)",
+      c.endgameZoneRadius === 40 && c.endgameTradeCaution === 0.6 && c.endgameCenterHoldFraction === 0.9,
+    );
+  }
+
+  console.log("\ncharged-attack punish (win-rate pass): shove interrupts an adjacent windup");
+  {
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+    const charging = (over: Partial<NearbyBot> = {}) =>
+      enemy({ bot_id: "archer", weapon: "bow", hp: 120, max_hp: 160, position: [51, 50], charged_shot_ready: true, ...over });
+
+    // Adjacent enemy with a ready charged shot -> shove denies it (even though
+    // our own weapon is ready and an attack was available).
+    const gsSh = freshGameState();
+    gsSh.applyTick(tickFrom(self(), [charging()]));
+    const aSh = combatBehavior(ctxOf(gsSh), gsSh.enemies()[0]!);
+    check("adjacent charged_shot_ready -> shove interrupt", aSh?.action === "shove", aSh);
+
+    // Near-dead charger -> a kill beats an interrupt.
+    const gsKill = freshGameState();
+    gsKill.applyTick(tickFrom(self(), [charging({ hp: 10 })]));
+    const aKill = combatBehavior(ctxOf(gsKill), gsKill.enemies()[0]!);
+    check("near-dead charger -> attack to kill instead of shoving", aKill?.action === "attack", aKill);
+
+    // bow_charge_level >= 2 telegraphs the same interrupt.
+    const gsLvl = freshGameState();
+    gsLvl.applyTick(tickFrom(self(), [charging({ charged_shot_ready: false, bow_charge_level: 2 })]));
+    const aLvl = combatBehavior(ctxOf(gsLvl), gsLvl.enemies()[0]!);
+    check("bow_charge_level>=2 -> shove interrupt", aLvl?.action === "shove", aLvl);
+
+    // Toggle off restores plain attack.
+    const off = mergePolicy(DEFAULT_POLICY, { shoveInterruptCharged: false });
+    const gsOff = freshGameState();
+    gsOff.applyTick(tickFrom(self(), [charging()]));
+    const aOff = combatBehavior(ctxOf(gsOff, off), gsOff.enemies()[0]!);
+    check("shoveInterruptCharged=false -> attacks as before", aOff?.action === "attack", aOff);
+
+    // Respects the server's 1.5s shove cooldown (second interrupt inside the
+    // window falls through to a normal attack, not a wasted rejected shove).
+    const gsCd = freshGameState();
+    gsCd.applyTick(tickFrom(self(), [charging()], 100));
+    const first = combatBehavior(ctxOf(gsCd), gsCd.enemies()[0]!);
+    gsCd.noteIssuedAction({ type: "action", tick: 100, action: "shove", target: "archer" });
+    gsCd.applyTick(tickFrom(self(), [charging()], 105));
+    const second = combatBehavior(ctxOf(gsCd), gsCd.enemies()[0]!);
+    check(
+      "shove-interrupt respects the 1.5s shove cooldown",
+      first?.action === "shove" && second?.action === "attack",
+      { first, second },
+    );
+  }
+
+  console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
+  {
+    const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));
+    process.env.BRAIN_MEMORY_DIR = dir;
+    const store = new BrainMemoryStore("bot0");
+    check("first boot loads null (no file yet)", store.load() === null);
+
+    const history = new RoundHistory(30);
+    const registry = new OpponentRegistry();
+    history.push({
+      round: 5,
+      roundModifier: "none",
+      ourWeapon: "daggers",
+      kills: 1,
+      deaths: 1,
+      killedBy: [{ botId: "e1", name: "Lancer", weapon: "bow" }],
+      weKilled: [],
+      enemyWeaponsSeen: { bow: 2 },
+      won: false,
+      ticksSurvived: 900,
+      hpAtDeath: 0,
+    });
+    registry.recordKilledUs("e1", "Lancer", "bow", 5);
+    store.save({ rounds: history.toJSON(), profiles: registry.toJSON(), insights: null });
+    store.flush();
+
+    // "Restart": fresh objects restored from a fresh store on the same dir.
+    const store2 = new BrainMemoryStore("bot0");
+    const snap = store2.load();
+    check("snapshot loads after flush", snap !== null && snap.v === 1);
+    const history2 = new RoundHistory(30);
+    const registry2 = new OpponentRegistry();
+    history2.restore(snap!.rounds);
+    registry2.restore(snap!.profiles);
+    check("round history survives restart", history2.size() === 1 && history2.recent(1)[0]!.round === 5);
+    const lancer = registry2.get("e1");
+    check(
+      "opponent profile survives restart (weapon + kill ledger)",
+      lancer !== null && lancer.primaryWeapon === "bow" && lancer.killsVsUs === 1 && lancer.roundsFaced === 1,
+      lancer,
+    );
+    check(
+      "scoped stores use distinct files (parallel bots don't clobber)",
+      new BrainMemoryStore("bot1").load() === null,
+    );
+    delete process.env.BRAIN_MEMORY_DIR;
+  }
+
+  console.log("\nenv policy overrides (A/B mechanism)");
+  {
+    const good = parsePolicyOverrides('{"gankApproachWeight":0,"endgameZoneRadius":0}');
+    check("valid JSON object parses", good !== null && good.gankApproachWeight === 0);
+    check("junk JSON returns null (never bricks startup)", parsePolicyOverrides("{nope") === null);
+    check("non-object JSON returns null", parsePolicyOverrides("[1,2]") === null && parsePolicyOverrides('"x"') === null);
+    check("unset returns null", parsePolicyOverrides(undefined) === null);
+    const applied = mergePolicy(DEFAULT_POLICY, { ...good!, source: "env-override" });
+    check(
+      "overrides ride the clamp table and disable the new behaviors",
+      applied.gankApproachWeight === 0 && applied.endgameZoneRadius === 0 && applied.source === "env-override",
+    );
+  }
+
+  console.log("\ntactician sees the round modifier");
+  {
+    const tac = new TacticianAgent();
+    const snap = {
+      ts: Date.now(),
+      round: 4,
+      tick: 100,
+      roundModifier: "hazard_storm",
+      self: { id: "me" },
+      zone: {},
+      enemies: [],
+      nearbyPickups: [],
+      nearbyHazards: [],
+      nearbyTerrain: [],
+      lastSeenEnemies: [],
+      recentKills: [],
+    } as unknown as GameSnapshot;
+    const prompt = (tac as unknown as { userPrompt(i: { snapshot: GameSnapshot; current: Directive }): string }).userPrompt({
+      snapshot: snap,
+      current: DEFAULT_DIRECTIVE,
+    });
+    check("tactician prompt carries round_modifier", prompt.includes('"round_modifier":"hazard_storm"'), prompt.slice(0, 80));
+    check(
+      "tactician system prompt instructs modifier reactions",
+      (tac as unknown as { systemPrompt(): string }).systemPrompt().includes("round_modifier"),
+    );
+  }
+
+  console.log("\noutcome log (win-rate pass measurement infra)");
+  {
+    const kb = (botId: string, name: string): { botId: string; name: string; weapon: Weapon } => ({
+      botId,
+      name,
+      weapon: "sword",
+    });
+    check("won round classifies as won", classifyCauseOfDeath({ won: true, killedBy: [kb("e1", "Foo")] }) === "won");
+    check(
+      "loss with a bot kill classifies as bot_kill",
+      classifyCauseOfDeath({ won: false, killedBy: [kb("e1", "Foo")] }) === "bot_kill",
+    );
+    check(
+      "loss with no death frame classifies as no_death_recorded",
+      classifyCauseOfDeath({ won: false, killedBy: [] }) === "no_death_recorded",
+    );
+    check(
+      "zone/void killer classifies as environment",
+      classifyCauseOfDeath({ won: false, killedBy: [kb("safe_zone", "The Zone")] }) === "environment" &&
+        classifyCauseOfDeath({ won: false, killedBy: [kb("x", "Void Tile")] }) === "environment",
+    );
+    check(
+      "last hit decides the cause (bot after zone tick)",
+      classifyCauseOfDeath({ won: false, killedBy: [kb("safe_zone", "The Zone"), kb("e2", "Bar")] }) === "bot_kill",
+    );
+    check(
+      "death frame with no bot credited classifies as environment",
+      classifyCauseOfDeath({ won: false, killedBy: [kb("", "")] }) === "environment",
+    );
+
+    // Write-path roundtrip in an isolated dir: entries land as parseable JSONL
+    // tagged with variant + policy version, so A/B comparison is possible.
+    const dir = mkdtempSync(join(tmpdir(), "outcome-log-"));
+    process.env.OUTCOME_LOG_DIR = dir;
+    process.env.POLICY_VARIANT = "smoke-variant";
+    const freshLog = new OutcomeLog();
+    freshLog.record({
+      round: 7,
+      roundModifier: "fast_zone",
+      ourWeapon: "bow",
+      kills: 2,
+      deaths: 1,
+      killedBy: [kb("e9", "Baz")],
+      weKilled: [],
+      enemyWeaponsSeen: { sword: 1 },
+      won: false,
+      ticksSurvived: 1234,
+      hpAtDeath: 0,
+      botId: "me",
+      botName: "Smoke",
+      label: "",
+      policyVersion: 3,
+      policySource: "tuner",
+      aliveAtEnd: false,
+    });
+    await new Promise((r) => setTimeout(r, 150)); // appendFile is async fire-and-forget
+    const lines = readFileSync(join(dir, "outcomes.jsonl"), "utf8").trim().split("\n");
+    const entry = JSON.parse(lines[lines.length - 1]!);
+    check("outcome entry persisted as JSONL", lines.length === 1 && entry.t === "round_outcome", entry);
+    check("outcome entry carries variant tag", entry.variant === "smoke-variant", entry.variant);
+    check("outcome entry carries policy version + source", entry.policyVersion === 3 && entry.policySource === "tuner");
+    check("outcome entry derives cause of death", entry.causeOfDeath === "bot_kill", entry.causeOfDeath);
+    delete process.env.POLICY_VARIANT;
   }
 
   console.log("");

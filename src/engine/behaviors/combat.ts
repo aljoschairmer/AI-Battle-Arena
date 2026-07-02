@@ -34,6 +34,25 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
   const profile = profileFor(self.weapon);
   const inRange = d <= range + 0.5;
 
+  // --- Universal: interrupt an adjacent enemy's visible windup with a shove ---
+  // A charged bow shot is the biggest single hit in the game and the enemy
+  // telegraphs it (charged_shot_ready / bow_charge_level). Shove's 2-tick stun
+  // + knockback denies it outright. The preemptive-dodge survival rung usually
+  // claims charged threats first, but its 30-tick dodge cooldown leaves
+  // frequent windows where this is the only counter — before this branch the
+  // engine's ONLY reaction to a windup was to move away. Skip when one normal
+  // hit kills them anyway (a kill beats an interrupt).
+  if (
+    ctx.policy.shoveInterruptCharged &&
+    d <= 1.5 &&
+    gs.shoveReady(tick) &&
+    target.has_los &&
+    (target.charged_shot_ready || target.bow_charge_level >= 2) &&
+    target.hp > profile.damage * (gs.selfCombat?.attackMult ?? 1)
+  ) {
+    return shove(tick, target.bot_id);
+  }
+
   // --- Spear: never charge a braced enemy — wait them out (Tuner-toggleable) ---
   if (ctx.policy.spearBraceWait && self.weapon === "spear" && target.brace_ready && d <= range + 1) {
     // Don't attack into a brace — shove to disrupt if adjacent (respecting the

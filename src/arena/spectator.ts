@@ -1,0 +1,212 @@
+import WebSocket from "ws";
+import { config } from "../config";
+import { child } from "../shared/logger";
+import { wsProxyAgent } from "../shared/proxy";
+import type { GridVec, SpectatorArenaState, SpectatorBot } from "../types/protocol";
+
+const log = child("arena:spectator");
+
+/** World units per grid tile (arena constant; 2000x2000 world / 100x100 grid). */
+const CELL = 20;
+
+/**
+ * Read-only client for the public spectator feed (WS /ws/spectator, no auth).
+ *
+ * Every tick the arena broadcasts ONE `arena_state` frame with the FULL global
+ * state — every bot's live position/hp/target, every landmine (position +
+ * owner + armed, which bot fog deliberately hides!), all pickups, pads and
+ * hazards, kill feed, sudden_death (pass-4 API audit, finding 6). It is a
+ * fog-of-war bypass the arena itself publishes.
+ *
+ * Consumed by the BRAIN only: the LLM layer is async and off the tick path by
+ * design, so global intel enriches strategy prompts without the Engine's
+ * deterministic controller ever depending on a second socket. Frames arrive at
+ * 10 Hz (~17 KB); we simply keep the latest one — no queue, no parsing beyond
+ * JSON, so the cost is negligible.
+ */
+export class SpectatorFeed {
+  private ws: WebSocket | null = null;
+  private shouldRun = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private state: SpectatorArenaState | null = null;
+  private stateTs = 0;
+
+  constructor(private readonly url: string = deriveSpectatorUrl()) {}
+
+  start(): void {
+    if (this.shouldRun) return;
+    this.shouldRun = true;
+    this.connect();
+  }
+
+  stop(): void {
+    this.shouldRun = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.ws?.close(1000, "client shutdown");
+    this.ws = null;
+  }
+
+  /** Latest arena_state frame, or null when none fresh within `maxAgeMs`. */
+  latest(maxAgeMs = 3000): SpectatorArenaState | null {
+    if (!this.state) return null;
+    if (Date.now() - this.stateTs > maxAgeMs) return null;
+    return this.state;
+  }
+
+  /**
+   * Compact global-intel summary for LLM prompts: the aggro graph (who is
+   * locked onto whom, by name), every living bot's position/hp, armed mines
+   * near us, and the sudden-death flag. `selfId` marks our own bot so the
+   * summary can call out who is hunting US specifically.
+   */
+  intel(selfId: string, selfPos?: GridVec): SpectatorIntel | null {
+    const s = this.latest();
+    if (!s) return null;
+    // Spectator frames use WORLD units (0..1999); everything else in the bot
+    // (snapshots, directives) is grid tiles (0..99). Convert here so the two
+    // never mix downstream. `selfPos` is expected in GRID coordinates.
+    const toGrid = (p: GridVec): GridVec => [Math.round(p[0] / CELL), Math.round(p[1] / CELL)];
+    // Empty collections are OMITTED from frames (not sent as []) — verified
+    // live: a frame with no landmines has no `landmines` key at all.
+    const alive = (s.bots ?? []).filter((b) => b.is_alive);
+    const byId = new Map<string, SpectatorBot>(alive.map((b) => [b.id, b]));
+    const name = (id: string): string => byId.get(id)?.name ?? id.slice(0, 8);
+
+    const bots = alive.map((b) => ({
+      id: b.id,
+      name: b.name,
+      weapon: b.weapon,
+      hp: Math.round(b.hp),
+      maxHp: b.max_hp,
+      position: toGrid(b.position),
+      targeting: b.target_id ? (b.target_id === selfId ? "US" : name(b.target_id)) : null,
+      isBountyTarget: b.is_bounty_target === true,
+      killStreak: b.kill_streak,
+    }));
+
+    const huntingUs = alive
+      .filter((b) => b.id !== selfId && b.target_id === selfId)
+      .map((b) => b.name);
+
+    // Armed mines within ~12 tiles of us (bot fog NEVER shows enemy mines —
+    // this is the only source): worth flagging so strategy can route around.
+    const minesNearUs = selfPos
+      ? (s.landmines ?? [])
+          .filter((m) => m.armed && m.owner_id !== selfId)
+          .map((m) => {
+            const g = toGrid(m.position);
+            return {
+              position: g,
+              distance: Math.round(Math.hypot(g[0] - selfPos[0], g[1] - selfPos[1]) * 10) / 10,
+            };
+          })
+          .filter((m) => m.distance <= 12)
+          .sort((a, b) => a.distance - b.distance)
+          .slice(0, 6)
+      : [];
+
+    return {
+      tick: s.tick,
+      suddenDeath: s.sudden_death === true,
+      botsAlive: alive.length,
+      bots: bots.slice(0, 16),
+      huntingUs,
+      minesNearUs,
+    };
+  }
+
+  private connect(): void {
+    log.debug({ attempt: this.reconnectAttempts, url: this.url }, "connecting spectator feed");
+    const ws = new WebSocket(this.url, {
+      handshakeTimeout: 10_000,
+      agent: wsProxyAgent(this.url),
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ai-battle-arena-bot/1.0",
+        ...(config.arena.wsOrigin ? { Origin: config.arena.wsOrigin } : {}),
+      },
+    });
+    this.ws = ws;
+
+    ws.on("open", () => {
+      this.reconnectAttempts = 0;
+      log.info("spectator feed connected");
+    });
+    ws.on("message", (data: WebSocket.RawData) => {
+      try {
+        const msg = JSON.parse(data.toString()) as { type?: string };
+        if (msg.type === "arena_state") {
+          this.state = msg as SpectatorArenaState;
+          this.stateTs = Date.now();
+        }
+      } catch {
+        /* malformed frame — keep the previous state */
+      }
+    });
+    ws.on("close", (code: number) => {
+      log.debug({ code }, "spectator feed closed");
+      this.ws = null;
+      if (this.shouldRun) this.scheduleReconnect();
+    });
+    ws.on("error", (err: Error) => {
+      // Best-effort intel: never noisy. close fires after error and reconnects.
+      log.debug({ err: err.message }, "spectator feed error");
+    });
+    ws.on("ping", () => ws.pong());
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    this.reconnectAttempts += 1;
+    const delay = Math.min(2000 * 2 ** Math.min(this.reconnectAttempts, 5), 60_000);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.shouldRun) this.connect();
+    }, delay);
+  }
+}
+
+export interface SpectatorIntel {
+  tick: number;
+  suddenDeath: boolean;
+  botsAlive: number;
+  bots: {
+    id: string;
+    name: string;
+    weapon: string;
+    hp: number;
+    maxHp: number;
+    position: GridVec;
+    /** Who they're locked onto: "US", another bot's name, or null. */
+    targeting: string | null;
+    isBountyTarget: boolean;
+    killStreak: number;
+  }[];
+  /** Names of bots whose live target is us. */
+  huntingUs: string[];
+  /** Armed enemy mines within ~12 tiles of us — invisible in bot fog. */
+  minesNearUs: { position: GridVec; distance: number }[];
+}
+
+function deriveSpectatorUrl(): string {
+  // ARENA_WS_URL points at /ws/bot; the spectator endpoint lives beside it.
+  const botUrl = config.arena.wsUrl;
+  if (botUrl.endsWith("/ws/bot")) return `${botUrl.slice(0, -"/ws/bot".length)}/ws/spectator`;
+  return "wss://arena.angel-serv.com/ws/spectator";
+}
+
+// One feed per process regardless of how many bots/orchestrators run in it —
+// the frames are global, so N connections would be N copies of the same data.
+let shared: SpectatorFeed | null = null;
+
+/** Process-wide shared feed (started lazily), or null when disabled via env. */
+export function getSpectatorFeed(): SpectatorFeed | null {
+  if (process.env.ARENA_SPECTATOR?.toLowerCase() === "false") return null;
+  if (!shared) {
+    shared = new SpectatorFeed();
+    shared.start();
+  }
+  return shared;
+}

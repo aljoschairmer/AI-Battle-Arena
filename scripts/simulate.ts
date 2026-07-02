@@ -348,8 +348,14 @@ function main(): void {
   const MATCHES = Number(process.env.SIM_MATCHES) || 24;
   console.log(`\nSelf-play sweep — 1 bot (${OUR_WEAPON}) vs 5 baselines${WITH_PICKUPS ? " + pickups" : ""}, ${MATCHES} matches each\n`);
   const rows: { name: string; r: ReturnType<typeof score> }[] = [];
+  // A/B override for the win-rate pass: SIM_GANK_WEIGHT=0 reproduces the
+  // pre-gank-anticipation trade math on identical seeds.
+  const gankOverride = process.env.SIM_GANK_WEIGHT !== undefined ? { gankApproachWeight: Number(process.env.SIM_GANK_WEIGHT) } : {};
+  // SIM_ENDGAME_RADIUS=0 reproduces pre-endgame-posture behavior on identical seeds.
+  const endgameOverride =
+    process.env.SIM_ENDGAME_RADIUS !== undefined ? { endgameZoneRadius: Number(process.env.SIM_ENDGAME_RADIUS) } : {};
   for (const cfg of CONFIGS) {
-    const policy = mergePolicy(DEFAULT_POLICY, { ...cfg.patch, aggression: cfg.aggression });
+    const policy = mergePolicy(DEFAULT_POLICY, { ...cfg.patch, ...gankOverride, ...endgameOverride, aggression: cfg.aggression });
     const results: MatchResult[] = [];
     for (let m = 0; m < MATCHES; m++) {
       const seed = 1000 + m * 7 + cfg.name.length;

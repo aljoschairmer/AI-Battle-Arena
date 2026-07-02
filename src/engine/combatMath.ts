@@ -28,9 +28,28 @@ export function tradeAdvantage(ctx: DecisionContext, e: NearbyBot): number {
 
   const me = gs.position;
   let incoming = enemyDps(e);
+  const gankRadius = ctx.policy.gankRadius;
+  const gankWeight = ctx.policy.gankApproachWeight;
   for (const other of gs.enemies()) {
     if (other.bot_id === e.bot_id) continue;
-    if (other.can_attack && dist(me, other.position) <= 5) incoming += enemyDps(other) * 0.8;
+    const d = dist(me, other.position);
+    // In-range attacker: full ganker share (pre-existing behavior, unchanged).
+    if (other.can_attack && d <= 5) {
+      incoming += enemyDps(other) * 0.8;
+      continue;
+    }
+    // Gank anticipation: a bot that isn't a threat THIS tick still turns the
+    // fight into a 2v1 within a few ticks if it's closing on us (or is already
+    // on us with its weapon momentarily down). Count a distance-faded share of
+    // its DPS so the favorable-1v1-about-to-become-2v1 reads unfavorable EARLY
+    // enough to disengage cleanly, not once we're surrounded. Weight 0 restores
+    // the old in-band-only behavior.
+    if (gankWeight <= 0 || d > gankRadius) continue;
+    const cooling = d <= 5; // adjacent but can_attack=false — rejoins in ticks
+    const closing = dist(me, gs.predictEnemyPos(other, 5)) < d - 0.5;
+    if (!cooling && !closing) continue;
+    const fade = d <= 5 ? 1 : (gankRadius - d) / (gankRadius - 5);
+    incoming += enemyDps(other) * 0.8 * gankWeight * fade;
   }
   incoming *= 1 - Math.min(0.6, defenseRed);
 

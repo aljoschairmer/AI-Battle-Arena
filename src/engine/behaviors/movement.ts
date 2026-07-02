@@ -7,7 +7,7 @@ import {
   toUnitStep,
 } from "../../shared/geometry";
 import { profileFor } from "../weapons";
-import { type DecisionContext, move, moveTo, sprintTo } from "./context";
+import { type DecisionContext, isEndgame, move, moveTo, sprintTo } from "./context";
 
 /**
  * Positioning relative to a target. Melee bots close in; ranged bots hold near
@@ -134,9 +134,10 @@ export function grabPickup(ctx: DecisionContext): ClientAction | null {
 /**
  * Nothing to fight and nothing to grab: pre-position for the shrinking zone.
  * Priorities:
- *   1. control_center objective → move toward capture pad if visible
- *   2. Search last-seen enemies
- *   3. Drift toward zone target center
+ *   1. control_center objective → move toward a WORTHWHILE capture pad
+ *   2. hunt_bounty objective → walk the live bounty beacon (fog-exempt position)
+ *   3. Search last-seen enemies
+ *   4. Drift toward zone target center
  */
 export function defaultReposition(ctx: DecisionContext): ClientAction {
   const { gs, tick, directive } = ctx;
@@ -144,12 +145,34 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   const zoneCenter =
     self.zone_target_radius < self.zone_radius ? self.zone_target_center : self.zone_center;
 
-  // control_center objective: head toward the capture pad (bounded — see
-  // capturePadMove; parking forever was the "stuck in the middle of the map"
-  // bug: the central pad turned the bot into a stationary free kill).
-  if (directive.objective === "control_center") {
+  // control_center objective: head toward the capture pad — but only one the
+  // live pad state says is worth standing on (capturePadGoal encapsulates the
+  // ready/contested/owner state machine), BOUNDED by capturePadMove's local
+  // stand-streak so we never park forever (the "stuck in the middle of the
+  // map" bug: the central pad turned the bot into a stationary free kill).
+  // Skipped during sudden death: squatting a tile while the floor randomizes
+  // into void is how bots die to the environment.
+  if (directive.objective === "control_center" && !gs.suddenDeath) {
     const cap = capturePadMove(ctx);
     if (cap) return cap;
+  }
+
+  // hunt_bounty with a live beacon: its position is global and fog-exempt —
+  // walk it down directly instead of patrolling and hoping.
+  if (directive.objective === "hunt_bounty" && ctx.policy.huntBountyBeacon && gs.bountyBeacon) {
+    return sprintTo(tick, gs.bountyBeacon.position);
+  }
+
+  // Endgame: with the zone this small, ground near the shrink-target center
+  // IS the win condition — hold it and let fights come to us instead of
+  // roaming to hints/last-seen ghosts that can strand us at the closing edge.
+  if (isEndgame(ctx)) {
+    const center = self.zone_target_radius < self.zone_radius ? self.zone_target_center : self.zone_center;
+    const targetRadius = Math.min(self.zone_target_radius, self.zone_radius);
+    const holdRadius = Math.max(2, targetRadius * ctx.policy.endgameCenterHoldFraction);
+    if (dist(gs.position, center) > holdRadius) return moveTo(tick, center);
+    // Already on center ground — fall through to the normal idle chain
+    // (search/loot/pad), which the tiny zone naturally keeps tight.
   }
 
   const search = searchLastSeenEnemy(ctx);
@@ -175,9 +198,24 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   const hinted = followHint(ctx);
   if (hinted) return hinted;
 
+  // Quiet phase + a live bounty beacon on someone else: walking toward the
+  // beacon beats aimless patrol (it's a real, global position — and healthy is
+  // the operative word; hurt bots already took the heal branches above).
+  if (
+    ctx.policy.huntBountyBeacon &&
+    gs.bountyBeacon &&
+    gs.hpFraction() >= ctx.policy.idleHealBelowHpFraction
+  ) {
+    return sprintTo(tick, gs.bountyBeacon.position);
+  }
+
   // Still nothing? Use the quiet phase to improve our position: capture a
-  // nearby pad (+12 score, 20 shield, 1.2x damage — docs/arena-spec.md).
-  if (ctx.policy.idleCapturePads) {
+  // nearby pad (+12 score, 20 shield, 1.2x damage — docs/arena-spec.md)
+  // instead of walking aimless patrol circles. Only a pad the live state
+  // machine says is worth it (capturePadGoal), bounded by capturePadMove's
+  // stand-streak (no infinite parking), and never during sudden death
+  // (standing still on randomizing void tiles).
+  if (ctx.policy.idleCapturePads && !gs.suddenDeath) {
     const cap = capturePadMove(ctx);
     if (cap) return cap;
   }
@@ -198,7 +236,12 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
 function capturePadMove(ctx: DecisionContext): ClientAction | null {
   const { gs, tick } = ctx;
   if (gs.underRecentFire()) return null;
-  const pad = gs.nearestCapturePad();
+  // capturePadGoal reads the live pad state machine (ready/contested/owner,
+  // pass-4): a pad on server cooldown or contested by others is already
+  // filtered out here. The local stand-streak below stays as the belt-and-
+  // suspenders bound for when no live pad state is available (terrain-'C'
+  // fallback) or the server state goes stale.
+  const pad = gs.capturePadGoal();
   if (!pad || !gs.padAvailable(pad)) return null;
   const me = gs.position;
   if (me[0] === pad[0] && me[1] === pad[1]) {
@@ -318,7 +361,9 @@ function patrolPoint(gs: import("../gameState").GameState, tick: number, center:
   const self = gs.self!;
   const me = gs.position;
   const radius = Math.max(4, (self.zone_radius ?? 20) * 0.4);
-  const baseSlot = Math.floor(tick / 30) % OFFSETS.length;
+  // Sudden death: rotate waypoints 3x faster so the bot never dwells on a tile
+  // while the floor randomizes into instant-death void ("Keep moving!" — spec).
+  const baseSlot = Math.floor(tick / (gs.suddenDeath ? 10 : 30)) % OFFSETS.length;
   // Advance past impassable waypoints AND our own tile — returning the tile
   // we're standing on turns patrol into standing still.
   for (let i = 0; i < OFFSETS.length; i++) {
