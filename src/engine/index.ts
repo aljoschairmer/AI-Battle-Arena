@@ -249,10 +249,22 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     const withTimeout = <T>(p: Promise<T | null>, ms: number): Promise<T | null> =>
       Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
 
-    const [ourStats, arenaStatus] = await Promise.all([
+    const [ourStats, arenaStatus, bounties] = await Promise.all([
       withTimeout(rest.tryGetBotStats(), 1500),
       withTimeout(rest.tryGetArenaStatus(), 1500),
+      withTimeout(rest.tryGetBounties(), 1500),
     ]);
+
+    // Refresh the bounty board into GameState so target scoring can favour
+    // the actual bounty carriers this round (targetBountyWeight). Skipped on
+    // fetch failure: the previous board (bounties persist until claimed) is
+    // better than clearing to nothing.
+    if (bounties?.entries) {
+      gs.setBounties(bounties.entries.map((b) => ({ botId: b.bot_id ?? null, name: b.name })));
+      if (bounties.entries.length > 0) {
+        log.info({ bounties: bounties.entries.map((b) => `${b.name}:${b.bounty ?? 0}`) }, "bounty board");
+      }
+    }
 
     if (ourStats) {
       log.info(
@@ -268,7 +280,11 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       roundModifierLabel: modifier,
       botsInRound: 0,
       leaderboardTop: [],
-      bounties: [],
+      bounties: (bounties?.entries ?? []).map((b) => ({
+        name: b.name,
+        bounty: b.bounty ?? 0,
+        botId: b.bot_id ?? null,
+      })),
       ourStats: ourStats
         ? {
             elo: ourStats.elo,

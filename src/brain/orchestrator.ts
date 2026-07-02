@@ -31,7 +31,7 @@ const log = child("brain");
 
 interface MetaCache {
   leaderboardTop: { name: string; elo: number; kills: number }[];
-  bounties: { name: string; bounty: number }[];
+  bounties: { name: string; bounty: number; botId: string | null }[];
   weaponMeta: { weapon: string; tier: string; meta_score: number; balance: string }[];
   fetchedAt: number;
 }
@@ -489,7 +489,9 @@ export class Orchestrator {
         ? lb!.entries.map((e) => ({ name: e.name, elo: e.elo, kills: e.kills, bot_id: e.bot_id } as LeaderboardEntry & { bot_id?: string }))
         : this.meta.leaderboardTop,
       bounties: Array.isArray(bounty?.entries)
-        ? bounty!.entries.map((e) => ({ name: e.name, bounty: e.bounty ?? 0 }))
+        ? // Keep bot_id: the strategist matches bounty carriers against the
+          // enemies list by id — name-only entries made that impossible.
+          bounty!.entries.map((e) => ({ name: e.name, bounty: e.bounty ?? 0, botId: e.bot_id ?? null }))
         : this.meta.bounties,
       weaponMeta: Array.isArray(wstats?.entries)
         ? wstats!.entries

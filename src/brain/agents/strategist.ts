@@ -8,7 +8,7 @@ export interface StrategistInput {
   snapshot: GameSnapshot;
   meta: {
     leaderboardTop: { name: string; elo: number; kills: number }[];
-    bounties: { name: string; bounty: number }[];
+    bounties: { name: string; bounty: number; botId: string | null }[];
     ourStats: {
       elo: number;
       kills: number;
@@ -68,7 +68,11 @@ export class StrategistAgent extends Agent<StrategistInput, StrategyOutput> {
       "   kd_ratio > 2.0: we're winning the meta — press harder (aggression 0.7+).",
       "5. LEADERBOARD — top-ELO bots are extremely dangerous. Add any in the current enemies list to avoidTargetIds",
       "   unless they're below 30% HP or stunned.",
-      "6. ZONE — use nearby_hazards and nearby_terrain to judge choke points and safe angles.",
+      "6. BOUNTIES — bounties lists bots carrying a public bounty (botId + amount). If a bounty carrier's",
+      "   botId appears in the enemies list and it isn't a top-ELO avoid target, set objective=hunt_bounty and",
+      "   primaryTargetId to THAT botId (match by botId, or by name when botId is null). Bounty kills are",
+      "   direct score; during double_bounty they're worth double — prioritize them aggressively then.",
+      "7. ZONE — use nearby_hazards and nearby_terrain to judge choke points and safe angles.",
       "   If distance_to_zone_edge < 5, factor zone movement into objective (survive > hunt).",
       "Only reference bot_ids that appear in the provided enemies list.",
       "Respond ONLY with JSON: {posture, objective, primaryTargetId, avoidTargetIds, hpRetreatFraction, aggression, reasoning}.",

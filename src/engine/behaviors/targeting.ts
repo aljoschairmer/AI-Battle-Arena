@@ -129,6 +129,12 @@ function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): numbe
   // it was the last hardcoded one (pass-2 audit T1).
   score += tradeAdvantage(ctx, e) * policy.targetTradeWeight;
 
+  // Bounty board: a target that actually carries a bounty is worth extra risk
+  // regardless of objective (bounty kills are direct score). The old
+  // hunt_bounty +15-for-anyone heuristic below stays as the objective-level
+  // aggression nudge for rounds where the board couldn't be fetched.
+  if (gs.isBountyTarget(e.bot_id, e.name)) score += policy.targetBountyWeight;
+
   // Objective overrides.
   if (directive.objective === "engage_weakest") score += (1 - hpFrac) * 40;
   if (directive.objective === "survive") score -= Math.max(0, distance - 2) * 6;

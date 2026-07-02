@@ -1420,6 +1420,38 @@ async function run(): Promise<void> {
     );
   }
 
+  console.log("\nbounty-aware targeting (win-rate pass)");
+  {
+    const ctxOf = (g: GameState) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: g.tick });
+
+    // Two otherwise-identical enemies; only B carries a bounty -> B wins.
+    const gsB = freshGameState();
+    gsB.setBounties([{ botId: "b" }]);
+    gsB.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "a", position: [55, 50] }),
+        enemy({ bot_id: "b", position: [55, 50] }),
+      ]),
+    );
+    const pickedBounty = selectTarget(ctxOf(gsB));
+    check("bounty carrier outranks an identical non-carrier", pickedBounty?.bot_id === "b", pickedBounty?.bot_id);
+
+    // Name fallback: the bounty API sometimes omits bot_id.
+    const gsN = freshGameState();
+    gsN.setBounties([{ name: "Bar" }]);
+    check("isBountyTarget matches by name when id is absent", gsN.isBountyTarget("whatever", "Bar"));
+    check("no phantom bounty without id or name match", !gsN.isBountyTarget("a", "Foo"));
+
+    // Board refresh replaces, never accumulates.
+    gsN.setBounties([{ botId: "c" }]);
+    check("setBounties replaces the previous board", !gsN.isBountyTarget("whatever", "Bar") && gsN.isBountyTarget("c"));
+
+    // New knob rides the standard clamp table.
+    const clamped = mergePolicy(DEFAULT_POLICY, { targetBountyWeight: 9999 });
+    check("targetBountyWeight clamped to [0,100]", clamped.targetBountyWeight === 100, clamped.targetBountyWeight);
+    check("targetBountyWeight default is 25", DEFAULT_POLICY.targetBountyWeight === 25);
+  }
+
   console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
   {
     const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));

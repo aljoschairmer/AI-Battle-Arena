@@ -147,6 +147,13 @@ export interface EnginePolicy {
    */
   targetTradeWeight: number;
   /**
+   * Flat score bonus for a target currently carrying an arena bounty (matched
+   * by bot_id or name from the bounty board, fetched out-of-band at round
+   * boundaries). Before this existed the hunt_bounty objective gave +15 to ANY
+   * enemy — the engine literally could not tell who had the bounty.
+   */
+  targetBountyWeight: number;
+  /**
    * Max CONSECUTIVE ticks the dagger in-range flank deferral may hold before
    * committing to a head-on attack. 0 = never defer (attack head-on always).
    * Bounds the pass-2 audit's confirmed orbit: an unterminated defer loop let
@@ -211,6 +218,7 @@ export const DEFAULT_POLICY: EnginePolicy = {
   disengageUseSeparation: true,
   leadTicks: 3,
   targetTradeWeight: 30,
+  targetBountyWeight: 25,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
   idleHealBelowHpFraction: 0.75,
@@ -263,6 +271,7 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     disengageUseSeparation: asBool(patch.disengageUseSeparation, base.disengageUseSeparation),
     leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
     targetTradeWeight: clampNum(patch.targetTradeWeight, 0, 100, base.targetTradeWeight),
+    targetBountyWeight: clampNum(patch.targetBountyWeight, 0, 100, base.targetBountyWeight),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
     idleHealBelowHpFraction: clampNum(patch.idleHealBelowHpFraction, 0, 1, base.idleHealBelowHpFraction),
@@ -481,8 +490,8 @@ export interface RoundContext {
   botsInRound: number;
   /** Snapshot of the public leaderboard top entries (best-effort). */
   leaderboardTop: { name: string; elo: number; kills: number }[];
-  /** Current bounty board (best-effort). */
-  bounties: { name: string; bounty: number }[];
+  /** Current bounty board (best-effort). botId when the API provides it. */
+  bounties: { name: string; bounty: number; botId?: string | null }[];
   /** Our own lifetime stats (best-effort). */
   ourStats: {
     elo: number;
