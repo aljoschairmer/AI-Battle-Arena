@@ -1592,6 +1592,53 @@ async function run(): Promise<void> {
     );
   }
 
+  console.log("\ncharged-attack punish (win-rate pass): shove interrupts an adjacent windup");
+  {
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+    const charging = (over: Partial<NearbyBot> = {}) =>
+      enemy({ bot_id: "archer", weapon: "bow", hp: 120, max_hp: 160, position: [51, 50], charged_shot_ready: true, ...over });
+
+    // Adjacent enemy with a ready charged shot -> shove denies it (even though
+    // our own weapon is ready and an attack was available).
+    const gsSh = freshGameState();
+    gsSh.applyTick(tickFrom(self(), [charging()]));
+    const aSh = combatBehavior(ctxOf(gsSh), gsSh.enemies()[0]!);
+    check("adjacent charged_shot_ready -> shove interrupt", aSh?.action === "shove", aSh);
+
+    // Near-dead charger -> a kill beats an interrupt.
+    const gsKill = freshGameState();
+    gsKill.applyTick(tickFrom(self(), [charging({ hp: 10 })]));
+    const aKill = combatBehavior(ctxOf(gsKill), gsKill.enemies()[0]!);
+    check("near-dead charger -> attack to kill instead of shoving", aKill?.action === "attack", aKill);
+
+    // bow_charge_level >= 2 telegraphs the same interrupt.
+    const gsLvl = freshGameState();
+    gsLvl.applyTick(tickFrom(self(), [charging({ charged_shot_ready: false, bow_charge_level: 2 })]));
+    const aLvl = combatBehavior(ctxOf(gsLvl), gsLvl.enemies()[0]!);
+    check("bow_charge_level>=2 -> shove interrupt", aLvl?.action === "shove", aLvl);
+
+    // Toggle off restores plain attack.
+    const off = mergePolicy(DEFAULT_POLICY, { shoveInterruptCharged: false });
+    const gsOff = freshGameState();
+    gsOff.applyTick(tickFrom(self(), [charging()]));
+    const aOff = combatBehavior(ctxOf(gsOff, off), gsOff.enemies()[0]!);
+    check("shoveInterruptCharged=false -> attacks as before", aOff?.action === "attack", aOff);
+
+    // Respects the server's 1.5s shove cooldown (second interrupt inside the
+    // window falls through to a normal attack, not a wasted rejected shove).
+    const gsCd = freshGameState();
+    gsCd.applyTick(tickFrom(self(), [charging()], 100));
+    const first = combatBehavior(ctxOf(gsCd), gsCd.enemies()[0]!);
+    gsCd.noteIssuedAction({ type: "action", tick: 100, action: "shove", target: "archer" });
+    gsCd.applyTick(tickFrom(self(), [charging()], 105));
+    const second = combatBehavior(ctxOf(gsCd), gsCd.enemies()[0]!);
+    check(
+      "shove-interrupt respects the 1.5s shove cooldown",
+      first?.action === "shove" && second?.action === "attack",
+      { first, second },
+    );
+  }
+
   console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
   {
     const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));

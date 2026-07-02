@@ -151,6 +151,7 @@ export const PolicyPatchSchema = z.object({
   endgameZoneRadius: z.number().optional(),
   endgameTradeCaution: z.number().optional(),
   endgameCenterHoldFraction: z.number().optional(),
+  shoveInterruptCharged: z.boolean().optional(),
   flankMaxDeferTicks: z.number().optional(),
   retreatFireWhileKiting: z.boolean().optional(),
   idleHealBelowHpFraction: z.number().optional(),

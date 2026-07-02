@@ -185,6 +185,12 @@ export interface EnginePolicy {
    */
   endgameCenterHoldFraction: number;
   /**
+   * Shove an adjacent enemy whose windup is telegraphed (charged_shot_ready /
+   * bow_charge_level >= 2) — the 2-tick stun denies the charged shot. Skipped
+   * when one normal hit would kill them instead.
+   */
+  shoveInterruptCharged: boolean;
+  /**
    * Max CONSECUTIVE ticks the dagger in-range flank deferral may hold before
    * committing to a head-on attack. 0 = never defer (attack head-on always).
    * Bounds the pass-2 audit's confirmed orbit: an unterminated defer loop let
@@ -257,6 +263,7 @@ export const DEFAULT_POLICY: EnginePolicy = {
   // EVEN trade before committing in an endgame crowd.
   endgameTradeCaution: 0.3,
   endgameCenterHoldFraction: 0.4,
+  shoveInterruptCharged: true,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
   idleHealBelowHpFraction: 0.75,
@@ -315,6 +322,7 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     endgameZoneRadius: clampNum(patch.endgameZoneRadius, 0, 40, base.endgameZoneRadius),
     endgameTradeCaution: clampNum(patch.endgameTradeCaution, 0, 0.6, base.endgameTradeCaution),
     endgameCenterHoldFraction: clampNum(patch.endgameCenterHoldFraction, 0.1, 0.9, base.endgameCenterHoldFraction),
+    shoveInterruptCharged: asBool(patch.shoveInterruptCharged, base.shoveInterruptCharged),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
     idleHealBelowHpFraction: clampNum(patch.idleHealBelowHpFraction, 0, 1, base.idleHealBelowHpFraction),
