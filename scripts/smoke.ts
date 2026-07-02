@@ -1511,6 +1511,87 @@ async function run(): Promise<void> {
     check("gank knobs clamped (radius<=16, weight<=1)", clamped.gankRadius === 16 && clamped.gankApproachWeight === 1);
   }
 
+  console.log("\nzone-endgame posture (win-rate pass)");
+  {
+    // Tiny (10-tile) settled zone, bot at center so the zone-safety rungs stay
+    // quiet; a marginal fight vs a full-HP shield with a second attacker in
+    // range — exactly the endgame overextension that used to be auto-committed.
+    const endgameSelf = (over: Partial<SelfState> = {}) =>
+      self({
+        zone_radius: 10,
+        zone_target_radius: 10,
+        distance_to_zone_edge: 10,
+        ...over,
+      });
+    // Second attacker inside the 5-tile trade band but LOS-blocked so target
+    // selection deterministically stays on the adjacent tank (the trade math
+    // counts in-band attackers regardless of LOS).
+    const crowd = [
+      enemy({ bot_id: "tank", weapon: "shield", hp: 160, max_hp: 160, position: [51, 50] }),
+      enemy({ bot_id: "second", position: [54, 50], has_los: false }),
+    ];
+
+    const ctlE = new Controller();
+    ctlE.onRoundStart();
+    const gsEnd = freshGameState();
+    gsEnd.applyTick(tickFrom(endgameSelf(), crowd));
+    const aEnd = ctlE.decide(gsEnd);
+    check(
+      "endgame + 2 enemies + bad trade -> disengages even at full HP",
+      aEnd.action !== "attack",
+      aEnd,
+    );
+
+    // Identical fight in a big (40-tile) zone -> healthy bot still commits.
+    const ctlBig = new Controller();
+    ctlBig.onRoundStart();
+    const gsBig = freshGameState();
+    gsBig.applyTick(tickFrom(self({ zone_radius: 40, zone_target_radius: 40, distance_to_zone_edge: 25 }), crowd));
+    const aBig = ctlBig.decide(gsBig);
+    check("same fight in a big zone -> commits while healthy (pre-existing behavior)", aBig.action === "attack", aBig);
+
+    // Endgame FINAL 1v1: no extra caution — passivity just splits zone damage.
+    const ctl1v1 = new Controller();
+    ctl1v1.onRoundStart();
+    const gs1v1 = freshGameState();
+    gs1v1.applyTick(tickFrom(endgameSelf(), [crowd[0]!]));
+    const a1v1 = ctl1v1.decide(gs1v1);
+    check("endgame final 1v1 -> still fights", a1v1.action === "attack", a1v1);
+
+    // endgameZoneRadius=0 disables the whole posture.
+    const ctlOff = new Controller();
+    ctlOff.onRoundStart();
+    ctlOff.setPolicy(mergePolicy(DEFAULT_POLICY, { endgameZoneRadius: 0 }));
+    const gsOff = freshGameState();
+    gsOff.applyTick(tickFrom(endgameSelf(), crowd));
+    const aOff = ctlOff.decide(gsOff);
+    check("endgameZoneRadius=0 restores commit-while-healthy", aOff.action === "attack", aOff);
+
+    // Idle center-hold: endgame, nothing to fight, bot 8 tiles off-center ->
+    // drifts to the zone center instead of roaming outward.
+    const ctlHold = new Controller();
+    ctlHold.onRoundStart();
+    const gsHold = freshGameState();
+    gsHold.applyTick(
+      tickFrom(endgameSelf({ position: [58, 50], distance_to_zone_edge: 2.2 }), []),
+    );
+    // distance_to_zone_edge above the hard margin is still inside zoneEdgeMargin,
+    // so pick a settled zone instead: no shrink -> no drift rung; then hold_ground.
+    const aHold = ctlHold.decide(gsHold);
+    check(
+      "endgame idle -> holds the zone center",
+      aHold.action === "move_to" && aHold.target_position[0] === 50 && aHold.target_position[1] === 50,
+      aHold,
+    );
+
+    // Clamps for the three new knobs.
+    const c = mergePolicy(DEFAULT_POLICY, { endgameZoneRadius: 999, endgameTradeCaution: 9, endgameCenterHoldFraction: 9 });
+    check(
+      "endgame knobs clamped (radius<=40, caution<=0.6, holdFraction<=0.9)",
+      c.endgameZoneRadius === 40 && c.endgameTradeCaution === 0.6 && c.endgameCenterHoldFraction === 0.9,
+    );
+  }
+
   console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
   {
     const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));
