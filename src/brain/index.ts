@@ -26,8 +26,8 @@ export async function startCoopCoordinator(bus: Bus): Promise<BrainHandle> {
   };
 }
 
-export async function startBrain(bus: Bus): Promise<BrainHandle> {
-  const orchestrator = new Orchestrator(bus);
+export async function startBrain(bus: Bus, opts: { memoryScope?: string } = {}): Promise<BrainHandle> {
+  const orchestrator = new Orchestrator(bus, opts);
   await orchestrator.start();
 
   // Boot-time OpenRouter connectivity self-test — turns a silent "no LLM calls"

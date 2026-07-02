@@ -53,6 +53,15 @@ export class GameState {
   /** Weapons seen on opponents in the pre-round lobby (available before round_start). */
   lobbyWeapons: Partial<Record<Weapon, number>> = {};
 
+  /**
+   * Current bounty board (fetched out-of-band by the engine at round
+   * boundaries — never on the tick path). Overwritten wholesale on each
+   * refresh; deliberately NOT cleared by resetTransientObservations because
+   * bounties persist across rounds server-side until claimed.
+   */
+  private bountyIds = new Set<string>();
+  private bountyNames = new Set<string>();
+
   /** True while we are in the post-death wait before a respawn. */
   isRespawning = false;
 
@@ -462,6 +471,22 @@ export class GameState {
     return (this.self?.effects ?? []).some(
       (e) => e.name === "burn" || e.name === "poison" || e.name === "dot",
     );
+  }
+
+  /** Replace the known bounty board (out-of-band REST refresh). */
+  setBounties(entries: { botId?: string | null; name?: string | null }[]): void {
+    this.bountyIds.clear();
+    this.bountyNames.clear();
+    for (const e of entries) {
+      if (e.botId) this.bountyIds.add(e.botId);
+      if (e.name) this.bountyNames.add(e.name);
+    }
+  }
+
+  /** Does this bot currently carry a bounty (by id, or name as fallback)? */
+  isBountyTarget(botId: string, name?: string): boolean {
+    if (this.bountyIds.has(botId)) return true;
+    return name !== undefined && name !== "" && this.bountyNames.has(name);
   }
 
   /** Dominant weapon among opponents visible in the lobby (pre-round scout). */

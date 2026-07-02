@@ -5,7 +5,7 @@ import { dist } from "../shared/geometry";
 import type { GameState } from "./gameState";
 import { combatBehavior, gravityWellBehavior } from "./behaviors/combat";
 import { tradeAdvantage } from "./combatMath";
-import { idle, placeMine } from "./behaviors/context";
+import { idle, isEndgame, placeMine } from "./behaviors/context";
 import { defaultReposition, grabPickup, positionForCombat } from "./behaviors/movement";
 import { selectTarget } from "./behaviors/targeting";
 import {
@@ -211,8 +211,16 @@ export class Controller {
       // Phase 2/3 telemetry can see what trade math predicted for EVERY
       // engagement, not only the ones already hp-gated into re-checking it.
       const advantage = tradeAdvantage(ctx, target);
+      // Endgame with company: in a tiny zone with 2+ enemies around, a lost
+      // fight is terminal (nowhere to retreat, the survivor cleans us up), so
+      // the trade gate applies even at full HP and demands extra margin. A
+      // final 1v1 keeps the normal commit-while-healthy behavior — there,
+      // passivity just splits the zone damage.
+      const endgameCaution = isEndgame(ctx) && gs.enemies().length >= 2;
       const wouldBail =
-        !forced && gs.hpFraction() < ctx.policy.disengageHpThreshold && advantage < ctx.policy.minTradeAdvantage;
+        !forced &&
+        (gs.hpFraction() < ctx.policy.disengageHpThreshold || endgameCaution) &&
+        advantage < ctx.policy.minTradeAdvantage + (endgameCaution ? ctx.policy.endgameTradeCaution : 0);
       let bail: ClientAction | null = null;
       if (wouldBail) {
         bail = tacticalDisengage(ctx);

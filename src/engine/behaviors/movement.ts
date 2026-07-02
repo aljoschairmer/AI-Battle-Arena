@@ -7,7 +7,7 @@ import {
   toUnitStep,
 } from "../../shared/geometry";
 import { profileFor } from "../weapons";
-import { type DecisionContext, move, moveTo, sprintTo } from "./context";
+import { type DecisionContext, isEndgame, move, moveTo, sprintTo } from "./context";
 
 /**
  * Positioning relative to a target. Melee bots close in; ranged bots hold near
@@ -146,6 +146,18 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   if (directive.objective === "control_center") {
     const cap = gs.nearestCapturePad();
     if (cap) return moveTo(tick, cap);
+  }
+
+  // Endgame: with the zone this small, ground near the shrink-target center
+  // IS the win condition — hold it and let fights come to us instead of
+  // roaming to hints/last-seen ghosts that can strand us at the closing edge.
+  if (isEndgame(ctx)) {
+    const center = self.zone_target_radius < self.zone_radius ? self.zone_target_center : self.zone_center;
+    const targetRadius = Math.min(self.zone_target_radius, self.zone_radius);
+    const holdRadius = Math.max(2, targetRadius * ctx.policy.endgameCenterHoldFraction);
+    if (dist(gs.position, center) > holdRadius) return moveTo(tick, center);
+    // Already on center ground — fall through to the normal idle chain
+    // (search/loot/pad), which the tiny zone naturally keeps tight.
   }
 
   const search = searchLastSeenEnemy(ctx);

@@ -147,6 +147,50 @@ export interface EnginePolicy {
    */
   targetTradeWeight: number;
   /**
+   * Flat score bonus for a target currently carrying an arena bounty (matched
+   * by bot_id or name from the bounty board, fetched out-of-band at round
+   * boundaries). Before this existed the hunt_bounty objective gave +15 to ANY
+   * enemy — the engine literally could not tell who had the bounty.
+   */
+  targetBountyWeight: number;
+  /**
+   * Gank anticipation radius (tiles): enemies beyond the immediate 5-tile
+   * attacker band but inside this radius count a faded share of their DPS in
+   * tradeAdvantage when they're closing on us (or adjacent with their weapon
+   * cooling). Before this, a third bot moved the trade number only once it was
+   * ≤5 tiles AND can_attack — the classic 2v1 death read as a fine 1v1 until
+   * we were surrounded.
+   */
+  gankRadius: number;
+  /** 0..1 weight on anticipated (not-yet-in-range) ganker DPS. 0 disables. */
+  gankApproachWeight: number;
+  /**
+   * Zone radius (tiles, using the shrink target while closing) at or below
+   * which the endgame posture kicks in: tighter engage gating with multiple
+   * enemies around, and center-holding instead of roaming when idle. Before
+   * this the bot played the last 20 seconds exactly like the first 20.
+   * 0 disables endgame behavior entirely.
+   */
+  endgameZoneRadius: number;
+  /**
+   * Extra trade advantage demanded before committing to a fight during the
+   * endgame with 2+ enemies visible (added to minTradeAdvantage; the HP gate
+   * is bypassed — even a healthy bot shouldn't take a marginal fight it can't
+   * retreat from in a tiny zone that's about to be a 2v1).
+   */
+  endgameTradeCaution: number;
+  /**
+   * During the endgame, drift toward the shrink-target center whenever we're
+   * further out than this fraction of the target radius (idle/no-target only).
+   */
+  endgameCenterHoldFraction: number;
+  /**
+   * Shove an adjacent enemy whose windup is telegraphed (charged_shot_ready /
+   * bow_charge_level >= 2) — the 2-tick stun denies the charged shot. Skipped
+   * when one normal hit would kill them instead.
+   */
+  shoveInterruptCharged: boolean;
+  /**
    * Max CONSECUTIVE ticks the dagger in-range flank deferral may hold before
    * committing to a head-on attack. 0 = never defer (attack head-on always).
    * Bounds the pass-2 audit's confirmed orbit: an unterminated defer loop let
@@ -211,6 +255,22 @@ export const DEFAULT_POLICY: EnginePolicy = {
   disengageUseSeparation: true,
   leadTicks: 3,
   targetTradeWeight: 30,
+  targetBountyWeight: 25,
+  gankRadius: 9,
+  gankApproachWeight: 0.5,
+  // DEFAULT OFF after live A/B measurement (pass-3, 2026-07-02): arms with the
+  // endgame posture enabled won 0/18 live rounds while endgame-off arms on the
+  // SAME build won 7/22 (Fisher p≈0.01). Telemetry attributed the damage to
+  // the center-hold displacing the hunting behaviors for much of each round
+  // (this arena runs ~60s rounds with a fast shrink, so "endgame" covered far
+  // more of the round than designed for). The knobs remain for the Tuner to
+  // experiment with; the code path is smoke-covered with the knob enabled.
+  endgameZoneRadius: 0,
+  // 0.3 on top of the default minTradeAdvantage (-0.3) = demand at least an
+  // EVEN trade before committing in an endgame crowd.
+  endgameTradeCaution: 0.3,
+  endgameCenterHoldFraction: 0.4,
+  shoveInterruptCharged: true,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
   idleHealBelowHpFraction: 0.75,
@@ -263,6 +323,13 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     disengageUseSeparation: asBool(patch.disengageUseSeparation, base.disengageUseSeparation),
     leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
     targetTradeWeight: clampNum(patch.targetTradeWeight, 0, 100, base.targetTradeWeight),
+    targetBountyWeight: clampNum(patch.targetBountyWeight, 0, 100, base.targetBountyWeight),
+    gankRadius: clampNum(patch.gankRadius, 5, 16, base.gankRadius),
+    gankApproachWeight: clampNum(patch.gankApproachWeight, 0, 1, base.gankApproachWeight),
+    endgameZoneRadius: clampNum(patch.endgameZoneRadius, 0, 40, base.endgameZoneRadius),
+    endgameTradeCaution: clampNum(patch.endgameTradeCaution, 0, 0.6, base.endgameTradeCaution),
+    endgameCenterHoldFraction: clampNum(patch.endgameCenterHoldFraction, 0.1, 0.9, base.endgameCenterHoldFraction),
+    shoveInterruptCharged: asBool(patch.shoveInterruptCharged, base.shoveInterruptCharged),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
     idleHealBelowHpFraction: clampNum(patch.idleHealBelowHpFraction, 0, 1, base.idleHealBelowHpFraction),
@@ -314,6 +381,26 @@ export function shouldApplyDirective(
     return false;
   }
   return true;
+}
+
+/**
+ * Parse operator-provided EnginePolicy overrides (ENGINE_POLICY_OVERRIDES env,
+ * a JSON object of policy fields). The A/B mechanism for live experiments:
+ * run two bots (or two batches) on the SAME build with different knob values
+ * and a POLICY_VARIANT tag each, so infra conditions hit both sides equally.
+ * Values ride mergePolicy's clamp table like every other policy source; junk
+ * input returns null (startup warns and continues on defaults — an override
+ * must never brick the bot).
+ */
+export function parsePolicyOverrides(raw: string | undefined): Partial<EnginePolicy> | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    return parsed as Partial<EnginePolicy>;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -481,8 +568,8 @@ export interface RoundContext {
   botsInRound: number;
   /** Snapshot of the public leaderboard top entries (best-effort). */
   leaderboardTop: { name: string; elo: number; kills: number }[];
-  /** Current bounty board (best-effort). */
-  bounties: { name: string; bounty: number }[];
+  /** Current bounty board (best-effort). botId when the API provides it. */
+  bounties: { name: string; bounty: number; botId?: string | null }[];
   /** Our own lifetime stats (best-effort). */
   ourStats: {
     elo: number;

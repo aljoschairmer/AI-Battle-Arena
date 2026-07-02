@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     // and fires the first loadout request.
     if (runsBrain) {
       if (llmEnabled) {
-        handles.push(await startBrain(bbus));
+        handles.push(await startBrain(bbus, { memoryScope: b.scope }));
       } else if (b.index === 0) {
         logger.warn(
           "ROLE includes 'brain' but OPENROUTER_API_KEY is unset — LLM brain disabled; " +

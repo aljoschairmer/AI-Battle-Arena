@@ -10,6 +10,7 @@ import {
   type LearningInsights,
   type RoundOutcome,
 } from "../shared/memory";
+import { BrainMemoryStore } from "../shared/memoryStore";
 import type {
   Directive,
   EnginePolicy,
@@ -30,7 +31,7 @@ const log = child("brain");
 
 interface MetaCache {
   leaderboardTop: { name: string; elo: number; kills: number }[];
-  bounties: { name: string; bounty: number }[];
+  bounties: { name: string; bounty: number; botId: string | null }[];
   weaponMeta: { weapon: string; tier: string; meta_score: number; balance: string }[];
   fetchedAt: number;
 }
@@ -86,11 +87,19 @@ export class Orchestrator {
   private readonly roundHistory = new RoundHistory(30);
   private readonly opponents = new OpponentRegistry();
   private insights: LearningInsights = { ...DEFAULT_INSIGHTS };
+  // Disk persistence for the above — the KV mirror expires in ~300s, so
+  // without this a restarted brain forgets every opponent it ever fought.
+  private readonly memoryStore: BrainMemoryStore;
 
   private tacticianTimer: NodeJS.Timeout | null = null;
   private unsubs: Array<() => void> = [];
 
-  constructor(private readonly bus: Bus) {}
+  constructor(
+    private readonly bus: Bus,
+    opts: { memoryScope?: string } = {},
+  ) {
+    this.memoryStore = new BrainMemoryStore(opts.memoryScope ?? "");
+  }
 
   async start(): Promise<void> {
     // Resume state from the KV mirror. Best-effort: a Redis outage at boot must
@@ -109,6 +118,22 @@ export class Orchestrator {
       if (savedInsights) {
         this.insights = savedInsights;
         log.info({ lessons: this.insights.lessons.length, round: this.insights.analysedThroughRound }, "restored learning insights");
+      }
+
+      // Restore round history + opponent registry from disk (survives both
+      // process restarts and the 300s KV expiry). Disk insights only fill in
+      // when the KV didn't have a fresher copy.
+      const disk = this.memoryStore.load();
+      if (disk) {
+        this.roundHistory.restore(disk.rounds);
+        this.opponents.restore(disk.profiles);
+        if (disk.insights && disk.insights.analysedThroughRound > this.insights.analysedThroughRound) {
+          this.insights = disk.insights;
+        }
+        log.info(
+          { rounds: this.roundHistory.size(), opponents: this.opponents.getAll().length },
+          "restored cross-round memory from disk",
+        );
       }
 
       // Restore the live tuning policy so learned knobs survive a restart.
@@ -156,6 +181,7 @@ export class Orchestrator {
     if (this.tacticianTimer) clearInterval(this.tacticianTimer);
     for (const u of this.unsubs) u();
     this.unsubs = [];
+    this.memoryStore.flush();
     log.info("brain stopped");
   }
 
@@ -261,6 +287,7 @@ export class Orchestrator {
         ourStats: req.context.ourStats,
         arenaBotsConnected: req.context.arenaBotsConnected,
         insights: this.insights,
+        opponentProfiles: this.opponents.forPrompt(8),
       },
     });
 
@@ -298,12 +325,26 @@ export class Orchestrator {
       "round outcome recorded",
     );
 
+    // Persist memory before the slow post-round agents, so a crash/restart
+    // during an LLM call can't lose the round we just recorded.
+    this.persistMemory();
+
     // Need a couple of rounds of evidence before learning/tuning.
     if (this.roundHistory.size() < 2) return;
 
     // Run the two post-round agents in parallel: the Analyst updates strategic
     // insights; the Tuner rewrites the engine's live behaviour policy.
     await Promise.all([this.runAnalyst(outcome), this.runTuner(outcome)]);
+    // And once more with the fresh insights included.
+    this.persistMemory();
+  }
+
+  private persistMemory(): void {
+    this.memoryStore.save({
+      rounds: this.roundHistory.toJSON(),
+      profiles: this.opponents.toJSON(),
+      insights: this.insights,
+    });
   }
 
   /** Analyst: distil strategic lessons from recent rounds into insights. */
@@ -448,7 +489,9 @@ export class Orchestrator {
         ? lb!.entries.map((e) => ({ name: e.name, elo: e.elo, kills: e.kills, bot_id: e.bot_id } as LeaderboardEntry & { bot_id?: string }))
         : this.meta.leaderboardTop,
       bounties: Array.isArray(bounty?.entries)
-        ? bounty!.entries.map((e) => ({ name: e.name, bounty: e.bounty ?? 0 }))
+        ? // Keep bot_id: the strategist matches bounty carriers against the
+          // enemies list by id — name-only entries made that impossible.
+          bounty!.entries.map((e) => ({ name: e.name, bounty: e.bounty ?? 0, botId: e.bot_id ?? null }))
         : this.meta.bounties,
       weaponMeta: Array.isArray(wstats?.entries)
         ? wstats!.entries

@@ -5,7 +5,7 @@ import { type Bus, Channels, Keys } from "../bus";
 import { child } from "../shared/logger";
 import type { RoundOutcome } from "../shared/memory";
 import type { Directive, EnginePolicy, LoadoutPlan, LoadoutRequest, RoundContext } from "../types/internal";
-import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, isFresher, sanitizePolicy, shouldApplyDirective } from "../types/internal";
+import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, isFresher, mergePolicy, parsePolicyOverrides, sanitizePolicy, shouldApplyDirective } from "../types/internal";
 import type {
   ConnectedMsg,
   DeathMsg,
@@ -26,6 +26,7 @@ import { GameState } from "./gameState";
 import { chooseFallbackLoadout } from "./loadout";
 import { buildSnapshot } from "./telemetry";
 import { telemetry as telemetryLog } from "./telemetryLog";
+import { outcomeLog } from "./outcomeLog";
 
 // Publish a strategy snapshot to the Brain ~2x/sec. The control loop runs every
 // tick (10x/sec) regardless — snapshots are only for the slow LLM layer.
@@ -83,6 +84,9 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   let directiveTs = -1;
   let policyVersion = -1;
   let policyTs = -1;
+  // Provenance of the active policy, recorded alongside each round outcome so
+  // wins/losses can be attributed to the policy variant that produced them.
+  let policySource = "default";
 
   // Whether to publish telemetry (snapshots / loadout requests / round outcomes)
   // to the Brain. CRITICAL: in a split deployment the Engine process has NO
@@ -140,6 +144,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     const p = sanitizePolicy(raw);
     policyVersion = p.version;
     policyTs = p.ts;
+    policySource = p.source ?? "bus";
     controller.setPolicy(p);
     log.info(
       { v: p.version, dodge: p.dodgeEagerness, kite: p.kiteRangeBias, src: p.source, why: p.reasoning },
@@ -170,10 +175,26 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     const p = sanitizePolicy(seededPolicy);
     policyVersion = p.version;
     policyTs = p.ts;
+    policySource = p.source ?? "seed";
     controller.setPolicy(p);
     log.info({ v: p.version, src: p.source }, "restored tuning policy");
   } else {
-    controller.setPolicy({ ...DEFAULT_POLICY });
+    // Operator A/B overrides (ENGINE_POLICY_OVERRIDES JSON): same build, some
+    // knobs pinned — clamped by the same mergePolicy table as every other
+    // policy source. Only applies when no KV policy was restored; a live
+    // Tuner still supersedes it (this is an experiment default, not a lock).
+    const overrides = parsePolicyOverrides(process.env.ENGINE_POLICY_OVERRIDES);
+    if (overrides) {
+      const p = mergePolicy(DEFAULT_POLICY, { ...overrides, source: "env-override" });
+      policySource = "env-override";
+      controller.setPolicy(p);
+      log.info({ overrides: Object.keys(overrides) }, "policy overrides applied from env (A/B)");
+    } else {
+      if (process.env.ENGINE_POLICY_OVERRIDES) {
+        log.warn("ENGINE_POLICY_OVERRIDES set but not a JSON object — ignored, running defaults");
+      }
+      controller.setPolicy({ ...DEFAULT_POLICY });
+    }
   }
 
   // --- helpers ---------------------------------------------------------------
@@ -243,10 +264,22 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     const withTimeout = <T>(p: Promise<T | null>, ms: number): Promise<T | null> =>
       Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
 
-    const [ourStats, arenaStatus] = await Promise.all([
+    const [ourStats, arenaStatus, bounties] = await Promise.all([
       withTimeout(rest.tryGetBotStats(), 1500),
       withTimeout(rest.tryGetArenaStatus(), 1500),
+      withTimeout(rest.tryGetBounties(), 1500),
     ]);
+
+    // Refresh the bounty board into GameState so target scoring can favour
+    // the actual bounty carriers this round (targetBountyWeight). Skipped on
+    // fetch failure: the previous board (bounties persist until claimed) is
+    // better than clearing to nothing.
+    if (bounties?.entries) {
+      gs.setBounties(bounties.entries.map((b) => ({ botId: b.bot_id ?? null, name: b.name })));
+      if (bounties.entries.length > 0) {
+        log.info({ bounties: bounties.entries.map((b) => `${b.name}:${b.bounty ?? 0}`) }, "bounty board");
+      }
+    }
 
     if (ourStats) {
       log.info(
@@ -262,7 +295,11 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       roundModifierLabel: modifier,
       botsInRound: 0,
       leaderboardTop: [],
-      bounties: [],
+      bounties: (bounties?.entries ?? []).map((b) => ({
+        name: b.name,
+        bounty: b.bounty ?? 0,
+        botId: b.bot_id ?? null,
+      })),
       ourStats: ourStats
         ? {
             elo: ourStats.elo,
@@ -456,8 +493,18 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
 
   socket.on("death", (msg: DeathMsg) => {
     try {
-      log.info({ by: msg.killer_name, weapon: msg.weapon_used, respawn: msg.respawn }, "died");
-      roundKilledBy.push({ botId: msg.killed_by, name: msg.killer_name, weapon: msg.weapon_used });
+      // Live servers populate killed_by (bot id) but often send empty
+      // killer_name/weapon_used (observed in the pass-3 baseline: every death
+      // frame had by:"" weapon:""). Recover both from the killer's last-known
+      // entity so cause-of-death attribution and opponent profiles aren't
+      // blank — same best-effort lookup the kill handler uses for victims.
+      const killerEntity = gs.entities.find(
+        (e) => e.type === "bot" && e.bot_id === msg.killed_by,
+      ) as { name?: string; weapon?: Weapon } | undefined;
+      const killerName = msg.killer_name || killerEntity?.name || "";
+      const killerWeapon: Weapon = msg.weapon_used || killerEntity?.weapon || "sword";
+      log.info({ by: killerName || msg.killed_by, weapon: killerWeapon, respawn: msg.respawn }, "died");
+      roundKilledBy.push({ botId: msg.killed_by, name: killerName, weapon: killerWeapon });
       if (msg.respawn) gs.isRespawning = true;
     } catch (e) {
       log.error({ err: (e as Error).message, stack: (e as Error).stack }, "death handling threw — continuing");
@@ -508,14 +555,34 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         bus.publish(Channels.roundOutcome, outcome).catch((e) => log.warn({ err: (e as Error).message }, "round outcome publish failed"));
       }
 
-      // Fetch updated lifetime stats after each round for next loadout request.
-      void rest.tryGetBotStats().then((stats) => {
+      // Fetch updated lifetime stats after each round, then persist the outcome
+      // to the on-disk log. The stats fetch is best-effort with a short cap so
+      // the outcome line lands even when the REST API is slow/down; the ~2.5s
+      // wait is fine — next_round_in gives us a lobby gap and this is not the
+      // tick path.
+      const aliveAtEnd = (gs.self?.hp ?? 0) > 0 && !gs.isRespawning;
+      void Promise.race([
+        rest.tryGetBotStats(),
+        new Promise<null>((r) => setTimeout(() => r(null), 2500)),
+      ]).then((stats) => {
         if (stats) {
           log.info(
             { elo: stats.elo, kd: stats.kd_ratio, wins: stats.round_wins, rounds: stats.rounds_played },
             "updated lifetime stats",
           );
         }
+        outcomeLog.record({
+          ...outcome,
+          botId: gs.selfId ?? "unknown",
+          botName,
+          label,
+          policyVersion,
+          policySource,
+          aliveAtEnd,
+          ...(stats
+            ? { elo: stats.elo, lifetimeRoundWins: stats.round_wins, lifetimeRoundsPlayed: stats.rounds_played }
+            : {}),
+        });
       });
     } catch (e) {
       log.error({ err: (e as Error).message, stack: (e as Error).stack }, "round_end handling threw — continuing");
