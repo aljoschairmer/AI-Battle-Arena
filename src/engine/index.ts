@@ -95,6 +95,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   // listening: any Redis bus (separate Brain process) or an in-process Brain.
   const publishToBrain = config.bus === "redis" || llmEnabled;
 
+  // Throttle for sudden-death map refreshes (new void tiles only appear via
+  // /arena/map, so we re-poll it while the flag is up — never on the tick path).
+  let lastSuddenDeathMapRefresh = -1000;
+
   // --- Per-round telemetry accumulator (published to Brain at round_end) ---
   let roundStartTick = 0;
   let confirmedWeapon: Weapon | null = null;
@@ -303,12 +307,19 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       ourStats: ourStats
         ? {
             elo: ourStats.elo,
+            rank: ourStats.rank,
             kills: ourStats.kills,
             deaths: ourStats.deaths,
             kd_ratio: ourStats.kd_ratio,
             best_streak: ourStats.best_streak,
+            current_streak: ourStats.current_streak,
             rounds_played: ourStats.rounds_played,
             round_wins: ourStats.round_wins,
+            // Defense/survival trend signals the Analyst & Tuner previously
+            // never saw (pass-4 audit finding 13).
+            damage_dealt: ourStats.damage_dealt,
+            damage_taken: ourStats.damage_taken,
+            time_alive_seconds: ourStats.time_alive_seconds,
           }
         : null,
       arenaBotsConnected: arenaStatus?.bots_connected ?? null,
@@ -324,12 +335,32 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     bus.publish(Channels.loadoutRequest, req).catch((e) => log.warn({ err: (e as Error).message }, "loadout request publish failed"));
   }
 
+  let lastMapFetchAt = 0;
   async function refreshTerrain(): Promise<void> {
+    // Throttle: the lobby handler calls this on every lobby frame (~2/s), which
+    // hammered /arena/map with identical fetches (observed live). Once every
+    // 2s is plenty — the map only changes once per round.
+    if (Date.now() - lastMapFetchAt < 2000) return;
+    lastMapFetchAt = Date.now();
     try {
       const map = await rest.getMap();
+      // Full ingest, not just terrain: /arena/map also carries the round's
+      // static objective layout — hazard-zone rectangles (with pulse config),
+      // the capture pad, and teleporter pairs — pre-generated during
+      // intermission (pass-4 audit finding 9). Loading them here means the
+      // engine avoids hazard rects and reads pad state before anything ever
+      // enters fog range.
+      gs.setMapFeatures(map);
       if (map.terrain && map.terrain.length > 0) {
-        gs.setTerrain(map.terrain);
-        log.debug({ rows: map.terrain.length }, "terrain loaded");
+        log.debug(
+          {
+            rows: map.terrain.length,
+            hazardZones: map.hazard_zones?.length ?? 0,
+            capturePads: map.capture_pads?.length ?? 0,
+            teleportPads: map.teleport_pads?.length ?? 0,
+          },
+          "map loaded",
+        );
       }
     } catch {
       /* terrain is optional; controller assumes open ground without it */
@@ -435,6 +466,14 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     // no-op tick and keep playing instead.
     try {
       gs.applyTick(msg);
+
+      // Sudden death: random tiles become instant-death void, and the only
+      // place new 'V' tiles show up is /arena/map — re-poll it every ~5s while
+      // the flag is up (off the tick path; best-effort).
+      if (gs.suddenDeath && gs.tick - lastSuddenDeathMapRefresh >= 50) {
+        lastSuddenDeathMapRefresh = gs.tick;
+        void refreshTerrain();
+      }
 
       // Track all visible enemy weapons for the round telemetry.
       for (const e of gs.enemies()) {

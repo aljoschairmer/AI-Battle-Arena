@@ -434,6 +434,9 @@ function nearestAttacker(ctx: DecisionContext): NearbyBot | null {
     if (e.charged_shot_ready && e.has_los && d <= range + 2) score += 40;
     if (e.bow_charge_level >= 3 && e.has_los && d <= range + 1) score += 30;
     if (d <= 1.5) score += 20;
+    // Live aggro read (target_id, pass-4): this enemy is server-confirmed
+    // locked onto US — it's the attacker even before it's in range.
+    if (e.target_id === ctx.gs.selfId) score += 15;
     if (score > bestScore) { bestScore = score; best = e; }
   }
   return best;

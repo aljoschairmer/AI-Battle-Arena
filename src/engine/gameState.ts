@@ -1,16 +1,23 @@
 import type {
+  ArenaMapResponse,
+  CapturePadState,
   ClientAction,
   ConnectedMsg,
   GridVec,
+  HazardZoneState,
   LobbyMsg,
   NearbyBot,
   NavHint,
   NearbyBurnField,
+  NearbyCapturePad,
   NearbyEntity,
+  NearbyHazardZone,
   NearbyPickup,
+  NearbyTeleportPad,
   RespawnMsg,
   RoundStartMsg,
   SelfState,
+  TeleportPadState,
   TickMsg,
   Weapon,
 } from "../types/protocol";
@@ -25,8 +32,10 @@ import { ThreatField } from "./threatField";
  * round). Exposes typed, pre-filtered views so behaviours stay terse.
  *
  * Terrain semantics (from /api/v1/arena/map): row-major `terrain[row][col]`,
- *   '.' ground (walkable), '~' water (walkable, cosmetic),
- *   '#' wall (blocks), 'V' void (impassable).
+ *   '.' ground (walkable), 'C' capture pad / 'H' hazard zone / 'T' teleport
+ *   pad (all walkable), '#' wall (blocks), 'V' void (impassable), '~' water
+ *   (impassable per the bot-setup spec — current live maps don't emit it, but
+ *   the spec is explicit: "water (impassable)").
  */
 export class GameState {
   gridSize = 100;
@@ -49,6 +58,23 @@ export class GameState {
   /** Server navigation hints; populated only when no enemy is in fog. */
   hints: NavHint[] = [];
   lastSeenEnemies: Record<string, { position: GridVec; tick: number }> = {};
+
+  /** True once the server flags sudden death (random tiles become lethal void). */
+  suddenDeath = false;
+
+  /**
+   * The global bounty beacon: live position of the current bounty target,
+   * delivered on every tick regardless of fog (see NearbyBountyTarget). Null
+   * when no bounty is active or the beacon points at us.
+   */
+  bountyBeacon: { botId: string; name: string; position: GridVec } | null = null;
+
+  /** Static per-round objective layout from GET /api/v1/arena/map — available
+   * during intermission, before anything enters our fog. Live tick entities
+   * (fog-ranged, fresher) override these where present. */
+  private mapHazardZones: HazardZoneState[] = [];
+  private mapCapturePads: CapturePadState[] = [];
+  private mapTeleportPads: TeleportPadState[] = [];
 
   /** Weapons seen on opponents in the pre-round lobby (available before round_start). */
   lobbyWeapons: Partial<Record<Weapon, number>> = {};
@@ -101,10 +127,11 @@ export class GameState {
   // SelfState reports it, so we track our own issuance.
   private lastShoveTick = -1000;
   /**
-   * Believed gravity-well charges: the spec grants one charge per COLLECTED
-   * gravity_well pickup, consumed by use_gravity_well — also never echoed in
-   * SelfState. Optimistic bookkeeping: +1 when we issue use_item on a gravity
-   * pickup, -1 when we issue use_gravity_well.
+   * Believed gravity-well charges — FALLBACK ONLY. The server DOES echo
+   * `your_state.gravity_well_charge` on live ticks (pass-4 API audit,
+   * 2026-07-02); gravityCharges() prefers that and only falls back to this
+   * optimistic count (+1 on use_item of a gravity pickup, -1 on
+   * use_gravity_well) when the field is absent from a frame.
    */
   private gravityWellCharges = 0;
 
@@ -141,8 +168,13 @@ export class GameState {
     this.round = msg.round_number;
     this.roundModifier = msg.round_modifier;
     this.isRespawning = false;
-    // Terrain is per-round; invalidate until we (optionally) fetch the new map.
+    this.suddenDeath = false;
+    // Terrain AND the objective layout are per-round; invalidate until we
+    // (optionally) fetch the new map.
     this.terrain = null;
+    this.mapHazardZones = [];
+    this.mapCapturePads = [];
+    this.mapTeleportPads = [];
     // Everyone teleports to a fresh spawn at round start, so last-seen
     // positions, velocity estimates and cached entities from the previous
     // round are all wrong now. Worse, if the server's tick counter resets per
@@ -158,6 +190,7 @@ export class GameState {
     this.entities = [];
     this.hints = [];
     this.nearbyMines = 0;
+    this.bountyBeacon = null;
     this.lastSeenEnemies = {};
     this.enemyVel = {};
     this.threatCache = null;
@@ -205,9 +238,29 @@ export class GameState {
     return tick - this.lastShoveTick >= 15;
   }
 
-  /** Gravity-well charges we believe we hold (collected pickups minus spends). */
+  /** Gravity-well charges: server-echoed count when present, else the local
+   *  optimistic count (which drifts if a use_item is dropped/rejected). */
   gravityCharges(): number {
+    const echoed = this.self?.gravity_well_charge;
+    if (typeof echoed === "number") return echoed;
     return this.gravityWellCharges;
+  }
+
+  /** Mines we've placed this round: server-echoed when present (survives
+   *  reconnects, immune to rejected placements), else the caller's fallback. */
+  minesPlaced(fallback: number): number {
+    const echoed = this.self?.mine_count;
+    return typeof echoed === "number" ? echoed : fallback;
+  }
+
+  /** True when WE carry the arena bounty — every bot sees our live position. */
+  isBountyTargetSelf(): boolean {
+    return this.self?.is_bounty_target === true;
+  }
+
+  /** relay_battery buff active (+1 capture progress/tick while contesting). */
+  hasRelayBattery(): boolean {
+    return this.self?.relay_battery_active === true && (this.self?.relay_battery_ticks ?? 0) > 0;
   }
 
   applyRespawn(msg: RespawnMsg): void {
@@ -220,6 +273,19 @@ export class GameState {
 
   setTerrain(terrain: string[][] | null): void {
     this.terrain = terrain && terrain.length > 0 ? terrain : null;
+  }
+
+  /**
+   * Ingest the full /api/v1/arena/map response: terrain plus the static
+   * objective layout (hazard rects with pulse config, capture pad, teleporter
+   * pairs). Pre-generated during intermission, so the engine knows every
+   * hazard rectangle before anything enters fog range.
+   */
+  setMapFeatures(map: ArenaMapResponse): void {
+    if (map.terrain && map.terrain.length > 0) this.terrain = map.terrain;
+    if (Array.isArray(map.hazard_zones)) this.mapHazardZones = map.hazard_zones;
+    if (Array.isArray(map.capture_pads)) this.mapCapturePads = map.capture_pads;
+    if (Array.isArray(map.teleport_pads)) this.mapTeleportPads = map.teleport_pads;
   }
 
   setConfirmedAttackRange(range: number | null): void {
@@ -274,6 +340,19 @@ export class GameState {
     this.entities = msg.nearby_entities ?? [];
     this.nearbyMines = msg.nearby_mines ?? 0;
     this.hints = msg.hints ?? [];
+    this.suddenDeath = msg.sudden_death ?? this.suddenDeath;
+    // The modifier is echoed on every tick — a mid-round (re)connect learns it
+    // here instead of waiting for the next round_start.
+    if (msg.round_modifier) this.roundModifier = msg.round_modifier;
+    // Global bounty beacon: live target position, fog-exempt. Ours = no beacon
+    // to hunt (is_bounty_target on self covers the defensive read).
+    this.bountyBeacon = null;
+    for (const e of this.entities) {
+      if (e.type === "bounty_target" && e.bot_id && e.bot_id !== this.selfId) {
+        this.bountyBeacon = { botId: e.bot_id, name: e.name ?? "", position: e.position };
+        break;
+      }
+    }
     if (this.self?.is_alive) this.isRespawning = false;
     this.updateSeenEnemies();
   }
@@ -326,12 +405,29 @@ export class GameState {
     );
   }
 
-  /** Hazards we should not stand on (burn fields, void, generic hazards, mines). */
+  /**
+   * Hazards we should not stand on: burn fields, void, mines, gravity wells,
+   * and — the big one — pulsing hazard-zone RECTANGLES. The live wire type is
+   * "hazard_zone" with a width×height rect from a top-left `position` (pass-4
+   * API audit; the engine previously only matched "hazard", which the server
+   * never sends, so it walked through active zones at 3 HP/tick).
+   *
+   * Zone pulse awareness: a zone's tiles are dangerous when it's `active` OR
+   * about to flip back on (tick_counter near the end of its off phase — don't
+   * path into a rect that ignites under our feet). Zones from the map layout
+   * that we can't see live (outside fog) count as always-dangerous: their
+   * tick_counter drifts from the static snapshot, so assuming hot is the only
+   * safe read, and the rects are small enough that avoiding them costs little.
+   */
   hazardTiles(): GridVec[] {
     const out: GridVec[] = [];
+    const liveZoneIds = new Set<string>();
     for (const e of this.entities) {
       if (e.type === "burn_field") {
         out.push(e.position);
+      } else if (e.type === "hazard_zone") {
+        liveZoneIds.add(e.id);
+        if (hazardZoneHot(e)) pushZoneTiles(out, e);
       } else if (
         e.type === "hazard" ||
         e.type === "void" ||
@@ -341,10 +437,47 @@ export class GameState {
         out.push((e as { position: GridVec }).position);
       }
     }
+    // Map-known zones with no live entity this tick (out of fog): assume hot.
+    for (const z of this.mapHazardZones) {
+      if (!liveZoneIds.has(z.id)) pushZoneTiles(out, z);
+    }
     return out;
   }
 
-  /** Is a grid cell walkable given terrain (if known) and grid bounds? */
+  /** Live capture-pad state (in fog) merged over the map's static snapshot. */
+  capturePads(): CapturePadState[] {
+    const live = this.entities.filter(
+      (e): e is NearbyCapturePad => e.type === "capture_pad",
+    );
+    const liveIds = new Set(live.map((p) => p.id));
+    return [...live, ...this.mapCapturePads.filter((p) => !liveIds.has(p.id))];
+  }
+
+  /** Live teleport-pad state (in fog) merged over the map's static snapshot. */
+  teleportPads(): TeleportPadState[] {
+    const live = this.entities.filter(
+      (e): e is NearbyTeleportPad => e.type === "teleport_pad",
+    );
+    const liveIds = new Set(live.map((p) => p.id));
+    return [...live, ...this.mapTeleportPads.filter((p) => !liveIds.has(p.id))];
+  }
+
+  /**
+   * A teleport pad that would trigger if we stepped on it. Used by isSafeStep:
+   * an ACCIDENTAL teleport mid-fight/mid-retreat hands the enemy a free reset
+   * (deliberate teleporter travel would come through an explicit behavior).
+   */
+  private isArmedTeleportPad(col: number, row: number): boolean {
+    if (this.terrain?.[row]?.[col] !== "T") return false;
+    // If we know the pad's live state and it's cooling down, it's safe ground.
+    for (const p of this.teleportPads()) {
+      if (p.position[0] === col && p.position[1] === row) return p.is_ready !== false;
+    }
+    return true; // unknown state — assume armed
+  }
+
+  /** Is a grid cell walkable given terrain (if known) and grid bounds?
+   *  '#' wall, 'V' void and '~' water are impassable (bot-setup spec). */
   isPassable(col: number, row: number): boolean {
     if (col < 0 || row < 0 || col >= this.gridSize || row >= this.gridSize) return false;
     if (!this.terrain) return true; // no map loaded -> assume open
@@ -352,12 +485,14 @@ export class GameState {
     if (!r) return true;
     const cell = r[col];
     if (cell === undefined) return true;
-    return cell !== "#" && cell !== "V";
+    return cell !== "#" && cell !== "V" && cell !== "~";
   }
 
-  /** Passability that also avoids transient hazards — used for safe stepping. */
+  /** Passability that also avoids transient hazards and armed teleport pads —
+   *  used for safe stepping. */
   isSafeStep(col: number, row: number): boolean {
     if (!this.isPassable(col, row)) return false;
+    if (this.isArmedTeleportPad(col, row)) return false;
     for (const h of this.hazardTiles()) {
       if (chebyshev([col, row], h) <= 1) return false;
     }
@@ -483,8 +618,11 @@ export class GameState {
     }
   }
 
-  /** Does this bot currently carry a bounty (by id, or name as fallback)? */
+  /** Does this bot currently carry a bounty? Checks the live tick beacon first
+   *  (authoritative — the REST board can be empty while a beacon is active,
+   *  pass-4 audit), then the REST board by id, then by name as fallback. */
   isBountyTarget(botId: string, name?: string): boolean {
+    if (this.bountyBeacon?.botId === botId) return true;
     if (this.bountyIds.has(botId)) return true;
     return name !== undefined && name !== "" && this.bountyNames.has(name);
   }
@@ -509,8 +647,20 @@ export class GameState {
     return this.terrain?.[row]?.[col] === "C";
   }
 
-  /** Find the nearest capture pad position within search radius, or null. */
+  /** Find the nearest capture pad position within search radius, or null.
+   *  Prefers the map's pad list (exact, available pre-round); falls back to a
+   *  terrain 'C' scan when the map extras weren't loaded. */
   nearestCapturePad(searchRadius = 20): GridVec | null {
+    const pads = this.capturePads();
+    if (pads.length > 0) {
+      let best: GridVec | null = null;
+      let bestDist = Infinity;
+      for (const p of pads) {
+        const d = dist(p.position, this.position);
+        if (d <= searchRadius && d < bestDist) { bestDist = d; best = p.position; }
+      }
+      return best;
+    }
     if (!this.terrain) return null;
     const [cx, cy] = this.position;
     let best: GridVec | null = null;
@@ -524,5 +674,61 @@ export class GameState {
       }
     }
     return best;
+  }
+
+  /**
+   * The capture pad worth walking to right now, or null — the state-machine
+   * read the old terrain-'C' scan couldn't do (pass-4 audit: pads expose
+   * owner/contested/cooldown live, and squatting a pad we already own on
+   * cooldown, or wading into a contested one, wastes the quiet phase):
+   *  - pad ready and uncontested (or we hold the relay battery, which doubles
+   *    our progress and justifies contesting) → capture it;
+   *  - pad cooling down but OWNED BY US → hold it for the control pulse
+   *    (+2 score / 4 shield every 15 ticks) only when the pulse is near;
+   *  - otherwise → not worth the walk.
+   */
+  capturePadGoal(searchRadius = 20): GridVec | null {
+    const pads = this.capturePads();
+    if (pads.length === 0) return this.nearestCapturePad(searchRadius); // terrain fallback
+    let best: GridVec | null = null;
+    let bestDist = Infinity;
+    for (const p of pads) {
+      const d = dist(p.position, this.position);
+      if (d > searchRadius || d >= bestDist) continue;
+      const contestedByOthers =
+        p.is_contested && p.capturing_bot_id !== undefined && p.capturing_bot_id !== this.selfId;
+      if (p.is_ready !== false) {
+        if (contestedByOthers && !this.hasRelayBattery()) continue;
+        bestDist = d;
+        best = p.position;
+      } else if (p.owner_id === this.selfId && p.next_control_pulse_ticks <= 20) {
+        bestDist = d;
+        best = p.position;
+      }
+    }
+    return best;
+  }
+}
+
+// --- hazard-zone geometry helpers -------------------------------------------
+
+/**
+ * Is a pulsing zone dangerous to path into right now? Active, or inactive but
+ * within a few ticks of re-igniting (tick_counter counts through the current
+ * phase; off_ticks is the length of the off phase).
+ */
+function hazardZoneHot(z: HazardZoneState): boolean {
+  if (z.active !== false) return true;
+  return z.off_ticks > 0 && z.off_ticks - z.tick_counter <= 3;
+}
+
+/** Expand a hazard rect (top-left `position`, width×height) into tiles. */
+function pushZoneTiles(out: GridVec[], z: HazardZoneState): void {
+  const w = Math.max(1, z.width ?? 1);
+  const h = Math.max(1, z.height ?? 1);
+  for (let dr = 0; dr < h; dr++) {
+    for (let dc = 0; dc < w; dc++) {
+      out.push([z.position[0] + dc, z.position[1] + dr]);
+    }
   }
 }

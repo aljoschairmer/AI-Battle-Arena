@@ -79,7 +79,9 @@ export const config = {
     // HTTP origin; override with ARENA_WS_ORIGIN if needed.
     wsOrigin: str("ARENA_WS_ORIGIN", arenaHttpBase),
     // Auth method for the bot WebSocket. "message" (default) = direct-message
-    // auth, which works; "query" = the documented ?key= path, broken server-side.
+    // auth; "query" = the documented ?key= path. Both verified working live
+    // (2026-07-02); message stays default as it survived the arena's earlier
+    // ?key= outage.
     wsAuth: (str("ARENA_WS_AUTH", "message") === "query" ? "query" : "message") as "message" | "query",
     // First key kept for back-compat/single-bot; `bots` is the full list.
     apiKey: apiKeys[0] ?? "",

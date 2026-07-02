@@ -88,8 +88,10 @@ export class ArenaSocket extends EventEmitter {
     private readonly apiKey: string,
     private readonly origin: string = "",
     // "message" (default) = direct-message auth: connect with no key, then send
-    // an auth frame. "query" = legacy ?key= path (broken server-side; kept for
-    // when/if the arena fixes it).
+    // an auth frame. "query" = the documented ?key= path — it was broken
+    // server-side for a while (upgrade answered HTTP 200, not 101) but works
+    // again as of 2026-07-02; message stays the default since it survived the
+    // outage.
     private readonly authMode: "message" | "query" = "message",
     // Optional per-bot label so parallel bots' socket logs are distinguishable.
     private readonly label: string = "",
@@ -116,8 +118,8 @@ export class ArenaSocket extends EventEmitter {
   }
 
   private connect(): void {
-    // Direct-message auth connects WITHOUT a key in the URL (the ?key= path is
-    // broken server-side and refuses the upgrade with HTTP 200).
+    // Direct-message auth connects WITHOUT a key in the URL; query auth puts
+    // the key on the upgrade request (both paths verified working live).
     const url =
       this.authMode === "query" && this.apiKey
         ? `${this.wsUrl}?key=${encodeURIComponent(this.apiKey)}`
@@ -189,8 +191,9 @@ export class ArenaSocket extends EventEmitter {
         this.warnedUpgradeBlocked = true;
         const hint =
           this.authMode === "query"
-            ? "ARENA_WS_AUTH=query uses the arena's ?key= path, which is broken server-side " +
-              "(it returns HTTP 200 instead of 101). Switch to ARENA_WS_AUTH=message (the default)."
+            ? "ARENA_WS_AUTH=query puts the key on the upgrade request; a non-101 response here " +
+              "usually means a WebSocket-blocking proxy or an arena-side regression of the ?key= " +
+              "path (it has broken before). Try ARENA_WS_AUTH=message (the default)."
             : "Using direct-message auth, the handshake upgrades without a key, so a non-101 here " +
               "points to a WebSocket-blocking proxy (e.g. Zscaler SSL inspection). Exempt " +
               "arena.angel-serv.com from SSL inspection, run off the inspected network, or set " +

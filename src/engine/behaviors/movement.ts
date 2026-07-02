@@ -134,18 +134,29 @@ export function grabPickup(ctx: DecisionContext): ClientAction | null {
 /**
  * Nothing to fight and nothing to grab: pre-position for the shrinking zone.
  * Priorities:
- *   1. control_center objective → move toward capture pad if visible
- *   2. Search last-seen enemies
- *   3. Drift toward zone target center
+ *   1. control_center objective → move toward a WORTHWHILE capture pad
+ *   2. hunt_bounty objective → walk the live bounty beacon (fog-exempt position)
+ *   3. Search last-seen enemies
+ *   4. Drift toward zone target center
  */
 export function defaultReposition(ctx: DecisionContext): ClientAction {
   const { gs, tick, directive } = ctx;
   const self = gs.self!;
 
-  // control_center objective: head toward the capture pad
-  if (directive.objective === "control_center") {
-    const cap = gs.nearestCapturePad();
+  // control_center objective: head toward the capture pad — but only one the
+  // live pad state says is worth standing on (ready & uncontested, or ours
+  // with a control pulse due; capturePadGoal encapsulates the state machine).
+  // Skipped during sudden death: squatting a tile while the floor randomizes
+  // into void is how bots die to the environment.
+  if (directive.objective === "control_center" && !gs.suddenDeath) {
+    const cap = gs.capturePadGoal();
     if (cap) return moveTo(tick, cap);
+  }
+
+  // hunt_bounty with a live beacon: its position is global and fog-exempt —
+  // walk it down directly instead of patrolling and hoping.
+  if (directive.objective === "hunt_bounty" && ctx.policy.huntBountyBeacon && gs.bountyBeacon) {
+    return sprintTo(tick, gs.bountyBeacon.position);
   }
 
   // Endgame: with the zone this small, ground near the shrink-target center
@@ -173,12 +184,25 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   const hinted = followHint(ctx);
   if (hinted) return hinted;
 
+  // Quiet phase + a live bounty beacon on someone else: walking toward the
+  // beacon beats aimless patrol (it's a real, global position — and healthy is
+  // the operative word; hurt bots already took the heal branches above).
+  if (
+    ctx.policy.huntBountyBeacon &&
+    gs.bountyBeacon &&
+    gs.hpFraction() >= ctx.policy.idleHealBelowHpFraction
+  ) {
+    return sprintTo(tick, gs.bountyBeacon.position);
+  }
+
   // Still nothing? Use the quiet phase to improve our position: capture a
   // nearby pad (+12 score, 20 shield, 1.2x damage — docs/arena-spec.md)
   // instead of walking aimless patrol circles. Reaching the pad is enough;
-  // the capture progresses while we keep "moving to" our own tile.
-  if (ctx.policy.idleCapturePads) {
-    const pad = gs.nearestCapturePad();
+  // the capture progresses while we keep "moving to" our own tile — but only
+  // a pad the live state machine says is worth it (capturePadGoal), and never
+  // during sudden death (standing still on randomizing void tiles).
+  if (ctx.policy.idleCapturePads && !gs.suddenDeath) {
+    const pad = gs.capturePadGoal();
     if (pad) return moveTo(tick, pad);
   }
 
@@ -274,7 +298,9 @@ function patrolPoint(gs: import("../gameState").GameState, tick: number, center:
   ];
   const self = gs.self!;
   const radius = Math.max(4, (self.zone_radius ?? 20) * 0.4);
-  const slot = Math.floor(tick / 30) % OFFSETS.length;
+  // Sudden death: rotate waypoints 3x faster so the bot never dwells on a tile
+  // while the floor randomizes into instant-death void ("Keep moving!" — spec).
+  const slot = Math.floor(tick / (gs.suddenDeath ? 10 : 30)) % OFFSETS.length;
   const [dx, dy] = OFFSETS[slot]!;
   const col = Math.round(center[0] + dx * radius);
   const row = Math.round(center[1] + dy * radius);
