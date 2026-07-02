@@ -98,6 +98,17 @@ export class RoundHistory {
     }
   }
 
+  /** Snapshot for disk persistence (BrainMemoryStore). */
+  toJSON(): RoundOutcome[] {
+    return [...this.outcomes];
+  }
+
+  /** Restore a persisted snapshot (replaces current contents, keeps the cap). */
+  restore(rounds: RoundOutcome[]): void {
+    this.outcomes.length = 0;
+    for (const r of rounds.slice(-this.maxRounds)) this.outcomes.push(r);
+  }
+
   /** Most recent N rounds, newest last */
   recent(n = 10): RoundOutcome[] {
     return this.outcomes.slice(-n);
@@ -153,6 +164,19 @@ export class OpponentRegistry {
 
   get(botId: string): OpponentProfile | null {
     return this.profiles.get(botId) ?? null;
+  }
+
+  /** Snapshot for disk persistence (BrainMemoryStore). */
+  toJSON(): OpponentProfile[] {
+    return this.getAll();
+  }
+
+  /** Restore a persisted snapshot (replaces current contents). */
+  restore(profiles: OpponentProfile[]): void {
+    this.profiles.clear();
+    for (const p of profiles) {
+      if (p && typeof p.botId === "string") this.profiles.set(p.botId, p);
+    }
   }
 
   getAll(): OpponentProfile[] {

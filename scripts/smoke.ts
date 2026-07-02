@@ -33,7 +33,8 @@ import {
 import { TokenBucket } from "../src/shared/ratelimit";
 import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
-import { DEFAULT_INSIGHTS } from "../src/shared/memory";
+import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
+import { BrainMemoryStore } from "../src/shared/memoryStore";
 import type { LoadoutRequest } from "../src/types/internal";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1417,6 +1418,54 @@ async function run(): Promise<void> {
       "system prompt instructs counter-picking known opponents",
       (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("known_opponents"),
     );
+  }
+
+  console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
+  {
+    const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));
+    process.env.BRAIN_MEMORY_DIR = dir;
+    const store = new BrainMemoryStore("bot0");
+    check("first boot loads null (no file yet)", store.load() === null);
+
+    const history = new RoundHistory(30);
+    const registry = new OpponentRegistry();
+    history.push({
+      round: 5,
+      roundModifier: "none",
+      ourWeapon: "daggers",
+      kills: 1,
+      deaths: 1,
+      killedBy: [{ botId: "e1", name: "Lancer", weapon: "bow" }],
+      weKilled: [],
+      enemyWeaponsSeen: { bow: 2 },
+      won: false,
+      ticksSurvived: 900,
+      hpAtDeath: 0,
+    });
+    registry.recordKilledUs("e1", "Lancer", "bow", 5);
+    store.save({ rounds: history.toJSON(), profiles: registry.toJSON(), insights: null });
+    store.flush();
+
+    // "Restart": fresh objects restored from a fresh store on the same dir.
+    const store2 = new BrainMemoryStore("bot0");
+    const snap = store2.load();
+    check("snapshot loads after flush", snap !== null && snap.v === 1);
+    const history2 = new RoundHistory(30);
+    const registry2 = new OpponentRegistry();
+    history2.restore(snap!.rounds);
+    registry2.restore(snap!.profiles);
+    check("round history survives restart", history2.size() === 1 && history2.recent(1)[0]!.round === 5);
+    const lancer = registry2.get("e1");
+    check(
+      "opponent profile survives restart (weapon + kill ledger)",
+      lancer !== null && lancer.primaryWeapon === "bow" && lancer.killsVsUs === 1 && lancer.roundsFaced === 1,
+      lancer,
+    );
+    check(
+      "scoped stores use distinct files (parallel bots don't clobber)",
+      new BrainMemoryStore("bot1").load() === null,
+    );
+    delete process.env.BRAIN_MEMORY_DIR;
   }
 
   console.log("\noutcome log (win-rate pass measurement infra)");
