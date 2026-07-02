@@ -1741,6 +1741,10 @@ async function run(): Promise<void> {
       "last hit decides the cause (bot after zone tick)",
       classifyCauseOfDeath({ won: false, killedBy: [kb("safe_zone", "The Zone"), kb("e2", "Bar")] }) === "bot_kill",
     );
+    check(
+      "death frame with no bot credited classifies as environment",
+      classifyCauseOfDeath({ won: false, killedBy: [kb("", "")] }) === "environment",
+    );
 
     // Write-path roundtrip in an isolated dir: entries land as parseable JSONL
     // tagged with variant + policy version, so A/B comparison is possible.

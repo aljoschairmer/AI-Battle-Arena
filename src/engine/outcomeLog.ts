@@ -50,6 +50,9 @@ export function classifyCauseOfDeath(o: Pick<RoundOutcome, "won" | "killedBy">):
   const last = o.killedBy[o.killedBy.length - 1];
   if (!last) return "no_death_recorded";
   if (ENV_KILLER.test(last.botId) || ENV_KILLER.test(last.name)) return "environment";
+  // A death frame with no bot credited at all (empty killed_by) is the
+  // environment: zone tick, hazard, void — the server names bots, not walls.
+  if (!last.botId && !last.name) return "environment";
   return "bot_kill";
 }
 

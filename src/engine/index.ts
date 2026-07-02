@@ -478,8 +478,18 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
 
   socket.on("death", (msg: DeathMsg) => {
     try {
-      log.info({ by: msg.killer_name, weapon: msg.weapon_used, respawn: msg.respawn }, "died");
-      roundKilledBy.push({ botId: msg.killed_by, name: msg.killer_name, weapon: msg.weapon_used });
+      // Live servers populate killed_by (bot id) but often send empty
+      // killer_name/weapon_used (observed in the pass-3 baseline: every death
+      // frame had by:"" weapon:""). Recover both from the killer's last-known
+      // entity so cause-of-death attribution and opponent profiles aren't
+      // blank — same best-effort lookup the kill handler uses for victims.
+      const killerEntity = gs.entities.find(
+        (e) => e.type === "bot" && e.bot_id === msg.killed_by,
+      ) as { name?: string; weapon?: Weapon } | undefined;
+      const killerName = msg.killer_name || killerEntity?.name || "";
+      const killerWeapon: Weapon = msg.weapon_used || killerEntity?.weapon || "sword";
+      log.info({ by: killerName || msg.killed_by, weapon: killerWeapon, respawn: msg.respawn }, "died");
+      roundKilledBy.push({ botId: msg.killed_by, name: killerName, weapon: killerWeapon });
       if (msg.respawn) gs.isRespawning = true;
     } catch (e) {
       log.error({ err: (e as Error).message, stack: (e as Error).stack }, "death handling threw — continuing");
