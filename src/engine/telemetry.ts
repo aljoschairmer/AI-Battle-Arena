@@ -67,6 +67,7 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
     ts: Date.now(),
     round: gs.round,
     tick: gs.tick,
+    roundTick: gs.roundTick,
     roundModifier: gs.roundModifier,
     suddenDeath: gs.suddenDeath,
     bountyBeacon: gs.bountyBeacon,

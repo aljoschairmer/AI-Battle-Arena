@@ -95,6 +95,7 @@ export class StrategistAgent extends Agent<StrategistInput, StrategyOutput> {
       {
         round: s.round,
         round_modifier: s.roundModifier,
+        round_tick: s.roundTick ?? null,
         sudden_death: s.suddenDeath === true,
         bounty_beacon: s.bountyBeacon ?? null,
         global_intel: input.globalIntel

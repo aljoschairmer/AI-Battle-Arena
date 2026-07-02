@@ -52,6 +52,8 @@ export class GameState {
   round = -1;
   roundModifier = "";
   tick = 0;
+  /** Round-relative tick (1 at round start) — round age without bookkeeping. */
+  roundTick = 0;
   self: SelfState | null = null;
   entities: NearbyEntity[] = [];
   nearbyMines = 0;
@@ -385,6 +387,7 @@ export class GameState {
 
   applyTick(msg: TickMsg): void {
     this.tick = msg.tick_number ?? msg.tick;
+    this.roundTick = msg.round_tick ?? this.roundTick + 1;
     this.fogRadius = msg.fog_radius ?? this.fogRadius;
     this.self = msg.your_state;
     this.entities = msg.nearby_entities ?? [];
@@ -551,15 +554,35 @@ export class GameState {
   }
 
   /**
+   * A passability predicate for local A* that ALSO treats hazard tiles (hot
+   * zone rects, burn fields, mines, void entities) as blocked. Precomputes the
+   * blocked set once per call — hazardTiles() must not run per neighbor probe.
+   * The goal tile is never blocked (a goal inside a halo would kill the whole
+   * path; the survival rung handles the final approach), and callers must fall
+   * back to plain isPassable when no hazard-free path exists.
+   */
+  private safePassable(goal: GridVec): (c: number, r: number) => boolean {
+    const blocked = new Set<number>();
+    for (const [c, r] of this.hazardTiles()) blocked.add(r * 1000 + c);
+    blocked.delete(goal[1] * 1000 + goal[0]);
+    return (c, r) => this.isPassable(c, r) && !blocked.has(r * 1000 + c);
+  }
+
+  /**
    * Wall-aware single step toward `goal`. Uses local A* when terrain is loaded
-   * so the bot navigates around obstacles rather than bumping into them. Falls
-   * back to a plain directional step when no terrain is available.
+   * so the bot navigates around obstacles rather than bumping into them —
+   * preferring a route around known hazard tiles, falling back to walls-only
+   * when no hazard-free path exists (pass-4 follow-up: the walls-only planner
+   * happily cut straight through hot hazard rects). Falls back to a plain
+   * directional step when no terrain is available.
    * Returns a unit direction vector [dc, dr] to pass to move().
    */
   stepToward(goal: GridVec): GridVec {
     const me = this.position;
     if (this.terrain) {
-      const next = nextStep(me, goal, this.gridSize, (c, r) => this.isPassable(c, r));
+      const next =
+        nextStep(me, goal, this.gridSize, this.safePassable(goal)) ??
+        nextStep(me, goal, this.gridSize, (c, r) => this.isPassable(c, r));
       if (next) return [next[0] - me[0], next[1] - me[1]] as GridVec;
     }
     return stepToward(me, goal);
@@ -567,7 +590,8 @@ export class GameState {
 
   /**
    * Wall-aware single step away from `threat`. Finds the next step toward the
-   * point on the opposite side of the grid, using A* when terrain is loaded.
+   * point on the opposite side of the grid, using A* when terrain is loaded
+   * (hazard-avoiding first, walls-only fallback — same rationale as stepToward).
    * Returns a unit direction vector [dc, dr] to pass to move().
    */
   stepAwayFrom(threat: GridVec): GridVec {
@@ -576,7 +600,10 @@ export class GameState {
       // Goal = mirror of threat through our position, clamped to grid.
       const goalCol = Math.max(0, Math.min(this.gridSize - 1, 2 * me[0] - threat[0]));
       const goalRow = Math.max(0, Math.min(this.gridSize - 1, 2 * me[1] - threat[1]));
-      const next = nextStep(me, [goalCol, goalRow], this.gridSize, (c, r) => this.isPassable(c, r));
+      const goal: GridVec = [goalCol, goalRow];
+      const next =
+        nextStep(me, goal, this.gridSize, this.safePassable(goal)) ??
+        nextStep(me, goal, this.gridSize, (c, r) => this.isPassable(c, r));
       if (next) return [next[0] - me[0], next[1] - me[1]] as GridVec;
     }
     return stepAwayFrom(me, threat);
