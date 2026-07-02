@@ -258,7 +258,14 @@ export const DEFAULT_POLICY: EnginePolicy = {
   targetBountyWeight: 25,
   gankRadius: 9,
   gankApproachWeight: 0.5,
-  endgameZoneRadius: 12,
+  // DEFAULT OFF after live A/B measurement (pass-3, 2026-07-02): arms with the
+  // endgame posture enabled won 0/18 live rounds while endgame-off arms on the
+  // SAME build won 7/22 (Fisher p≈0.01). Telemetry attributed the damage to
+  // the center-hold displacing the hunting behaviors for much of each round
+  // (this arena runs ~60s rounds with a fast shrink, so "endgame" covered far
+  // more of the round than designed for). The knobs remain for the Tuner to
+  // experiment with; the code path is smoke-covered with the knob enabled.
+  endgameZoneRadius: 0,
   // 0.3 on top of the default minTradeAdvantage (-0.3) = demand at least an
   // EVEN trade before committing in an endgame crowd.
   endgameTradeCaution: 0.3,

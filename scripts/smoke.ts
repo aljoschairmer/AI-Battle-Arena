@@ -1513,8 +1513,12 @@ async function run(): Promise<void> {
     check("gank knobs clamped (radius<=16, weight<=1)", clamped.gankRadius === 16 && clamped.gankApproachWeight === 1);
   }
 
-  console.log("\nzone-endgame posture (win-rate pass)");
+  console.log("\nzone-endgame posture (win-rate pass; default-OFF after live A/B, tested with knob on)");
   {
+    // Live A/B measured the posture harmful at default-on (0/18 wins vs 7/22
+    // with it off), so DEFAULT_POLICY ships endgameZoneRadius=0. The code
+    // path stays Tuner-reachable — these tests pin the knob on explicitly.
+    const ENDGAME_ON = mergePolicy(DEFAULT_POLICY, { endgameZoneRadius: 12 });
     // Tiny (10-tile) settled zone, bot at center so the zone-safety rungs stay
     // quiet; a marginal fight vs a full-HP shield with a second attacker in
     // range — exactly the endgame overextension that used to be auto-committed.
@@ -1535,6 +1539,7 @@ async function run(): Promise<void> {
 
     const ctlE = new Controller();
     ctlE.onRoundStart();
+    ctlE.setPolicy(ENDGAME_ON);
     const gsEnd = freshGameState();
     gsEnd.applyTick(tickFrom(endgameSelf(), crowd));
     const aEnd = ctlE.decide(gsEnd);
@@ -1555,6 +1560,7 @@ async function run(): Promise<void> {
     // Endgame FINAL 1v1: no extra caution — passivity just splits zone damage.
     const ctl1v1 = new Controller();
     ctl1v1.onRoundStart();
+    ctl1v1.setPolicy(ENDGAME_ON);
     const gs1v1 = freshGameState();
     gs1v1.applyTick(tickFrom(endgameSelf(), [crowd[0]!]));
     const a1v1 = ctl1v1.decide(gs1v1);
@@ -1573,6 +1579,7 @@ async function run(): Promise<void> {
     // drifts to the zone center instead of roaming outward.
     const ctlHold = new Controller();
     ctlHold.onRoundStart();
+    ctlHold.setPolicy(ENDGAME_ON);
     const gsHold = freshGameState();
     gsHold.applyTick(
       tickFrom(endgameSelf({ position: [58, 50], distance_to_zone_edge: 2.2 }), []),
