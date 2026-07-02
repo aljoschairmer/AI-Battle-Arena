@@ -154,6 +154,17 @@ export interface EnginePolicy {
    */
   targetBountyWeight: number;
   /**
+   * Gank anticipation radius (tiles): enemies beyond the immediate 5-tile
+   * attacker band but inside this radius count a faded share of their DPS in
+   * tradeAdvantage when they're closing on us (or adjacent with their weapon
+   * cooling). Before this, a third bot moved the trade number only once it was
+   * ≤5 tiles AND can_attack — the classic 2v1 death read as a fine 1v1 until
+   * we were surrounded.
+   */
+  gankRadius: number;
+  /** 0..1 weight on anticipated (not-yet-in-range) ganker DPS. 0 disables. */
+  gankApproachWeight: number;
+  /**
    * Max CONSECUTIVE ticks the dagger in-range flank deferral may hold before
    * committing to a head-on attack. 0 = never defer (attack head-on always).
    * Bounds the pass-2 audit's confirmed orbit: an unterminated defer loop let
@@ -219,6 +230,8 @@ export const DEFAULT_POLICY: EnginePolicy = {
   leadTicks: 3,
   targetTradeWeight: 30,
   targetBountyWeight: 25,
+  gankRadius: 9,
+  gankApproachWeight: 0.5,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
   idleHealBelowHpFraction: 0.75,
@@ -272,6 +285,8 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     leadTicks: clampNum(patch.leadTicks, 0, 8, base.leadTicks),
     targetTradeWeight: clampNum(patch.targetTradeWeight, 0, 100, base.targetTradeWeight),
     targetBountyWeight: clampNum(patch.targetBountyWeight, 0, 100, base.targetBountyWeight),
+    gankRadius: clampNum(patch.gankRadius, 5, 16, base.gankRadius),
+    gankApproachWeight: clampNum(patch.gankApproachWeight, 0, 1, base.gankApproachWeight),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
     idleHealBelowHpFraction: clampNum(patch.idleHealBelowHpFraction, 0, 1, base.idleHealBelowHpFraction),

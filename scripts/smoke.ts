@@ -1452,6 +1452,65 @@ async function run(): Promise<void> {
     check("targetBountyWeight default is 25", DEFAULT_POLICY.targetBountyWeight === 25);
   }
 
+  console.log("\ngank anticipation (win-rate pass): closing third bot sours the trade early");
+  {
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+
+    // Scenario A: clean favorable 1v1 (weak adjacent target).
+    const solo = freshGameState();
+    solo.applyTick(tickFrom(self(), [enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] })], 100));
+    const target = solo.enemies()[0]!;
+    const advSolo = tradeAdvantage(ctxOf(solo), target);
+    check("favorable 1v1 reads positive", advSolo > 0, advSolo);
+
+    // Scenario B: same 1v1 plus a third bot at 8 tiles, closing 1 tile/tick
+    // (two ticks establish its velocity estimate). It's outside the old 5-tile
+    // band, so pre-fix it moved the number by exactly 0.
+    const ganked = freshGameState();
+    ganked.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] }),
+        enemy({ bot_id: "g", position: [60, 50] }),
+      ], 100),
+    );
+    ganked.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] }),
+        enemy({ bot_id: "g", position: [58, 50] }),
+      ], 102),
+    );
+    const targetG = ganked.enemies().find((e) => e.bot_id === "t")!;
+    const advGank = tradeAdvantage(ctxOf(ganked), targetG);
+    check("closing ganker at 8 tiles sours the trade vs clean 1v1", advGank < advSolo, { advSolo, advGank });
+
+    // Scenario C: same third bot but stationary — no anticipation charge.
+    const idle = freshGameState();
+    idle.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] }),
+        enemy({ bot_id: "g", position: [58, 50] }),
+      ], 100),
+    );
+    idle.applyTick(
+      tickFrom(self(), [
+        enemy({ bot_id: "t", hp: 30, max_hp: 160, position: [51, 50] }),
+        enemy({ bot_id: "g", position: [58, 50] }),
+      ], 102),
+    );
+    const targetI = idle.enemies().find((e) => e.bot_id === "t")!;
+    const advIdle = tradeAdvantage(ctxOf(idle), targetI);
+    check("stationary distant bot does not charge the trade", Math.abs(advIdle - advSolo) < 1e-9, { advSolo, advIdle });
+
+    // Weight 0 restores the old in-band-only behavior exactly.
+    const off = mergePolicy(DEFAULT_POLICY, { gankApproachWeight: 0 });
+    const advOff = tradeAdvantage(ctxOf(ganked, off), targetG);
+    check("gankApproachWeight=0 restores pre-fix behavior", Math.abs(advOff - advSolo) < 1e-9, { advSolo, advOff });
+
+    // Clamps.
+    const clamped = mergePolicy(DEFAULT_POLICY, { gankRadius: 999, gankApproachWeight: 42 });
+    check("gank knobs clamped (radius<=16, weight<=1)", clamped.gankRadius === 16 && clamped.gankApproachWeight === 1);
+  }
+
   console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
   {
     const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));
