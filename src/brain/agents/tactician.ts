@@ -61,6 +61,7 @@ export class TacticianAgent extends Agent<TacticianInput, TacticOutput> {
     return JSON.stringify(
       {
         round_modifier: s.roundModifier || "none",
+        round_tick: s.roundTick ?? null,
         sudden_death: s.suddenDeath === true,
         bounty_beacon: s.bountyBeacon ?? null,
         me: s.self,

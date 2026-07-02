@@ -245,6 +245,46 @@ don't build anything on `period`).
 4. Finding 4 (sudden_death) + finding 10 (target_id) — small parses, real behavior wins.
 5. Finding 6 (spectator feed into the Brain) — biggest ceiling, most code.
 
+## Deep-dive re-audit (implementation coverage check)
+
+A second adversarial pass traced every new field from parse → actual consumer
+in BOTH engine and brain (grep matrix over every new GameState API and every
+prompt payload). Four parse-but-don't-act gaps survived the first fix round;
+all closed:
+
+1. **`is_bounty_target` had no engine-side reaction** — it only reached the
+   Brain prompts, so a deterministic-only deployment (no OpenRouter key) never
+   reacted to being the beacon. Now the controller applies a baseline caution
+   shift (hpRetreatFraction +0.08, aggression −0.10) whenever we carry the
+   bounty; the Brain's directive still layers on top.
+2. **The tactician never ran with an empty fog** (`enemies.length === 0` early
+   return) — precisely when spectator intel is the only source. It now runs on
+   an empty fog when `global_intel.hunting_us` is non-empty or we're the
+   bounty target.
+3. **`sanitizeId`/`sanitizeIds` nulled every out-of-fog pick**, making the
+   prompts' "use global_intel / the beacon to choose primaryTargetId" advice
+   a no-op. They now accept ids from fog enemies ∪ last-seen enemies ∪ the
+   bounty beacon ∪ spectator-intel bots (engine-side safe: selectTarget only
+   commits once the pin is actually visible).
+4. **Local A\* stepping (`stepToward`/`stepAwayFrom`) ignored hazards** — the
+   walls-only planner routed straight through hot hazard rects the moment
+   terrain was loaded. Both now try a hazard-avoiding path first and fall back
+   to walls-only when none exists (verified: a 9×9 walk detours around a hot
+   3×3 rect, and the ringed-goal case still moves).
+
+Also picked up: `round_tick` is now stored (`gs.roundTick`), published in
+snapshots and included in tactician/strategist prompts (round-age reasoning);
+`weapon-stats.recent_form`/`hit_rate` now reach the Loadout agent's
+`weapon_meta` (short-window form beats lifetime meta_score when they
+disagree); `ourStats` damage/time-alive extras flow through to the loadout
+prompt. Confirmed already-covered: `hasRelayBattery` (capturePadGoal),
+`target_id` (targeting + survival + EnemySnapshot serialized wholesale into
+prompts), `me.isBountyTarget`/`sudden_death`/`bounty_beacon` (prompt payload
+keys verified by inspection of the built JSON).
+
+Verification: 25/25 targeted checks (real captured frames + new stepping
+cases), smoke suite green, simulator regression unchanged, tsc/build clean.
+
 ## Raw evidence
 
 Captured during this audit (not committed): full JSON of every REST response,

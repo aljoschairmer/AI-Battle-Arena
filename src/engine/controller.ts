@@ -125,7 +125,20 @@ export class Controller {
       return idle(tick);
     }
 
-    const ctx = { gs, directive: this.resolveDirective(), policy: this.policy, tick };
+    let directive = this.resolveDirective();
+    // We ARE the bounty target: the server broadcasts our live position to
+    // every bot in the arena (fog-exempt beacon), so expect third parties and
+    // play it safer. Engine-side (not just a Brain prompt hint) so a
+    // deterministic-only deployment reacts too; the Brain's directive still
+    // layers on top of this baseline shift.
+    if (gs.isBountyTargetSelf()) {
+      directive = {
+        ...directive,
+        hpRetreatFraction: Math.min(1, directive.hpRetreatFraction + 0.08),
+        aggression: Math.max(0, directive.aggression - 0.1),
+      };
+    }
+    const ctx = { gs, directive, policy: this.policy, tick };
     const fellThrough: PriorityName[] = [];
     const logTick = (priority: PriorityName, reason: string): void => {
       telemetry.tickDecision({

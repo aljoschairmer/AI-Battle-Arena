@@ -559,6 +559,8 @@ export interface GameSnapshot {
   ts: number;
   round: number;
   tick: number;
+  /** Round-relative tick (1 at round start) — lets agents reason about round age. */
+  roundTick?: number;
   roundModifier: string;
   /** Server sudden-death flag: random tiles are becoming instant-death void. */
   suddenDeath?: boolean;
