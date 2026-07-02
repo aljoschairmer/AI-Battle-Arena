@@ -32,6 +32,9 @@ import {
 } from "../src/types/internal";
 import { TokenBucket } from "../src/shared/ratelimit";
 import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
+import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
+import { DEFAULT_INSIGHTS } from "../src/shared/memory";
+import type { LoadoutRequest } from "../src/types/internal";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1358,6 +1361,62 @@ async function run(): Promise<void> {
     coopB.stop();
     coopC.stop();
     await bus.close();
+  }
+
+  console.log("\nloadout agent consumes opponent profiles");
+  {
+    const req: LoadoutRequest = {
+      ts: Date.now(),
+      round: 3,
+      context: {
+        ts: Date.now(),
+        round: 3,
+        roundModifier: "",
+        roundModifierLabel: "",
+        botsInRound: 0,
+        leaderboardTop: [],
+        bounties: [],
+        ourStats: null,
+        arenaBotsConnected: 6,
+        lobbyWeapons: {},
+        constraints: { statBudget: 20, statMin: 1, statMax: 10, availableWeapons: [] },
+      },
+      fallback: chooseFallbackLoadout({}),
+    };
+    const agent = new LoadoutAgent();
+    // userPrompt is protected — reach in for the assertion only.
+    const promptOf = (input: LoadoutAgentInput): string =>
+      (agent as unknown as { userPrompt(i: LoadoutAgentInput): string }).userPrompt(input);
+    const baseMeta = {
+      leaderboardTop: [],
+      weaponPopularity: {},
+      weaponMeta: [],
+      ourStats: null,
+      arenaBotsConnected: 6,
+      insights: { ...DEFAULT_INSIGHTS },
+    };
+    const withProfile = promptOf({
+      request: req,
+      meta: {
+        ...baseMeta,
+        opponentProfiles: [
+          { name: "Lancer", elo: 1220, primaryWeapon: "bow", killsVsUs: 3, deathsVsUs: 1, roundsFaced: 4 },
+        ],
+      },
+    });
+    check(
+      "prompt includes matched opponent profile (name + weapon + ledger)",
+      withProfile.includes('"known_opponents"') &&
+        withProfile.includes("Lancer") &&
+        withProfile.includes('"primaryWeapon":"bow"') &&
+        withProfile.includes('"killsVsUs":3'),
+    );
+    const withoutProfile = promptOf({ request: req, meta: { ...baseMeta, opponentProfiles: [] } });
+    check("no profiles -> known_opponents is null (no phantom data)", withoutProfile.includes('"known_opponents":null'));
+    check(
+      "system prompt instructs counter-picking known opponents",
+      (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("known_opponents"),
+    );
   }
 
   console.log("\noutcome log (win-rate pass measurement infra)");

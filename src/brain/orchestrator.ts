@@ -261,6 +261,7 @@ export class Orchestrator {
         ourStats: req.context.ourStats,
         arenaBotsConnected: req.context.arenaBotsConnected,
         insights: this.insights,
+        opponentProfiles: this.opponents.forPrompt(8),
       },
     });
 

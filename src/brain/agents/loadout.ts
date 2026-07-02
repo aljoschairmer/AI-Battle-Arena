@@ -26,6 +26,20 @@ export interface LoadoutAgentInput {
     } | null;
     arenaBotsConnected: number | null;
     insights: LearningInsights;
+    /**
+     * Cross-round per-opponent memory (OpponentRegistry.forPrompt): who we
+     * keep meeting, what they play, and the kill ledger vs us — the input
+     * that lets the draft counter-pick known opponents instead of drafting
+     * blind every round.
+     */
+    opponentProfiles: {
+      name: string;
+      elo: number;
+      primaryWeapon: Weapon | null;
+      killsVsUs: number;
+      deathsVsUs: number;
+      roundsFaced: number;
+    }[];
   };
 }
 
@@ -73,10 +87,14 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       "1. matchup_scores — count-weighted matchup edge of each available weapon vs the lobby (from the arena's",
       "   Strategy matrix, -2..+2). Prefer the HIGHEST matchup_score when the lobby is known; it already encodes the",
       "   hard counters (daggers hard-counter bow & staff; staff hard-counters shield; bow loses hard to daggers).",
-      "2. learning_insights.recommended_weapon — proven best weapon for this meta. Use it UNLESS lobby counter-pick strongly disagrees.",
-      "3. round_modifier — hazard_storm/fast_zone: ranged + high speed; pickup_surge: high speed (daggers/grapple); double_bounty: high attack (bow/daggers).",
-      "4. our_lifetime_stats — kd_ratio < 1.0: add 2 pts to hp+defense; bots_in_arena > 8: add 1 pt to hp (more chaos = more punishment).",
-      "5. leaderboard_top — if top-3 ELO bots in lobby all use same weapon type, pick its counter.",
+      "2. known_opponents — per-opponent history across past rounds (primary weapon + kill ledger vs us).",
+      "   If the opponents who beat us repeatedly (killsVsUs > deathsVsUs, 2+ rounds faced) share a known",
+      "   primaryWeapon, pick its counter from the matchup matrix (e.g. they run bow/staff -> daggers; they run",
+      "   shield -> staff; they run daggers -> sword/spear). Weigh repeat killers over one-off sightings.",
+      "3. learning_insights.recommended_weapon — proven best weapon for this meta. Use it UNLESS lobby counter-pick strongly disagrees.",
+      "4. round_modifier — hazard_storm/fast_zone: ranged + high speed; pickup_surge: high speed (daggers/grapple); double_bounty: high attack (bow/daggers).",
+      "5. our_lifetime_stats — kd_ratio < 1.0: add 2 pts to hp+defense; bots_in_arena > 8: add 1 pt to hp (more chaos = more punishment).",
+      "6. leaderboard_top — if top-3 ELO bots in lobby all use same weapon type, pick its counter.",
       "",
       "",
       "fallback_behavior steers the bot autonomously when it misses a tick — pick the one that fits the weapon/stats:",
@@ -137,6 +155,7 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
           dangerous_opponents: ins.dangerousOpponents,
           suggested_posture: ins.suggestedPosture,
         } : null,
+        known_opponents: meta.opponentProfiles.length > 0 ? meta.opponentProfiles : null,
         leaderboard_top: meta.leaderboardTop.slice(0, 6),
         opponent_weapon_popularity: meta.weaponPopularity,
         deterministic_fallback: request.fallback,
