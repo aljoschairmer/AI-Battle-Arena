@@ -38,7 +38,11 @@ services:
       ARENA_WS_URL: ${ARENA_WS_URL:-wss://arena.angel-serv.com/ws/bot}
       ARENA_WS_ORIGIN: ${ARENA_WS_ORIGIN:-https://arena.angel-serv.com}
       BOT_NAME: ${BOT_NAME:-NeuralReaper}
-      BOT_COLOR: ${BOT_COLOR:-#00d4ff}
+      BOT_COLOR: ${BOT_COLOR:-00d4ff}
+      # Per-bot overrides for multi-key runs (comma-separated, aligned with
+      # ARENA_API_KEYS; empty slots keep the derived default).
+      BOT_NAMES: ${BOT_NAMES:-}
+      BOT_COLORS: ${BOT_COLORS:-}
       # Bot-to-bot coalition (needs 2+ keys in ARENA_API_KEYS to matter).
       BOT_COOP: ${BOT_COOP:-false}
       # Behind a corporate proxy (e.g. Zscaler)? Set these in .env so the engine
