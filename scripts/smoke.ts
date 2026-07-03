@@ -33,6 +33,7 @@ import {
 } from "../src/types/internal";
 import { TokenBucket } from "../src/shared/ratelimit";
 import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
+import { TelemetryLog } from "../src/engine/telemetryLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
@@ -1765,6 +1766,50 @@ async function run(): Promise<void> {
       "tactician system prompt instructs modifier reactions",
       (tac as unknown as { systemPrompt(): string }).systemPrompt().includes("round_modifier"),
     );
+  }
+
+  console.log("\ntelemetry log: per-bot channels (fleet mode doesn't clobber)");
+  {
+    const dir = mkdtempSync(join(tmpdir(), "telemetry-fleet-"));
+    process.env.TELEMETRY_LOG = "1";
+    process.env.TELEMETRY_LOG_DIR = dir;
+    const t = new TelemetryLog();
+    const tick = (n: number) => ({
+      tick: n,
+      priority: "engage_target" as const,
+      fellThrough: [],
+      reason: "test",
+      hp: 100,
+      maxHp: 100,
+      posX: 1,
+      posY: 1,
+    });
+    // Two engines interleaving within one process, as a fleet does.
+    t.setActiveBot("bot-a");
+    t.roundStart("9");
+    t.tickDecision(tick(1));
+    t.setActiveBot("bot-b");
+    t.roundStart("9");
+    t.tickDecision(tick(2));
+    t.setActiveBot("bot-a");
+    t.tickDecision(tick(3));
+    t.roundEnd("9", "win");
+    t.setActiveBot("bot-b");
+    t.roundEnd("9", "loss");
+    await new Promise((r) => setTimeout(r, 150)); // let streams flush
+    const a = readFileSync(join(dir, "bot-a_9.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const b = readFileSync(join(dir, "bot-b_9.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    check(
+      "each bot gets its own round file with only its own events",
+      a.length === 4 && b.length === 3 && a.every((e) => e.t !== "tick_decision" || [1, 3].includes(e.tick)) && b.every((e) => e.t !== "tick_decision" || e.tick === 2),
+      { a: a.map((e) => [e.t, e.tick]), b: b.map((e) => [e.t, e.tick]) },
+    );
+    check(
+      "round boundaries carry the right botId and outcome",
+      a[0]!.botId === "bot-a" && a[3]!.outcome === "win" && b[0]!.botId === "bot-b" && b[2]!.outcome === "loss",
+    );
+    delete process.env.TELEMETRY_LOG;
+    delete process.env.TELEMETRY_LOG_DIR;
   }
 
   console.log("\noutcome log (win-rate pass measurement infra)");

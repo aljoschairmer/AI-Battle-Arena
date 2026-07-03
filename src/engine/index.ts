@@ -412,6 +412,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       gs.applyRoundStart(msg);
       controller.onRoundStart();
       resetRoundTracking();
+      telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       telemetryLog.roundStart(String(msg.round_number));
       log.info(
         { round: msg.round_number, modifier: msg.round_modifier, bots: msg.bots_in_round },
@@ -464,6 +465,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         }
       }
 
+      // Route this engine's per-tick telemetry to its own bot channel — three
+      // interleaved engines in one process otherwise write into whichever
+      // bot's file was opened last.
+      telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       const action = controller.decide(gs);
       socket.send(action);
 
@@ -530,6 +535,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       const ticksSurvived = gs.tick - roundStartTick;
       const won = msg.round_winner === botName || msg.round_winner === gs.selfId;
       const hpAtDeath = roundKilledBy.length > 0 ? (gs.self?.hp ?? 0) : 0;
+      telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       telemetryLog.roundEnd(String(msg.round_number), won ? "win" : "loss");
 
       const outcome: RoundOutcome = {

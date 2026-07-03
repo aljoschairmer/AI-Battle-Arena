@@ -170,13 +170,29 @@ export type TelemetryEvent =
 
 const RING_BUFFER_MAX = 2048;
 
-class TelemetryLog {
+/** Per-bot sink state — multi-bot fleets write one file per bot per round. */
+interface BotChannel {
+  stream: WriteStream | null;
+  ring: string[];
+  droppedCount: number;
+}
+
+/** Exported for tests (fresh instance re-reads the env); runtime uses the singleton below. */
+export class TelemetryLog {
   private enabled: boolean;
-  private stream: WriteStream | null = null;
-  private ring: string[] = [];
-  private droppedCount = 0;
-  private botId = "unknown";
   private logDir: string;
+  /**
+   * One channel per bot. The singleton used to hold a SINGLE stream + botId,
+   * so a multi-bot process (ARENA_API_KEYS fleet) clobbered itself: whichever
+   * engine connected last owned the file and every other bot's events landed
+   * in it or vanished — observed in the pass-3 prod run as exactly one
+   * telemetry file per round for a three-bot fleet, which blocked the
+   * friendly-fire investigation. Engines are single-threaded and each socket
+   * handler runs synchronously, so a set-active-then-write context switch is
+   * race-free.
+   */
+  private readonly channels = new Map<string, BotChannel>();
+  private activeBot = "unknown";
 
   constructor() {
     this.enabled = process.env.TELEMETRY_LOG === "1";
@@ -192,18 +208,27 @@ class TelemetryLog {
     }
   }
 
+  /**
+   * Route subsequent events to this bot's channel. Engines call it at the
+   * top of every telemetry-producing socket handler (tick / round_start /
+   * round_end); single-bot callers can rely on setBotId alone.
+   */
+  setActiveBot(botId: string) {
+    this.activeBot = botId;
+  }
+
   setBotId(botId: string) {
-    this.botId = botId;
+    this.activeBot = botId;
   }
 
   roundStart(roundId: string) {
     if (!this.enabled) return;
-    this.openStream(roundId);
+    this.openStream(this.activeBot, roundId);
     this.write({
       t: "round_start",
       ts: Date.now(),
       roundId,
-      botId: this.botId,
+      botId: this.activeBot,
     });
   }
 
@@ -213,10 +238,10 @@ class TelemetryLog {
       t: "round_end",
       ts: Date.now(),
       roundId,
-      botId: this.botId,
+      botId: this.activeBot,
       outcome,
     });
-    this.closeStream();
+    this.closeStream(this.activeBot);
   }
 
   tickDecision(e: Omit<TickDecisionEvent, "t" | "ts">) {
@@ -252,52 +277,64 @@ class TelemetryLog {
 
   // ---- internals ----
 
-  private openStream(roundId: string) {
-    this.closeStream();
-    const safeId = roundId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const path = join(this.logDir, `${this.botId}_${safeId}.jsonl`);
-    this.stream = createWriteStream(path, { flags: "a" });
-    this.ring = [];
-    this.droppedCount = 0;
+  private channel(botId: string): BotChannel {
+    let c = this.channels.get(botId);
+    if (!c) {
+      c = { stream: null, ring: [], droppedCount: 0 };
+      this.channels.set(botId, c);
+    }
+    return c;
   }
 
-  private closeStream() {
-    if (this.stream) {
-      this.flushRing();
-      this.stream.end();
-      this.stream = null;
+  private openStream(botId: string, roundId: string) {
+    this.closeStream(botId);
+    const c = this.channel(botId);
+    const safeId = roundId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const path = join(this.logDir, `${botId}_${safeId}.jsonl`);
+    c.stream = createWriteStream(path, { flags: "a" });
+    c.ring = [];
+    c.droppedCount = 0;
+  }
+
+  private closeStream(botId: string) {
+    const c = this.channels.get(botId);
+    if (c?.stream) {
+      this.flushRing(c);
+      c.stream.end();
+      c.stream = null;
     }
   }
 
   private write(e: TelemetryEvent) {
+    const c = this.channel(this.activeBot);
     const line = JSON.stringify(e);
-    if (this.ring.length >= RING_BUFFER_MAX) {
-      this.ring.shift();
-      this.droppedCount++;
+    if (c.ring.length >= RING_BUFFER_MAX) {
+      c.ring.shift();
+      c.droppedCount++;
     }
-    this.ring.push(line);
+    c.ring.push(line);
     // Drain opportunistically; createWriteStream handles backpressure
     // internally, we just avoid awaiting it in the caller.
-    this.flushRing();
+    this.flushRing(c);
   }
 
-  private flushRing() {
-    if (!this.stream) return;
-    while (this.ring.length > 0) {
-      const line = this.ring.shift()!;
-      const ok = this.stream.write(line + "\n");
+  private flushRing(c: BotChannel) {
+    if (!c.stream) return;
+    while (c.ring.length > 0) {
+      const line = c.ring.shift()!;
+      const ok = c.stream.write(line + "\n");
       if (!ok) break; // let the stream drain; remaining lines stay buffered
     }
-    if (this.droppedCount > 0) {
+    if (c.droppedCount > 0) {
       // surfaced once per flush burst, not per event, to avoid log spam
-      this.stream.write(
+      c.stream.write(
         JSON.stringify({
           t: "telemetry_dropped",
           ts: Date.now(),
-          count: this.droppedCount,
+          count: c.droppedCount,
         }) + "\n",
       );
-      this.droppedCount = 0;
+      c.droppedCount = 0;
     }
   }
 }
