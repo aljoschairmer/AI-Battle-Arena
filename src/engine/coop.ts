@@ -24,6 +24,15 @@ const DIRECTIVE_STALE_MS = 12000; // ignore a Coordinator directive this old
  */
 export class Coalition {
   private readonly members = new Map<string, number>(); // botId -> lastSeen ms
+  /**
+   * Every botId EVER seen as a coalition member this process lifetime.
+   * Non-aggression must not expire: reports are tick-driven, and ticks stop
+   * between rounds and across reconnects, so a TTL'd friendly set goes empty
+   * while the teammates are still ours — observed live (pass-3 prod run) as a
+   * bot killing its own coalition partner at endgame. Liveness-sensitive data
+   * (focus picks, roles) keeps its TTLs; friendship does not.
+   */
+  private readonly everMembers = new Set<string>();
   private readonly enemies = new Map<string, { hp: number; ts: number }>(); // enemyId -> latest
   private coopDirective: CoopDirective = { ...DEFAULT_COOP_DIRECTIVE };
   private unsub: (() => void) | null = null;
@@ -39,7 +48,17 @@ export class Coalition {
       if (!m || !m.botId || m.botId === this.selfId()) return; // ignore our own echo
       const now = Date.now();
       this.members.set(m.botId, now);
-      for (const e of m.enemies) this.enemies.set(e.id, { hp: e.hp, ts: now });
+      this.everMembers.add(m.botId);
+      // A member is never an enemy: purge it from the shared pool (it may have
+      // been inserted by an ally whose own friendly set was momentarily stale)
+      // and never let a report re-insert any known member.
+      this.enemies.delete(m.botId);
+      for (const e of m.enemies) {
+        // Never pool ourselves or any known member as an enemy, whatever a
+        // (possibly momentarily confused) ally reports.
+        if (e.id === this.selfId() || this.everMembers.has(e.id)) continue;
+        this.enemies.set(e.id, { hp: e.hp, ts: now });
+      }
     });
     this.unsubDirective = await this.bus.subscribe<CoopDirective>(Channels.coopDirective, (d) => {
       if (!d || typeof d.version !== "number" || typeof d.ts !== "number") return;
@@ -54,19 +73,24 @@ export class Coalition {
   /** Broadcast our view; also fold our own sightings into the shared pool. */
   report(msg: CoopMessage): void {
     const now = Date.now();
-    for (const e of msg.enemies) this.enemies.set(e.id, { hp: e.hp, ts: now });
+    for (const e of msg.enemies) {
+      if (e.id === this.selfId() || this.everMembers.has(e.id)) continue; // never pool self/teammates
+      this.enemies.set(e.id, { hp: e.hp, ts: now });
+    }
     this.bus.publish(Channels.coop, msg).catch((e) => log.warn({ err: (e as Error).message }, "coop report publish failed"));
   }
 
-  /** Arena bot_ids of allies we've heard from recently. */
+  /**
+   * Arena bot_ids of allies — permanent for the process lifetime (see
+   * everMembers). The recency map is still maintained (MEMBER_TTL_MS) for
+   * anything that needs liveness, but non-aggression never expires.
+   */
   friendlyIds(): Set<string> {
     const now = Date.now();
-    const s = new Set<string>();
     for (const [id, ts] of this.members) {
-      if (now - ts < MEMBER_TTL_MS) s.add(id);
-      else this.members.delete(id);
+      if (now - ts >= MEMBER_TTL_MS) this.members.delete(id);
     }
-    return s;
+    return new Set(this.everMembers);
   }
 
   /**

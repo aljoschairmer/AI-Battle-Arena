@@ -1358,6 +1358,35 @@ async function run(): Promise<void> {
     check("coalition never focus-fires a friendly (skips A @1)", coopB.focus() !== "A", coopB.focus());
     check("pooled intel crosses the fog (B sees A-reported e2)", coopB.focus() === "e2", coopB.focus());
 
+    // Non-aggression is permanent (pass-3 live fix): coalition reports are
+    // tick-driven and stop between rounds / across reconnects, so the old 8s
+    // TTL emptied friendly sets while teammates were still ours — observed
+    // live as NeuralReaper killing GhostProtocol at endgame. Membership must
+    // never expire within a process lifetime.
+    check(
+      "an ally stays friendly even after its reports stop (no TTL on membership)",
+      (() => {
+        // jump the clock a minute ahead — far past MEMBER_TTL_MS with no new
+        // reports — and confirm the friendly set survives the recency purge.
+        const realNow = Date.now;
+        Date.now = () => realNow() + 60_000;
+        try {
+          const later = coopB.friendlyIds();
+          return later.has("A") && later.has("C");
+        } finally {
+          Date.now = realNow;
+        }
+      })(),
+    );
+    // A teammate reported as an "enemy" by a confused ally must never enter
+    // the shared pool — even for readers that HAVEN'T yet met the teammate
+    // directly (C reported A@1hp above; A is a known member to B).
+    check(
+      "member ids never poison the pooled enemy list",
+      coopB.focus() !== "A" && coopA.focus() !== "A",
+      { b: coopB.focus(), a: coopA.focus() },
+    );
+
     // Coalition rides the global channel, not a per-bot scope.
     check("coalition uses the global coop channel", Channels.coop === "arena:coop", Channels.coop);
     coopA.stop();
