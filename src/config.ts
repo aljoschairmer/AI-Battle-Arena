@@ -44,6 +44,9 @@ const apiKeys: string[] = (() => {
   return one ? [one] : [];
 })();
 const botNameBase = str("BOT_NAME", "NeuralReaper");
+// Per-bot names for multi-key fleets (BOT_NAMES=Alpha,Beta,Gamma). Positional
+// with ARENA_API_KEYS; any missing position falls back to BOT_NAME-<n>.
+const botNames = csv("BOT_NAMES");
 const botColorBase = str("BOT_COLOR", "#00d4ff");
 const BOT_PALETTE = ["#00d4ff", "#ff5252", "#7c4dff", "#00e676", "#ffab00", "#ff4081", "#18ffff", "#c6ff00"];
 
@@ -61,7 +64,7 @@ const botInstances: BotInstance[] = apiKeys.map((key, i) => {
   return {
     index: i,
     apiKey: key,
-    name: multi ? `${botNameBase}-${i + 1}` : botNameBase,
+    name: botNames[i] ?? (multi ? `${botNameBase}-${i + 1}` : botNameBase),
     color: multi ? (BOT_PALETTE[i % BOT_PALETTE.length] as string) : botColorBase,
     scope: multi ? `bot${i}:` : "",
   };
