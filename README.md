@@ -335,6 +335,21 @@ launches an independent bot per key, each with its own identity (`BOT_NAME-1`,
 `BOT_NAME-2`, …), colour, LLM brain, and an isolated bus scope (`bot0:`, `bot1:`, …)
 so their snapshots/directives/policies never collide.
 
+To name each bot individually, set `BOT_NAMES` (and optionally `BOT_COLORS`) —
+comma-separated, aligned by position with the keys. Empty slots keep the derived
+default, and duplicate names are auto-suffixed so your own bots never shadow each
+other:
+
+```bash
+ARENA_API_KEYS=key1,key2,key3
+BOT_NAMES=Reaper,,Wraith        # bot 2 keeps the default BOT_NAME-2
+BOT_COLORS=ff5252,,7c4dff       # bare hex — see the BOT_COLOR note in .env.example
+```
+
+> **`.env` gotcha:** dotenv treats an unquoted `#` as a comment, so
+> `BOT_COLOR=#00d4ff` in a `.env` file reads back **empty** and the default is
+> silently used. Write bare hex (`BOT_COLOR=00d4ff`) or quote the value.
+
 ```bash
 npm run keygen   # repeat per bot
 # .env:  ARENA_API_KEYS=key1,key2,key3

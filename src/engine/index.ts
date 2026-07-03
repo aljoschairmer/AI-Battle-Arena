@@ -227,11 +227,25 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       avatar_color: botColor,
       default_loadout: fallbackLoadout,
     };
-    try {
-      await rest.putConfig(botConfig);
-      log.info({ name: botName, avatar_color: botColor }, "bot config applied");
-    } catch (e) {
-      log.warn({ err: (e as Error).message }, "failed to apply bot config");
+    // The applied name is more than cosmetic: round_winner comes back as a
+    // name and opponents profile us by it, so a failed PUT leaves the arena
+    // showing a stale identity. Retry a few times (off the tick path) before
+    // giving up — the next reconnect re-runs this anyway.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await rest.putConfig(botConfig);
+        log.info({ name: botName, avatar_color: botColor }, "bot config applied");
+        return;
+      } catch (e) {
+        if (attempt === 3) {
+          log.warn(
+            { err: (e as Error).message },
+            "failed to apply bot config after 3 attempts — arena will keep the previous name/colour",
+          );
+        } else {
+          await new Promise((r) => setTimeout(r, attempt * 1000));
+        }
+      }
     }
   }
 

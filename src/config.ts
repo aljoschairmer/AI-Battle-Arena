@@ -29,6 +29,12 @@ const role = RoleSchema.parse(str("ROLE", "all"));
 const bus = BusSchema.parse(str("BUS", "memory"));
 const arenaHttpBase = str("ARENA_HTTP_BASE", "https://arena.angel-serv.com").replace(/\/$/, "");
 
+/**
+ * Non-fatal configuration problems, surfaced by main() once the logger exists.
+ * (config.ts cannot log directly — logger.ts imports this module.)
+ */
+export const configWarnings: string[] = [];
+
 // One key per bot. ARENA_API_KEYS (comma-separated) runs several bots in
 // parallel; otherwise fall back to the single ARENA_API_KEY.
 function csv(name: string): string[] {
@@ -37,15 +43,65 @@ function csv(name: string): string[] {
     .map((s) => s.trim())
     .filter(Boolean);
 }
+
+// Positional variant for per-bot lists (BOT_NAMES/BOT_COLORS): empty slots are
+// KEPT so entries stay aligned with ARENA_API_KEYS ("Alpha,,Gamma" leaves bot 2
+// on its default). csv() would silently shift everything left.
+function csvAligned(name: string): string[] {
+  const raw = str(name);
+  if (!raw.trim()) return [];
+  return raw.split(",").map((s) => s.trim());
+}
+
 const apiKeys: string[] = (() => {
   const many = csv("ARENA_API_KEYS");
   if (many.length) return many;
   const one = str("ARENA_API_KEY");
   return one ? [one] : [];
 })();
-const botNameBase = str("BOT_NAME", "NeuralReaper");
-const botColorBase = str("BOT_COLOR", "#00d4ff");
+
+/**
+ * Normalise a colour to "#rrggbb"/"#rgb"; null when empty or not valid hex.
+ * Accepts the bare form ("00d4ff") because dotenv treats an unquoted `#` as a
+ * comment start — `BOT_COLOR=#00d4ff` in a .env file reads back as EMPTY, so
+ * the #-less spelling is the one that survives a round-trip.
+ */
+function normalizeColor(raw: string): string | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const v = t.startsWith("#") ? t : `#${t}`;
+  return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v) ? v.toLowerCase() : null;
+}
+
+const botNameRaw = str("BOT_NAME");
+const botNameBase = botNameRaw.trim() || "NeuralReaper";
+if (botNameRaw && !botNameRaw.trim()) {
+  configWarnings.push(`BOT_NAME is whitespace-only — using "${botNameBase}"`);
+}
+
+const botColorRaw = str("BOT_COLOR");
+const botColorBase = (() => {
+  const n = normalizeColor(botColorRaw);
+  if (n) return n;
+  if (botColorRaw.trim()) {
+    configWarnings.push(`BOT_COLOR="${botColorRaw}" is not a hex colour (#rgb/#rrggbb, # optional) — using #00d4ff`);
+  }
+  return "#00d4ff";
+})();
+
 const BOT_PALETTE = ["#00d4ff", "#ff5252", "#7c4dff", "#00e676", "#ffab00", "#ff4081", "#18ffff", "#c6ff00"];
+
+// Optional per-bot identity for multi-key runs, aligned by position with
+// ARENA_API_KEYS. Any missing/empty slot falls back to the derived default
+// (BOT_NAME-<n> and the palette colour).
+const botNameOverrides = csvAligned("BOT_NAMES");
+const botColorOverrides = csvAligned("BOT_COLORS");
+if (botNameOverrides.length > apiKeys.length) {
+  configWarnings.push(`BOT_NAMES has ${botNameOverrides.length} entries but only ${apiKeys.length} API key(s) — extra names ignored`);
+}
+if (botColorOverrides.length > apiKeys.length) {
+  configWarnings.push(`BOT_COLORS has ${botColorOverrides.length} entries but only ${apiKeys.length} API key(s) — extra colours ignored`);
+}
 
 export interface BotInstance {
   index: number;
@@ -58,14 +114,37 @@ export interface BotInstance {
 
 const botInstances: BotInstance[] = apiKeys.map((key, i) => {
   const multi = apiKeys.length > 1;
+  const nameOverride = botNameOverrides[i] ?? "";
+  const colorRawOverride = botColorOverrides[i] ?? "";
+  const colorOverride = normalizeColor(colorRawOverride);
+  if (colorRawOverride && !colorOverride) {
+    configWarnings.push(`BOT_COLORS entry ${i + 1} ("${colorRawOverride}") is not a hex colour — using default for bot ${i + 1}`);
+  }
   return {
     index: i,
     apiKey: key,
-    name: multi ? `${botNameBase}-${i + 1}` : botNameBase,
-    color: multi ? (BOT_PALETTE[i % BOT_PALETTE.length] as string) : botColorBase,
+    name: nameOverride || (multi ? `${botNameBase}-${i + 1}` : botNameBase),
+    color: colorOverride ?? (multi ? (BOT_PALETTE[i % BOT_PALETTE.length] as string) : botColorBase),
     scope: multi ? `bot${i}:` : "",
   };
 });
+
+// Bot names must be unique within our own fleet: each one registers its name
+// via PUT /bot/config, round_winner comes back as a name, and coalition/opponent
+// bookkeeping keys on names. Disambiguate collisions instead of letting two of
+// our bots shadow each other.
+{
+  const used = new Set<string>();
+  for (const b of botInstances) {
+    let name = b.name;
+    for (let n = 2; used.has(name); n++) name = `${b.name}-${n}`;
+    if (name !== b.name) {
+      configWarnings.push(`duplicate bot name "${b.name}" — bot ${b.index + 1} renamed to "${name}"`);
+      b.name = name;
+    }
+    used.add(name);
+  }
+}
 
 export const config = {
   role,
