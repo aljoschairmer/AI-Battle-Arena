@@ -20,7 +20,6 @@ export class ThreatField {
   private constructor(
     private readonly originCol: number,
     private readonly originRow: number,
-    private readonly size: number,
     private readonly grid: Float32Array,
   ) {}
 
@@ -33,7 +32,6 @@ export class ThreatField {
     const maxRow = Math.min(gs.gridSize - 1, me[1] + R);
     const w = maxCol - originCol + 1;
     const h = maxRow - originRow + 1;
-    const size = Math.max(w, h);
     const grid = new Float32Array(w * h);
 
     const enemies = gs.enemies();
@@ -107,7 +105,7 @@ export class ThreatField {
       }
     }
 
-    const field = new ThreatField(originCol, originRow, size, grid);
+    const field = new ThreatField(originCol, originRow, grid);
     field.width = w;
     field.height = h;
     return field;

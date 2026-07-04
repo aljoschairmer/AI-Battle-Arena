@@ -380,7 +380,7 @@ export class Orchestrator {
 
     // Run the two post-round agents in parallel: the Analyst updates strategic
     // insights; the Tuner rewrites the engine's live behaviour policy.
-    await Promise.all([this.runAnalyst(outcome), this.runTuner(outcome)]);
+    await Promise.all([this.runAnalyst(outcome), this.runTuner()]);
     // And once more with the fresh insights included.
     this.persistMemory();
   }
@@ -448,7 +448,7 @@ export class Orchestrator {
    * based on how the fight is going, then pushes it to the Engine over the bus —
    * the bot re-tunes itself mid-session with no restart.
    */
-  private async runTuner(outcome: RoundOutcome): Promise<void> {
+  private async runTuner(): Promise<void> {
     if (this.tunerBusy) return;
     this.tunerBusy = true;
     try {

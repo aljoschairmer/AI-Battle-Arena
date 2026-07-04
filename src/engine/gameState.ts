@@ -308,7 +308,7 @@ export class GameState {
       this.lastSeenEnemies[enemy.bot_id] = { position: enemy.position, tick: now };
     }
     const stale = Object.entries(this.lastSeenEnemies).filter(
-      ([id, info]) => now - info.tick > 30,
+      ([, info]) => now - info.tick > 30,
     );
     for (const [id] of stale) delete this.lastSeenEnemies[id];
   }
@@ -530,10 +530,8 @@ export class GameState {
     this.threatCache = null;
   }
 
-  /** Coalition allies' mine tiles — hazards for threat-field routing. */
-  allyMineTiles(): GridVec[] {
-    return this.allyMines;
-  }
+  // (allyMineTiles() was removed: ally mines ride hazardTiles() directly since
+  // the hard-block change, which left it with no production consumers.)
 
   /** Positions of coalition allies currently inside our fog. */
   allyTiles(): GridVec[] {

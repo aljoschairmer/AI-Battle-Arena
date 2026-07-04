@@ -264,6 +264,7 @@ export class OpponentRegistry {
   recordWeKilled(botId: string, name: string, round: number): void {
     const p = this.profiles.get(botId);
     if (p) {
+      p.name = name || p.name; // keep display names fresh (was silently ignored)
       p.deathsVsUs++;
       if (p.lastSeenRound !== round) {
         p.lastSeenRound = round;

@@ -201,7 +201,6 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   if (self.dodge_cooldown > 0 || self.invuln_ticks > 0 || self.stun_ticks > 0) return null;
 
   const me = gs.position;
-  const myRange = gs.effectiveAttackRange();
   const enemies = gs.enemies();
 
   const { chargedIncoming, highChargeBow } = imminentHitTriggers(ctx);
