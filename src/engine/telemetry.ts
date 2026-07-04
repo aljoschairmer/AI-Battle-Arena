@@ -28,6 +28,7 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
       canAttack: e.can_attack,
       isStunned: e.is_stunned,
       rearExposed: e.rear_exposed,
+      targetId: e.target_id ?? null,
     }))
     .sort((a, b) => b.threatScore - a.threatScore)
     .slice(0, 16);
@@ -39,7 +40,7 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
     .slice(0, 12);
 
   const nearbyHazards = gs.entities
-    .filter((e) => e.type !== "bot" && e.type !== "pickup")
+    .filter((e) => e.type !== "bot" && e.type !== "pickup" && e.type !== "bounty_target")
     .map((e) => ({
       type: e.type,
       position: e.position,
@@ -66,7 +67,10 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
     ts: Date.now(),
     round: gs.round,
     tick: gs.tick,
+    roundTick: gs.roundTick,
     roundModifier: gs.roundModifier,
+    suddenDeath: gs.suddenDeath,
+    bountyBeacon: gs.bountyBeacon,
     self: {
       id: self.bot_id,
       weapon: self.weapon,
@@ -78,6 +82,7 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
       inSafeZone: self.in_safe_zone,
       distanceToZoneEdge: round1(self.distance_to_zone_edge),
       grappleCharges: self.grapple_charges,
+      isBountyTarget: gs.isBountyTargetSelf(),
     },
     zone: {
       center: self.zone_center,

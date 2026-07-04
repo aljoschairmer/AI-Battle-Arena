@@ -1,4 +1,5 @@
 import { config } from "../../config";
+import type { SpectatorIntel } from "../../arena/spectator";
 import type { LearningInsights } from "../../shared/memory";
 import type { GameSnapshot } from "../../types/internal";
 import { Agent } from "./base";
@@ -6,6 +7,8 @@ import { StrategyOutputSchema, type StrategyOutput } from "./schemas";
 
 export interface StrategistInput {
   snapshot: GameSnapshot;
+  /** Fog-free arena state from the public spectator feed (may be null). */
+  globalIntel?: SpectatorIntel | null;
   meta: {
     leaderboardTop: { name: string; elo: number; kills: number }[];
     bounties: { name: string; bounty: number; botId: string | null }[];
@@ -77,6 +80,12 @@ export class StrategistAgent extends Agent<StrategistInput, StrategyOutput> {
       "   direct score; during double_bounty they're worth double — prioritize them aggressively then.",
       "7. ZONE — use nearby_hazards and nearby_terrain to judge choke points and safe angles.",
       "   If distance_to_zone_edge < 5, factor zone movement into objective (survive > hunt).",
+      "8. GLOBAL INTEL — global_intel (public spectator feed, NO fog) shows every living bot's position,",
+      "   hp and live target ('US' = targeting us), plus armed enemy mines near us that our bot cannot see.",
+      "   Use it to pick primaryTargetId (weak/isolated/distracted bots), to avoid clusters, and to go",
+      "   defensive when hunting_us is non-empty. bounty_beacon gives the bounty carrier's LIVE position —",
+      "   with objective=hunt_bounty the bot walks it down even out of fog. me.isBountyTarget = everyone",
+      "   sees US: posture defensive, expect third parties.",
       "Only reference bot_ids that appear in the provided enemies list.",
       "Respond ONLY with JSON: {posture, objective, primaryTargetId, avoidTargetIds, hpRetreatFraction, aggression, reasoning}.",
     ].join("\n");
@@ -89,6 +98,17 @@ export class StrategistAgent extends Agent<StrategistInput, StrategyOutput> {
       {
         round: s.round,
         round_modifier: s.roundModifier,
+        round_tick: s.roundTick ?? null,
+        sudden_death: s.suddenDeath === true,
+        bounty_beacon: s.bountyBeacon ?? null,
+        global_intel: input.globalIntel
+          ? {
+              bots_alive: input.globalIntel.botsAlive,
+              bots: input.globalIntel.bots,
+              hunting_us: input.globalIntel.huntingUs,
+              mines_near_us: input.globalIntel.minesNearUs,
+            }
+          : null,
         me: s.self,
         our_lifetime_stats: m.ourStats,
         learning_insights: m.insights.lessons.length > 0 ? {

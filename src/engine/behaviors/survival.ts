@@ -334,6 +334,20 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
     return moveTo(tick, health.position);
   }
 
+  // No visible enemy and no visible health pack: there is NOTHING to retreat
+  // from, so don't claim the tick. The old fallback walked to the zone centre
+  // and then emitted move_to(own tile) forever — and because HP doesn't
+  // regenerate, lowHp stayed true permanently, this rung claimed every tick,
+  // and the downtime layer (health-pickup hints, loot, patrol — the only
+  // paths that can actually FIND healing) was structurally unreachable. The
+  // bot froze in the middle of the map until an enemy walked into fog and
+  // killed it (the original live "stuck at map centre" bug; the pass-2 pad
+  // parking was a second instance of the same stand-still pattern).
+  // Deferring lets defaultReposition hunt heals: followHint prefers health
+  // hints below idleHealBelowHpFraction, and underRecentFire() keeps us
+  // weaving if an unseen sniper is the reason we're hurt.
+  if (!threat) return null;
+
   // Fire while kiting (ranged only): retreat outranks engage in the cascade,
   // so without this branch a retreating bow/staff never shoots again at all —
   // measured as the dominant loss mode for ranged loadouts (every simulated
@@ -458,6 +472,9 @@ function nearestAttacker(ctx: DecisionContext): NearbyBot | null {
     if (e.charged_shot_ready && e.has_los && d <= range + 2) score += 40;
     if (e.bow_charge_level >= 3 && e.has_los && d <= range + 1) score += 30;
     if (d <= 1.5) score += 20;
+    // Live aggro read (target_id, pass-4): this enemy is server-confirmed
+    // locked onto US — it's the attacker even before it's in range.
+    if (e.target_id === ctx.gs.selfId) score += 15;
     if (score > bestScore) { bestScore = score; best = e; }
   }
   return best;

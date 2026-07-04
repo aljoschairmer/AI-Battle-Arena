@@ -1,4 +1,4 @@
-import { assertConfigForRole, config, llmEnabled, runsBrain, runsEngine } from "./config";
+import { assertConfigForRole, config, configWarnings, llmEnabled, runsBrain, runsEngine } from "./config";
 import { getBus, scoped } from "./bus";
 import { startBrain, startCoopCoordinator, type BrainHandle } from "./brain";
 import { startEngine, type EngineHandle } from "./engine";
@@ -25,6 +25,9 @@ process.on("unhandledRejection", (reason) => {
  */
 async function main(): Promise<void> {
   assertConfigForRole();
+  // Non-fatal config problems (bad BOT_COLOR, duplicate names, misaligned
+  // BOT_NAMES/BOT_COLORS, ...) collected at parse time — config.ts can't log.
+  for (const w of configWarnings) logger.warn(w);
   // Route fetch through an outbound proxy if one is configured (no-op otherwise).
   installFetchProxy();
 

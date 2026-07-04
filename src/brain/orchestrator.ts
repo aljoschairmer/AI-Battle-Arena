@@ -1,5 +1,6 @@
 import { config } from "../config";
 import { arenaRest } from "../arena/rest";
+import { getSpectatorFeed, type SpectatorFeed } from "../arena/spectator";
 import { type Bus, Channels, Keys } from "../bus";
 import { child } from "../shared/logger";
 import { normalizeStats } from "../shared/stats";
@@ -34,7 +35,15 @@ const log = child("brain");
 interface MetaCache {
   leaderboardTop: { name: string; elo: number; kills: number }[];
   bounties: { name: string; bounty: number; botId: string | null }[];
-  weaponMeta: { weapon: string; tier: string; meta_score: number; balance: string }[];
+  weaponMeta: {
+    weapon: string;
+    tier: string;
+    meta_score: number;
+    balance: string;
+    /** 0-100 short-window form — hotter signal than lifetime meta_score. */
+    recent_form?: number;
+    hit_rate?: number;
+  }[];
   fetchedAt: number;
 }
 
@@ -95,6 +104,12 @@ export class Orchestrator {
 
   private tacticianTimer: NodeJS.Timeout | null = null;
   private unsubs: Array<() => void> = [];
+
+  // Global spectator intel (public /ws/spectator feed): full arena state —
+  // every bot's position/hp/target, armed mines, sudden death — with no fog.
+  // Brain-side only by design; the Engine never depends on this socket.
+  // Process-shared singleton (frames are global); null when ARENA_SPECTATOR=false.
+  private spectator: SpectatorFeed | null = null;
 
   constructor(
     private readonly bus: Bus,
@@ -167,6 +182,7 @@ export class Orchestrator {
       Math.max(800, config.openrouter.tacticianIntervalMs),
     );
 
+    this.spectator = getSpectatorFeed();
     void this.refreshMeta();
     log.info(
       {
@@ -221,12 +237,25 @@ export class Orchestrator {
     const snap = this.latest;
     if (!snap) return;
     if (Date.now() - snap.ts > 4000) return;
-    if (snap.enemies.length === 0) return;
+    const intel = this.spectator?.intel(snap.self.id, snap.self.position) ?? null;
+    // Empty fog normally means nothing tactical to call — EXCEPT when the
+    // spectator intel says someone out of fog is already locked onto us, or
+    // we're the bounty beacon (everyone sees us): those are exactly the
+    // moments a pre-emptive posture call matters, and the old
+    // enemies-in-fog-only gate skipped them (deep-dive re-audit).
+    if (snap.enemies.length === 0) {
+      const hunted = (intel?.huntingUs.length ?? 0) > 0 || snap.self.isBountyTarget === true;
+      if (!hunted) return;
+    }
     if (this.tacticianBusy) return;
 
     this.tacticianBusy = true;
     try {
-      const out = await this.tactician.run({ snapshot: snap, current: this.directive });
+      const out = await this.tactician.run({
+        snapshot: snap,
+        current: this.directive,
+        globalIntel: intel,
+      });
       if (out) {
         if (this.stillCurrent(snap)) this.applyTactic(out, snap);
         else
@@ -254,6 +283,7 @@ export class Orchestrator {
           insights: this.insights,
           opponentProfiles: this.opponents.forPrompt(8),
         },
+        globalIntel: this.spectator?.intel(snap.self.id, snap.self.position) ?? null,
       });
       if (out) {
         if (this.stillCurrent(snap)) this.applyStrategy(out, snap);
@@ -516,13 +546,31 @@ export class Orchestrator {
 
   // --- helpers ---------------------------------------------------------------
 
+  /**
+   * The set of bot_ids the agents may legitimately reference: enemies in fog,
+   * recently-seen (fog-memory) enemies, and every living bot from the
+   * spectator intel. The old enemies-in-fog-only filter silently nulled any
+   * out-of-fog pick — which made the global_intel/bounty guidance in the
+   * prompts unusable (deep-dive re-audit). Engine-side this stays safe:
+   * selectTarget only commits to a primaryTargetId once it's actually visible,
+   * so an out-of-fog pin simply arms the engine for when it enters fog.
+   */
+  private knownBotIds(snap: GameSnapshot): Set<string> {
+    const ids = new Set<string>(snap.enemies.map((e) => e.id));
+    for (const e of snap.lastSeenEnemies ?? []) ids.add(e.botId);
+    if (snap.bountyBeacon?.botId) ids.add(snap.bountyBeacon.botId);
+    const intel = this.spectator?.intel(snap.self.id, snap.self.position);
+    for (const b of intel?.bots ?? []) if (b.id !== snap.self.id) ids.add(b.id);
+    return ids;
+  }
+
   private sanitizeId(id: string | null, snap: GameSnapshot): string | null {
     if (!id) return null;
-    return snap.enemies.some((e) => e.id === id) ? id : null;
+    return this.knownBotIds(snap).has(id) ? id : null;
   }
 
   private sanitizeIds(ids: string[], snap: GameSnapshot): string[] {
-    const present = new Set(snap.enemies.map((e) => e.id));
+    const present = this.knownBotIds(snap);
     return ids.filter((id) => present.has(id));
   }
 
@@ -556,7 +604,14 @@ export class Orchestrator {
         : this.meta.bounties,
       weaponMeta: Array.isArray(wstats?.entries)
         ? wstats!.entries
-            .map((e) => ({ weapon: e.weapon, tier: e.tier, meta_score: e.meta_score, balance: e.balance_direction ?? "steady" }))
+            .map((e) => ({
+              weapon: e.weapon,
+              tier: e.tier,
+              meta_score: e.meta_score,
+              balance: e.balance_direction ?? "steady",
+              recent_form: e.recent_form,
+              hit_rate: e.hit_rate,
+            }))
             .sort((a, b) => b.meta_score - a.meta_score)
         : this.meta.weaponMeta,
       fetchedAt: Date.now(),

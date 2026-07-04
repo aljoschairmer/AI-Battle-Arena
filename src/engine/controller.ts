@@ -125,7 +125,20 @@ export class Controller {
       return idle(tick);
     }
 
-    const ctx = { gs, directive: this.resolveDirective(), policy: this.policy, tick };
+    let directive = this.resolveDirective();
+    // We ARE the bounty target: the server broadcasts our live position to
+    // every bot in the arena (fog-exempt beacon), so expect third parties and
+    // play it safer. Engine-side (not just a Brain prompt hint) so a
+    // deterministic-only deployment reacts too; the Brain's directive still
+    // layers on top of this baseline shift.
+    if (gs.isBountyTargetSelf()) {
+      directive = {
+        ...directive,
+        hpRetreatFraction: Math.min(1, directive.hpRetreatFraction + 0.08),
+        aggression: Math.max(0, directive.aggression - 0.1),
+      };
+    }
+    const ctx = { gs, directive, policy: this.policy, tick };
     const fellThrough: PriorityName[] = [];
     const logTick = (priority: PriorityName, reason: string): void => {
       telemetry.tickDecision({
@@ -324,8 +337,10 @@ export class Controller {
     const self = gs.self;
     if (!self) return null;
     // Canonical cap from /api/v1/bot-setup: "Max 3 per bot" — placing more just
-    // wastes the action (server rejects it).
-    if (this.minesPlacedThisRound >= 3) return null;
+    // wastes the action (server rejects it). The server echoes the authoritative
+    // count as your_state.mine_count (pass-4 audit): prefer it — the local
+    // counter misses rejected placements and desyncs across mid-round reconnects.
+    if (gs.minesPlaced(this.minesPlacedThisRound) >= 3) return null;
     if (gs.tick - this.lastMineTick < this.policy.mineCooldownTicks) return null;
     // Never seed a shared retreat corridor: an ally close behind us follows
     // the same escape lines, and a mine placed <500ms before they cross it is

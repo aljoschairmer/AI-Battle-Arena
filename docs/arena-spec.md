@@ -23,8 +23,11 @@ The server's `stats.formulas` match [`src/shared/derived.ts`](../src/shared/deri
 | Damage | `weapon_damage * attack_mult * (1 - target_defense_reduction)` |
 
 Budget 20, each stat 1–10. Default allocation 5/5/5/5. `stats.fallback_behaviors`
-in the spec lists **`aggressive · defensive · opportunistic`** (the server runs
-one of these when you miss a tick).
+in the spec lists **`aggressive · defensive · opportunistic`**, but the published
+list is incomplete: the server VALIDATES this field (an invalid value returns
+`error: invalid fallback "…", using default "defensive"`) and it accepts
+**`territorial` and `hunter`** without complaint (verified live 2026-07-02,
+pass-4 audit) — all five values in our `FallbackBehavior` type are legal.
 
 ## Skills tab — actions & universal abilities
 
@@ -41,13 +44,15 @@ one of these when you miss a tick).
 
 ### Arena systems (Skills tab "new_features")
 
-- **capture_pad** — stand uncontested 20 ticks → +12 score, 20 shield, 1.2× dmg (80t); owner control-pulse every 15t (+2 score, 4 shield).
-- **bounty_system** — consecutive winners build a public bounty; live target in ticks, board at `GET /api/v1/bounties`.
-- **environmental_hazards** — 6 pulsing damage zones (expose `active/on_ticks/off_ticks/tick_counter/damage_per_tick`); worse during `hazard_storm`.
-- **teleport_pads** — 3 linked pairs; `is_ready`/`cooldown_remaining_ticks`; re-arm fast during `teleport_surge`.
-- **sudden_death** — at min zone radius, random tiles become void (instant death). Keep moving.
-- **combat_reads** — ticks expose `brace_ready`, `bow_charge_ticks/level`, `charged_shot_ready`, `recently_disrupted_ticks`, `rear_exposed`, `near_impact_surface`.
-- **special_round_modifiers** — `fast_zone`, `pickup_surge`, `double_bounty`, `teleport_surge`, `hazard_storm` (exposed as `round_modifier`).
+- **capture_pad** — stand uncontested 20 ticks → +12 score, 20 shield, 1.2× dmg (80t); owner control-pulse every 15t (+2 score, 4 shield). Tick entities (`type:"capture_pad"`) and `/arena/map` expose the full state machine: `progress_ticks/capture_ticks/owner_id/capturing_bot_id/is_contested/contender_count/is_ready/cooldown_remaining_ticks/next_control_pulse_ticks/radius`.
+- **bounty_system** — consecutive winners build a public bounty; board at `GET /api/v1/bounties`. **Live beacon (pass-4):** every tick carries `tick.bounty_target` (bot_id) plus a fog-exempt `nearby_entities` entry `{type:"bounty_target", bot_id, name, position}` with the carrier's LIVE position, and `your_state.is_bounty_target` flags when the carrier is us. The REST board can be empty while a beacon is active — the beacon is authoritative.
+- **environmental_hazards** — 6 pulsing damage RECTANGLES, wire type **`hazard_zone`** (not "hazard"): top-left `position` + `width`×`height`, `active/on_ticks/off_ticks/tick_counter/damage_per_tick`; worse during `hazard_storm`. Full static layout in `/arena/map.hazard_zones`.
+- **teleport_pads** — 3 linked pairs (`linked_pad_id`); `is_ready`/`cooldown_remaining_ticks`; re-arm fast during `teleport_surge`. Full layout in `/arena/map.teleport_pads`.
+- **sudden_death** — at min zone radius, random tiles become void (instant death). Keep moving. Ticks expose it as `tick.sudden_death: bool`.
+- **combat_reads** — ticks expose `brace_ready`, `bow_charge_ticks/level`, `charged_shot_ready`, `recently_disrupted_ticks`, `rear_exposed`, `near_impact_surface`, and each visible bot's live **`target_id`** (who it's locked onto).
+- **special_round_modifiers** — `fast_zone`, `pickup_surge`, `double_bounty`, `teleport_surge`, `hazard_storm` (exposed as `round_modifier` in round_start AND echoed on every tick).
+- **self echoes (pass-4)** — `your_state` also carries `gravity_well_charge`, `mine_count`, `relay_battery_active/_ticks` — no client-side bookkeeping needed for these.
+- **spectator feed** — `WS /ws/spectator` (public, no auth) broadcasts one `arena_state` frame per tick with the FULL global state: all bots (position/hp/target_id), all landmines (position/owner/armed — invisible in bot fog), pickups, pads, hazards, kill feed, sudden_death.
 
 ### Pickups (11 types)
 

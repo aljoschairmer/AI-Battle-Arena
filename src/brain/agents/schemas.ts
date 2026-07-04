@@ -146,6 +146,8 @@ export const PolicyPatchSchema = z.object({
   leadTicks: z.number().optional(),
   targetTradeWeight: z.number().optional(),
   targetBountyWeight: z.number().optional(),
+  targetDistractedBonus: z.number().optional(),
+  huntBountyBeacon: z.boolean().optional(),
   gankRadius: z.number().optional(),
   gankApproachWeight: z.number().optional(),
   endgameZoneRadius: z.number().optional(),

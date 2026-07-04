@@ -1,4 +1,5 @@
 import { config } from "../../config";
+import type { SpectatorIntel } from "../../arena/spectator";
 import type { Directive, GameSnapshot } from "../../types/internal";
 import { Agent } from "./base";
 import { TacticOutputSchema, type TacticOutput } from "./schemas";
@@ -6,6 +7,8 @@ import { TacticOutputSchema, type TacticOutput } from "./schemas";
 export interface TacticianInput {
   snapshot: GameSnapshot;
   current: Directive;
+  /** Fog-free arena state from the public spectator feed (may be null). */
+  globalIntel?: SpectatorIntel | null;
 }
 
 /**
@@ -45,15 +48,23 @@ export class TacticianAgent extends Agent<TacticianInput, TacticOutput> {
       "- round_modifier changes the math mid-round: hazard_storm/fast_zone -> defensive, raise hpRetreatFraction;",
       "  double_bounty -> everyone else brawls harder, so play MORE cautious, not less (0 wins in 24 such rounds",
       "  while pressing) — pick off weakened brawl survivors; pickup_surge -> lower aggression, farm between fights.",
+      "- global_intel (spectator feed, NO fog): bots[] shows every living bot's position/hp and who it is",
+      "  targeting ('US' = us). hunting_us lists bots locked onto us — if 2+, go defensive/retreat NOW,",
+      "  before they arrive. mines_near_us are armed enemy mines invisible to our bot — steer objectives away.",
+      "- me.isBountyTarget or sudden_death true: play defensive; everyone can see us / the floor is lethal.",
       "Only use bot_ids from the enemies list. Respond ONLY with the JSON object.",
     ].join("\n");
   }
 
   protected userPrompt(input: TacticianInput): string {
     const s = input.snapshot;
+    const g = input.globalIntel;
     return JSON.stringify(
       {
         round_modifier: s.roundModifier || "none",
+        round_tick: s.roundTick ?? null,
+        sudden_death: s.suddenDeath === true,
+        bounty_beacon: s.bountyBeacon ?? null,
         me: s.self,
         zone: s.zone,
         enemies: s.enemies,
@@ -61,6 +72,14 @@ export class TacticianAgent extends Agent<TacticianInput, TacticOutput> {
         nearby_terrain: s.nearbyTerrain,
         last_seen_enemies: s.lastSeenEnemies,
         enemy_count: s.enemies.length,
+        global_intel: g
+          ? {
+              bots_alive: g.botsAlive,
+              bots: g.bots,
+              hunting_us: g.huntingUs,
+              mines_near_us: g.minesNearUs,
+            }
+          : null,
         current_plan: {
           posture: input.current.posture,
           objective: input.current.objective,

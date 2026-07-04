@@ -13,8 +13,16 @@ export interface LoadoutAgentInput {
   meta: {
     leaderboardTop: { name: string; elo: number; kills: number }[];
     weaponPopularity: Record<string, number>;
-    /** Live weapon-balance telemetry (tier + meta_score + balance direction). */
-    weaponMeta: { weapon: string; tier: string; meta_score: number; balance: string }[];
+    /** Live weapon-balance telemetry (tier + meta_score + balance direction,
+     * plus short-window recent_form/hit_rate — the hotter signals). */
+    weaponMeta: {
+      weapon: string;
+      tier: string;
+      meta_score: number;
+      balance: string;
+      recent_form?: number;
+      hit_rate?: number;
+    }[];
     ourStats: {
       elo: number;
       kills: number;
@@ -23,6 +31,9 @@ export interface LoadoutAgentInput {
       best_streak: number;
       rounds_played: number;
       round_wins: number;
+      damage_dealt?: number;
+      damage_taken?: number;
+      time_alive_seconds?: number;
     } | null;
     arenaBotsConnected: number | null;
     insights: LearningInsights;
@@ -103,8 +114,9 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       "",
       "Decision priority (apply top-down, stop at first strong signal):",
       "0. weapon_meta — LIVE balance telemetry: each weapon's tier (S>A>B>C) + meta_score + balance direction",
-      "   (buffing/nerfing). Strongly prefer the highest-tier weapon unless a hard counter-pick applies; a",
-      "   'buffing' S/A weapon is the safest default this round.",
+      "   (buffing/nerfing), plus recent_form (0-100, LAST-FEW-ROUNDS form — a hotter signal than lifetime",
+      "   meta_score when they disagree) and hit_rate. Strongly prefer the highest-tier weapon unless a hard",
+      "   counter-pick applies; a 'buffing' S/A weapon with high recent_form is the safest default this round.",
       "1. matchup_scores — count-weighted matchup edge of each available weapon vs the lobby (from the arena's",
       "   Strategy matrix, -2..+2). Prefer the HIGHEST matchup_score when the lobby is known; it already encodes the",
       "   hard counters (daggers hard-counter bow & staff; staff hard-counters shield; bow loses hard to daggers).",
