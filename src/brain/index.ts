@@ -1,7 +1,7 @@
 import type { Bus } from "../bus";
 import { child } from "../shared/logger";
 import { CoopCoordinator } from "./coopCoordinator";
-import { openrouter } from "./openrouter";
+import { llm } from "./llm";
 import { Orchestrator } from "./orchestrator";
 
 const log = child("brain");
@@ -30,15 +30,16 @@ export async function startBrain(bus: Bus, opts: { memoryScope?: string } = {}):
   const orchestrator = new Orchestrator(bus, opts);
   await orchestrator.start();
 
-  // Boot-time OpenRouter connectivity self-test — turns a silent "no LLM calls"
-  // into a loud, actionable line (bad key vs. proxy/Zscaler vs. all good).
-  void openrouter.healthCheck().then((r) => {
-    if (r.ok) log.info({ detail: r.detail }, "OpenRouter reachable ✓ — LLM agents active");
+  // Boot-time LLM connectivity self-test across the whole provider chain —
+  // turns a silent "no LLM calls" into a loud, actionable line (which
+  // providers are up vs. bad key vs. proxy/Zscaler).
+  void llm.healthCheck().then((r) => {
+    if (r.ok) log.info({ providers: llm.providerNames(), detail: r.detail }, "LLM chain reachable ✓ — agents active");
     else
       log.error(
-        { detail: r.detail },
-        "OpenRouter UNREACHABLE — LLM agents will fall back to deterministic logic. " +
-          "Check OPENROUTER_API_KEY and that openrouter.ai is allowed through your proxy/Zscaler.",
+        { providers: llm.providerNames(), detail: r.detail },
+        "NO LLM provider reachable — agents fall back to deterministic logic. " +
+          "Check GOOGLE_API_KEY / DASHSCOPE_API_KEY / OPENROUTER_API_KEY and proxy allowances.",
       );
   });
 

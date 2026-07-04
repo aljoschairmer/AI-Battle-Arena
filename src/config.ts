@@ -91,6 +91,22 @@ const botColorBase = (() => {
 
 const BOT_PALETTE = ["#00d4ff", "#ff5252", "#7c4dff", "#00e676", "#ffab00", "#ff4081", "#18ffff", "#c6ff00"];
 
+export type LlmProviderName = "google" | "qwen" | "openrouter";
+
+/** LLM_PROVIDERS csv -> validated preference order (unknown entries warn). */
+function parseProviderOrder(raw: string): LlmProviderName[] {
+  const parts = raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const valid = parts.filter(
+    (p): p is LlmProviderName => p === "google" || p === "qwen" || p === "openrouter",
+  );
+  if (parts.length && valid.length !== parts.length) {
+    configWarnings.push(
+      `LLM_PROVIDERS has unknown entries ("${raw}"; valid: google,qwen,openrouter) — using ${valid.join(",") || "the default order"}`,
+    );
+  }
+  return valid.length ? valid : ["google", "qwen", "openrouter"];
+}
+
 // Optional per-bot identity for multi-key runs, aligned by position with
 // ARENA_API_KEYS. Any missing/empty slot falls back to the derived default
 // (BOT_NAME-<n> and the palette colour).
@@ -184,6 +200,27 @@ export const config = {
     coordinatorIntervalMs: int("COOP_COORDINATOR_INTERVAL_MS", 3000),
   },
 
+  // Direct-provider LLM access (both speak the OpenAI chat-completions
+  // dialect). Cheaper and one hop faster than routing through OpenRouter:
+  // Google's AI-Studio keys carry a free tier, DashScope's qwen-flash is
+  // near-free, and OpenRouter adds markup + an extra network hop. The
+  // fallback chain (LLM_PROVIDERS, default google,qwen,openrouter) uses
+  // whichever of these have keys configured, in that order.
+  google: {
+    apiKey: str("GOOGLE_API_KEY", str("GEMINI_API_KEY")),
+    base: str("GOOGLE_OPENAI_BASE", "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, ""),
+    model: str("GOOGLE_MODEL", "gemini-2.5-flash"),
+  },
+  qwen: {
+    apiKey: str("DASHSCOPE_API_KEY", str("QWEN_API_KEY")),
+    base: str("QWEN_OPENAI_BASE", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1").replace(/\/$/, ""),
+    model: str("QWEN_MODEL", "qwen-flash"),
+  },
+  llm: {
+    /** Provider preference order; entries without a configured key are skipped. */
+    providerOrder: parseProviderOrder(str("LLM_PROVIDERS")),
+  },
+
   openrouter: {
     apiKey: str("OPENROUTER_API_KEY"),
     base: str("OPENROUTER_BASE", "https://openrouter.ai/api/v1").replace(/\/$/, ""),
@@ -213,8 +250,11 @@ export const config = {
 
 export type AppConfig = typeof config;
 
-/** True when the LLM brain has the credentials it needs to actually run. */
-export const llmEnabled = config.openrouter.apiKey.length > 0;
+/** True when the LLM brain has credentials for at least one provider. */
+export const llmEnabled =
+  config.openrouter.apiKey.length > 0 ||
+  config.google.apiKey.length > 0 ||
+  config.qwen.apiKey.length > 0;
 
 /** True when this process should run the real-time combat engine. */
 export const runsEngine = role === "engine" || role === "all";

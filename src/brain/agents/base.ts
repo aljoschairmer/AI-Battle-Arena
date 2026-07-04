@@ -1,7 +1,7 @@
 import type { ZodType, ZodTypeDef } from "zod";
 import { child } from "../../shared/logger";
 import { extractJson } from "../../shared/json";
-import { openrouter } from "../openrouter";
+import { llm } from "../llm";
 
 const log = child("agent");
 
@@ -26,11 +26,11 @@ export abstract class Agent<TInput, TOutput> {
   protected abstract userPrompt(input: TInput): string;
 
   async run(input: TInput): Promise<TOutput | null> {
-    if (!openrouter.enabled) return null;
+    if (!llm.enabled) return null;
     const started = Date.now();
     try {
-      const content = await openrouter.chat({
-        model: this.model,
+      const content = await llm.chat({
+        openrouterModel: this.model,
         system: this.systemPrompt(),
         user: this.userPrompt(input),
         temperature: this.temperature,
