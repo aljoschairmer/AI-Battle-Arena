@@ -140,9 +140,12 @@ function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): numbe
   // Third-party read (live target_id, pass-4): an enemy locked onto someone
   // else is distracted — cheap damage for us. One locked onto US is actively
   // hunting us; fold that into the threat side so the aversion math sees it.
-  if (e.target_id) {
-    if (e.target_id === gs.selfId) score -= policy.targetThreatAversion * 0.2;
-    else if (e.target_id !== "") score += policy.targetDistractedBonus;
+  // The fog frame's target_id is often empty even mid-fight — the spectator
+  // aggro graph (fog-free, server-confirmed) backfills it when available.
+  const aggroTarget = e.target_id || gs.spectatorTargetOf(e.bot_id);
+  if (aggroTarget) {
+    if (aggroTarget === gs.selfId) score -= policy.targetThreatAversion * 0.2;
+    else score += policy.targetDistractedBonus;
   }
 
   // Objective overrides.

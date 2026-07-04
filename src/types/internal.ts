@@ -213,6 +213,34 @@ export interface EnginePolicy {
   /** Minimum tiles outside the zone edge before spending a grapple on escape. */
   grappleZoneEscapeMinDist: number;
   /**
+   * Feed the arena's public spectator frames (fog-free global state) into the
+   * ENGINE, not just the Brain prompts: armed enemy mines become hazard tiles
+   * (bot fog never shows them — they were invisible killers before), the
+   * aggro graph backfills target reads, and out-of-fog hunters feed the gank
+   * math. Purely additive: a stale/absent feed (or ARENA_SPECTATOR=false)
+   * degrades to exactly the old behaviour.
+   */
+  spectatorIntel: boolean;
+  /**
+   * 0..1 weight on the DPS of out-of-fog bots whose server-confirmed target
+   * is US (spectator aggro graph) in tradeAdvantage — the fog-free extension
+   * of gankApproachWeight. A bow hunter locked on from 12 tiles reaches us in
+   * ~2s; counting a faded share of its DPS makes "win this 1v1 then die to
+   * the arriving third party" read unfavourable EARLY. 0 disables.
+   */
+  spectatorHunterWeight: number;
+  /** Tiles within which an out-of-fog hunter counts toward the trade (6..25). */
+  spectatorHunterRadius: number;
+  /**
+   * Threat-weighted A* for retreat/disengage/zone-return: plan a short route
+   * to the safest tile in the threat window with per-tile danger folded into
+   * the step cost, instead of the greedy one-tile gradient descent
+   * (safestStep), which stalls at local minima behind wall corners and can
+   * kite along an enemy's range ring. This is the multiplier on danger cost
+   * (tiles of detour worth paying per ~10 danger); 0 disables (greedy only).
+   */
+  pathfindDangerWeight: number;
+  /**
    * Never land indiscriminate damage on coalition allies: sword refuses to
    * cleave with an ally in the arc, staff never drops its AoE on an ally's
    * tile. Forced by four live teammate kills (all sword) in the pass-3 fleet —
@@ -304,6 +332,10 @@ export const DEFAULT_POLICY: EnginePolicy = {
   shoveInterruptCharged: true,
   grappleZoneEscape: true,
   grappleZoneEscapeMinDist: 4,
+  spectatorIntel: true,
+  spectatorHunterWeight: 0.4,
+  spectatorHunterRadius: 14,
+  pathfindDangerWeight: 1,
   friendlySplashGuard: true,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
@@ -368,6 +400,10 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     shoveInterruptCharged: asBool(patch.shoveInterruptCharged, base.shoveInterruptCharged),
     grappleZoneEscape: asBool(patch.grappleZoneEscape, base.grappleZoneEscape),
     grappleZoneEscapeMinDist: clampNum(patch.grappleZoneEscapeMinDist, 2, 12, base.grappleZoneEscapeMinDist),
+    spectatorIntel: asBool(patch.spectatorIntel, base.spectatorIntel),
+    spectatorHunterWeight: clampNum(patch.spectatorHunterWeight, 0, 1, base.spectatorHunterWeight),
+    spectatorHunterRadius: clampNum(patch.spectatorHunterRadius, 6, 25, base.spectatorHunterRadius),
+    pathfindDangerWeight: clampNum(patch.pathfindDangerWeight, 0, 3, base.pathfindDangerWeight),
     friendlySplashGuard: asBool(patch.friendlySplashGuard, base.friendlySplashGuard),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),

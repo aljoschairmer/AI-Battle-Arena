@@ -95,6 +95,17 @@ export class GameState {
   /** Coalition allies' broadcast mine tiles — treated as hazards to route around. */
   private allyMines: GridVec[] = [];
 
+  // --- Fog-free global intel (public spectator feed, pushed per tick) --------
+  // Bot fog NEVER shows enemy mines — before this, every mine death was a
+  // blind one ('?' in causeOfDeath). Absent/stale feed = all three stay empty
+  // and the engine behaves exactly as it did fog-only.
+  /** Armed enemy mine tiles from the spectator frame (never friendly-owned). */
+  private spectatorMines: GridVec[] = [];
+  /** Out-of-band hunters: bots whose server-confirmed target is US. */
+  private spectatorHunterList: { id: string; pos: GridVec; weapon: Weapon }[] = [];
+  /** Aggro graph: botId -> its current target botId (fog-free). */
+  private spectatorTargets = new Map<string, string>();
+
   /** True while we are in the post-death wait before a respawn. */
   isRespawning = false;
 
@@ -212,6 +223,9 @@ export class GameState {
     // field); stale beliefs would phantom-block tiles all next round.
     this.ownMines = [];
     this.allyMines = [];
+    this.spectatorMines = [];
+    this.spectatorHunterList = [];
+    this.spectatorTargets.clear();
     this.threatCache = null;
     this.pendingDodge = null;
     this.lastTargetId = null;
@@ -393,6 +407,60 @@ export class GameState {
     return field;
   }
 
+  /**
+   * Threat-weighted retreat step: plan a short A* route to the safest tile in
+   * the threat window with per-tile danger folded into the step cost, and
+   * return the first step as a unit direction. The greedy alternative
+   * (ThreatField.safestStep, one-tile gradient descent) stalls at local
+   * minima — a wall corner between us and safety reads as "no neighbouring
+   * tile improves", and it will happily crawl ALONG an enemy's range ring
+   * because each individual step off it looks worse. A weighted path accepts
+   * a few locally-worse tiles to reach strictly safer ground.
+   *
+   * dangerWeight scales how many tiles of detour ~10 danger is worth; <= 0
+   * returns null (callers keep their greedy fallback — the knob's off state).
+   * Null also when we're already at/near the local safety minimum, so callers
+   * fall through to their existing cornered handling unchanged.
+   */
+  plannedRetreatStep(dangerWeight: number): GridVec | null {
+    if (dangerWeight <= 0) return null;
+    const me = this.position;
+    const field = this.threatField();
+    const R = Math.min(this.fogRadius + 3, 14);
+    const goal = field.safestTileWithin(me, R, (c, r) => this.isPassable(c, r));
+    if (goal[0] === me[0] && goal[1] === me[1]) return null;
+    // Only bother when the destination is meaningfully safer than standing
+    // still — retreat jitter toward a barely-better tile wastes distance.
+    if (field.danger(goal[0], goal[1]) >= field.danger(me[0], me[1]) - 1) return null;
+    // Danger outside the computed window is Infinity — treat as a hard wall
+    // so the path stays inside the window the goal was chosen from.
+    const tileCost = (c: number, r: number): number => {
+      const d = field.danger(c, r);
+      return Number.isFinite(d) ? (d / 10) * dangerWeight : 10_000;
+    };
+    // safePassable hard-blocks hazard tiles (mines/burn/void) exactly like
+    // every other local route; the weighted cost handles the soft dangers.
+    const next =
+      nextStep(me, goal, this.gridSize, this.safePassable(goal), tileCost) ??
+      nextStep(me, goal, this.gridSize, (c, r) => this.isPassable(c, r), tileCost);
+    if (!next) return null;
+    const step: GridVec = [next[0] - me[0], next[1] - me[1]];
+    // The first step itself must still be steppable this tick (isSafeStep is
+    // stricter than safePassable: armed teleport pads, hazard halos).
+    if (!this.isSafeStep(next[0], next[1])) return null;
+    // Never take a first step that's strictly MORE dangerous than standing
+    // still. EQUAL is the planner's whole edge — greedy safestStep demands a
+    // strict improvement and stalls on flat plateaus (wall pockets, range-ring
+    // crawls), while a route can cross flat ground toward globally safer
+    // tiles. But a worse first step means walking INTO coverage (e.g.
+    // squeezing past an enemy parked on the zone-return line because the big
+    // outside-zone baseline dilutes its marginal cost) — we re-plan every
+    // tick, so that "route past the enemy" never actually survives contact.
+    // Defer to the greedy/cornered handling instead.
+    if (field.danger(next[0], next[1]) > field.danger(me[0], me[1]) + 0.001) return null;
+    return step;
+  }
+
   /** Best estimate of our own attack range, preferring the server's value. */
   effectiveAttackRange(): number {
     if (this.confirmedAttackRange !== null) return this.confirmedAttackRange;
@@ -516,6 +584,10 @@ export class GameState {
     // still picked it when every alternative scored worse (a third coalition
     // kill landed after mine broadcasting went live).
     for (const m of this.allyMines) out.push(m);
+    // ENEMY mines from the spectator feed (fog never shows them): same
+    // hard-block treatment. These were pure invisible killers before —
+    // nothing in the bot protocol ever reveals another bot's armed mine.
+    for (const m of this.spectatorMines) out.push(m);
     return out;
   }
 
@@ -742,6 +814,46 @@ export class GameState {
   // (allyMineTiles() was removed: ally mines ride hazardTiles() directly since
   // the hard-block change, which left it with no production consumers.)
 
+  /**
+   * Ingest the per-tick fog-free spectator view (or null when the feed is
+   * absent/stale/disabled — which clears everything, restoring pure fog-only
+   * behaviour). Friendly-owned mines are dropped here: allies broadcast their
+   * own over the coop bus (allyMines) and double-counting a tile would double
+   * its threat-field cost. Friendly bots never join the hunter/aggro sets.
+   */
+  setGlobalIntel(intel: { mines: { pos: GridVec; ownerId: string }[]; bots: { id: string; weapon: string; pos: GridVec; hp: number; targetId: string | null }[] } | null): void {
+    this.spectatorMines = [];
+    this.spectatorHunterList = [];
+    this.spectatorTargets.clear();
+    if (intel) {
+      for (const m of intel.mines) {
+        if (this.friendlies.has(m.ownerId)) continue;
+        this.spectatorMines.push(m.pos);
+      }
+      for (const b of intel.bots) {
+        if (this.friendlies.has(b.id)) continue;
+        if (!b.targetId) continue;
+        this.spectatorTargets.set(b.id, b.targetId);
+        if (this.selfId && b.targetId === this.selfId) {
+          this.spectatorHunterList.push({ id: b.id, pos: b.pos, weapon: b.weapon as Weapon });
+        }
+      }
+    }
+    // Mines ride hazardTiles(), which the threat field bakes in — same
+    // ordering rule as setAllyMines: never serve a field built pre-update.
+    this.threatCache = null;
+  }
+
+  /** Bots server-confirmed locked onto US, including ones beyond our fog. */
+  spectatorHunters(): { id: string; pos: GridVec; weapon: Weapon }[] {
+    return this.spectatorHunterList;
+  }
+
+  /** Fog-free aggro read: who `botId` is targeting, or null if unknown/idle. */
+  spectatorTargetOf(botId: string): string | null {
+    return this.spectatorTargets.get(botId) ?? null;
+  }
+
   /** Positions of coalition allies currently inside our fog. */
   allyTiles(): GridVec[] {
     const out: GridVec[] = [];
@@ -778,23 +890,28 @@ export class GameState {
   }
 
   /**
-   * Does the straight segment from us to `target` pass within 1 tile of a
-   * coalition ally's broadcast mine? Server-side pathfinding (move_to) knows
-   * nothing about invisible ally mines, so the engine must reroute locally.
-   * Straight-line approximation of the server's A* — imperfect, but paths are
-   * near-straight in open ground and the reroute re-evaluates every tick.
+   * Does the straight segment from us to `target` pass within ~1 tile of a
+   * mine WE know about but the server's pathing won't route around for us —
+   * coalition allies' broadcast mines (invisible to everyone but the owner)
+   * or enemy mines from the spectator feed (invisible in bot fog entirely)?
+   * move_to's server-side A* walks straight through both, so the engine must
+   * reroute locally. Straight-line approximation of the server's A* —
+   * imperfect, but paths are near-straight in open ground and the reroute
+   * re-evaluates every tick.
    */
-  allyMineOnPath(target: GridVec): boolean {
+  knownMineOnPath(target: GridVec): boolean {
     const [ax, ay] = this.position;
     const dx = target[0] - ax;
     const dy = target[1] - ay;
     const len2 = dx * dx + dy * dy;
     if (len2 === 0) return false;
-    for (const m of this.allyMines) {
-      const u = Math.max(0, Math.min(1, ((m[0] - ax) * dx + (m[1] - ay) * dy) / len2));
-      const px = ax + u * dx;
-      const py = ay + u * dy;
-      if ((m[0] - px) ** 2 + (m[1] - py) ** 2 <= 1.2 * 1.2) return true;
+    for (const mines of [this.allyMines, this.spectatorMines]) {
+      for (const m of mines) {
+        const u = Math.max(0, Math.min(1, ((m[0] - ax) * dx + (m[1] - ay) * dy) / len2));
+        const px = ax + u * dx;
+        const py = ay + u * dy;
+        if ((m[0] - px) ** 2 + (m[1] - py) ** 2 <= 1.2 * 1.2) return true;
+      }
     }
     return false;
   }

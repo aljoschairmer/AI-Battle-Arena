@@ -20,6 +20,7 @@ import type {
   TickMsg,
   Weapon,
 } from "../types/protocol";
+import { getSpectatorFeed } from "../arena/spectator";
 import { Controller } from "./controller";
 import { Coalition } from "./coop";
 import { GameState } from "./gameState";
@@ -74,6 +75,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   );
   // Bot-to-bot coalition (only when a global coop bus was provided).
   const coop = opts.coopBus ? new Coalition(opts.coopBus, () => gs.selfId) : null;
+  // Public spectator feed (fog-free global state; one shared WS per process,
+  // no auth). null when disabled via ARENA_SPECTATOR=false. The engine only
+  // ever reads its cached frame — a dead feed degrades to fog-only play.
+  const spectator = getSpectatorFeed();
 
   let loadoutSent = false;
   // The arena locks the loadout once a game/round is active ("Cannot change
@@ -537,18 +542,29 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         }
       }
 
+      // Fog-free global intel for the deterministic layer (AFTER the coop
+      // block above so the friendly filter is current): enemy mines become
+      // hazard tiles, the aggro graph feeds gank math + target scoring.
+      // setGlobalIntel(null) — feed stale/absent or knob off — clears it all,
+      // restoring exact fog-only behaviour.
+      if (controller.getPolicy().spectatorIntel && gs.selfId) {
+        gs.setGlobalIntel(spectator?.engineIntel(gs.selfId) ?? null);
+      } else {
+        gs.setGlobalIntel(null);
+      }
+
       // Route this engine's per-tick telemetry to its own bot channel — three
       // interleaved engines in one process otherwise write into whichever
       // bot's file was opened last.
       telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       let action = controller.decide(gs);
-      // Server-pathed moves (move_to) walk straight through invisible ally
-      // mines — the server's A* can't know them. When the straight path
-      // crosses a broadcast mine tile, reroute with a local threat-aware step
-      // (which DOES see them) and let next tick re-plan. This was the residual
-      // teammate-kill channel after every attack-side guard: our dominant
-      // action type simply never consulted the mine map.
-      if (action.action === "move_to" && gs.allyMineOnPath(action.target_position)) {
+      // Server-pathed moves (move_to) walk straight through mines the server's
+      // A* won't route around for us — coalition allies' invisible mines AND
+      // enemy mines hidden by fog (spectator-known). When the straight path
+      // crosses one, reroute with a local threat-aware step (which DOES see
+      // them) and let next tick re-plan. Ally mines were the residual
+      // teammate-kill channel; enemy mines were silent '?' deaths.
+      if (action.action === "move_to" && gs.knownMineOnPath(action.target_position)) {
         const step = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
         if (step) action = { type: "action", tick: action.tick, action: "move", direction: step };
       }

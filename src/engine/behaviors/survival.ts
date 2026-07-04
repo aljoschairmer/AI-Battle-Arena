@@ -69,6 +69,10 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
       ];
       if (gs.isPassable(dest[0], dest[1])) return grappleTo(tick, dest);
     }
+    // Threat-weighted A* first (routes around enemy coverage AND wall corners
+    // on the way back in), greedy gradient step as fallback/off-state.
+    const planned = gs.plannedRetreatStep(ctx.policy.pathfindDangerWeight);
+    if (planned) return move(tick, planned);
     const fieldStep = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
     if (fieldStep) return move(tick, fieldStep);
     return moveTo(tick, self.zone_center);
@@ -377,6 +381,12 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
     }
   }
 
+  // Kite along a PLANNED escape route when the knob is on: weighted A* to the
+  // safest tile in the threat window beats greedy gradient descent whenever a
+  // wall corner or an overlapping range ring sits between us and safety.
+  const planned = gs.plannedRetreatStep(ctx.policy.pathfindDangerWeight);
+  if (planned) return move(tick, planned);
+
   // Kite down the threat gradient: step toward the least dangerous adjacent tile
   // (accounts for ALL enemies + zone + hazards, not just the nearest one).
   const fieldStep = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
@@ -409,6 +419,8 @@ export function tacticalDisengage(ctx: DecisionContext): ClientAction | null {
   const me = gs.position;
   const field = gs.threatField();
   if (field.danger(me[0], me[1]) < 1) return null;
+  const planned = gs.plannedRetreatStep(ctx.policy.pathfindDangerWeight);
+  if (planned) return move(tick, planned);
   const step = field.safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
   if (step) return move(tick, step);
   const safe = field.safestTileWithin(me, 4, (c, r) => gs.isPassable(c, r));
@@ -473,8 +485,9 @@ function nearestAttacker(ctx: DecisionContext): NearbyBot | null {
     if (e.bow_charge_level >= 3 && e.has_los && d <= range + 1) score += 30;
     if (d <= 1.5) score += 20;
     // Live aggro read (target_id, pass-4): this enemy is server-confirmed
-    // locked onto US — it's the attacker even before it's in range.
-    if (e.target_id === ctx.gs.selfId) score += 15;
+    // locked onto US — it's the attacker even before it's in range. The
+    // spectator aggro graph backfills the often-empty fog target_id.
+    if ((e.target_id || ctx.gs.spectatorTargetOf(e.bot_id)) === ctx.gs.selfId) score += 15;
     if (score > bestScore) { bestScore = score; best = e; }
   }
   return best;
