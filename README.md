@@ -222,10 +222,7 @@ Everything is env-driven (see [`.env.example`](.env.example)). The essentials:
 | `ARENA_API_KEY` / `ARENA_API_KEYS` | — | one key = one bot; comma-separated list = parallel fleet |
 | `BOT_NAMES` / `BOT_COLORS` | derived | per-bot identity, position-aligned with the key list |
 | `BOT_COOP` | `false` | coalition mode for parallel bots |
-| `LLM_PROVIDERS` | `google,qwen,openrouter` | provider **fallback chain**; keyless entries are skipped, each link has its own circuit breaker |
-| `GOOGLE_API_KEY` / `GOOGLE_MODEL` | — / `gemini-2.5-flash` | direct Gemini via the OpenAI-compatible endpoint (AI-Studio free tier; `GEMINI_API_KEY` alias) |
-| `DASHSCOPE_API_KEY` / `QWEN_MODEL` | — / `qwen-flash` | direct Qwen via DashScope compatible-mode (`QWEN_API_KEY` alias) |
-| `OPENROUTER_API_KEY` | — | fallback provider; all keys empty ⇒ pure deterministic bot, zero LLM cost |
+| `OPENROUTER_API_KEY` | — | empty ⇒ pure deterministic bot, zero LLM cost |
 | `OPENROUTER_MODEL_*` | Claude Sonnet/Haiku | per-agent model slugs (`_STRATEGIST` `_LOADOUT` `_TACTICIAN` `_COORDINATOR`) |
 | `LLM_TIMEOUT_MS` | `8000` | hard cap before deterministic fallback |
 | `ARENA_SPECTATOR` | on | `false` disables the fog-free feed (engine + brain fall back to fog-only) |

@@ -45,15 +45,6 @@ export class OpenRouter {
     private readonly apiKey = config.openrouter.apiKey,
     private readonly base = config.openrouter.base,
     private readonly breaker: { after: number; cooldownMs: number } = { after: 8, cooldownMs: 90_000 },
-    /**
-     * Generic OpenAI-compatible mode: this same client serves Google's
-     * Gemini (v1beta/openai) and Alibaba's DashScope (compatible-mode)
-     * endpoints — identical wire format, different base + auth key. `name`
-     * prefixes errors/logs; `healthPath` is GET-probed by healthCheck
-     * ("/key" is OpenRouter-specific, "/models" exists on all three).
-     */
-    readonly name: string = "openrouter",
-    private readonly healthPath: string = "/key",
   ) {}
 
   get enabled(): boolean {
@@ -67,17 +58,17 @@ export class OpenRouter {
    * surfaces as a concrete error at startup instead of a mystery.
    */
   async healthCheck(): Promise<{ ok: boolean; detail: string }> {
-    if (!this.enabled) return { ok: false, detail: `${this.name}: no API key configured` };
+    if (!this.enabled) return { ok: false, detail: "OPENROUTER_API_KEY is empty" };
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), 8000);
     try {
-      const res = await fetch(`${this.base}${this.healthPath}`, {
+      const res = await fetch(`${this.base}/key`, {
         headers: { Authorization: `Bearer ${this.apiKey}` },
         signal: controller.signal,
       });
       const text = await res.text();
       if (res.status === 401 || res.status === 403) {
-        return { ok: false, detail: `${this.name}: invalid API key (HTTP ${res.status})` };
+        return { ok: false, detail: `invalid OPENROUTER_API_KEY (HTTP ${res.status})` };
       }
       if (!res.ok) return { ok: false, detail: `HTTP ${res.status}: ${text.slice(0, 160)}` };
       let usage: unknown;
@@ -98,7 +89,7 @@ export class OpenRouter {
     const now = Date.now();
     if (now < this.circuitOpenUntil) {
       throw new Error(
-        `LLM circuit open (${this.name}) — cooling down ${Math.ceil((this.circuitOpenUntil - now) / 1000)}s after repeated provider failures`,
+        `LLM circuit open — cooling down ${Math.ceil((this.circuitOpenUntil - now) / 1000)}s after repeated provider failures`,
       );
     }
     const timeout = req.timeoutMs ?? config.openrouter.timeoutMs;
@@ -107,7 +98,7 @@ export class OpenRouter {
       try {
         const out = await this.once(req, timeout);
         if (this.consecutiveFailures >= this.breaker.after) {
-          log.info({ provider: this.name }, "LLM circuit CLOSED — provider recovered");
+          log.info("LLM circuit CLOSED — provider recovered");
         }
         this.consecutiveFailures = 0;
         return out;
@@ -127,12 +118,11 @@ export class OpenRouter {
       // must be impossible to miss in the logs, unlike per-call WARNs.
       log.error(
         {
-          provider: this.name,
           consecutiveFailures: this.consecutiveFailures,
           cooldownS: Math.round(this.breaker.cooldownMs / 1000),
           lastErr: lastErr instanceof Error ? lastErr.message.slice(0, 160) : String(lastErr),
         },
-        "LLM circuit OPEN — provider failing repeatedly, pausing its calls (fallback chain / deterministic play continues)",
+        "LLM circuit OPEN — provider failing repeatedly, pausing all LLM calls (deterministic fallback active)",
       );
     }
     throw lastErr instanceof Error ? lastErr : new Error("OpenRouter chat failed");
@@ -164,12 +154,12 @@ export class OpenRouter {
       });
 
       const text = await res.text();
-      if (!res.ok) throw new Error(`${this.name} ${res.status}: ${text.slice(0, 200)}`);
+      if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${text.slice(0, 200)}`);
 
       const data = JSON.parse(text) as ChatCompletion;
-      if (data.error?.message) throw new Error(`${this.name} error: ${data.error.message}`);
+      if (data.error?.message) throw new Error(`OpenRouter error: ${data.error.message}`);
       const content = data.choices?.[0]?.message?.content;
-      if (!content) throw new Error(`${this.name} returned no content`);
+      if (!content) throw new Error("OpenRouter returned no content");
       return content;
     } finally {
       clearTimeout(t);
@@ -181,5 +171,4 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// (The `openrouter` singleton export was removed: agents now go through the
-// multi-provider router in llm.ts, which constructs one client per provider.)
+export const openrouter = new OpenRouter();

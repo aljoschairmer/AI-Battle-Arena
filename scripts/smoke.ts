@@ -41,8 +41,6 @@ import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import { dumpKnowledge, restoreKnowledge } from "../src/shared/knowledge";
 import { OpenRouter } from "../src/brain/openrouter";
-import { LlmRouter } from "../src/brain/llm";
-import { createServer } from "node:http";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
 import { TacticianAgent } from "../src/brain/agents/tactician";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -2278,42 +2276,6 @@ async function run(): Promise<void> {
     const instant = Date.now() - t0 < 100;
     check("failures below threshold hit the provider", !/circuit open/.test(e1) && !/circuit open/.test(e2), { e1, e2 });
     check("circuit OPENS after threshold — calls fail instantly without API traffic", /circuit open/.test(e3) && instant, { e3, instant });
-  }
-
-  console.log("\nLLM provider fallback chain (multi-provider router)");
-  {
-    // A tiny OpenAI-compatible endpoint standing in for a healthy provider.
-    const srv = createServer((_req, res) => {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }));
-    });
-    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
-    const port = (srv.address() as { port: number }).port;
-
-    const dead = new OpenRouter("k", "http://127.0.0.1:9", { after: 2, cooldownMs: 60_000 }, "deadprov");
-    const alive = new OpenRouter("k", `http://127.0.0.1:${port}`, undefined, "aliveprov");
-    const router = new LlmRouter([
-      { name: "deadprov", client: dead, model: "fixed-model" },
-      { name: "aliveprov", client: alive, model: null },
-    ]);
-    const req = { openrouterModel: "or-slug", system: "s", user: "u" } as const;
-
-    const out1 = await router.chat({ ...req });
-    check("chain fails over to the next provider", out1 === '{"ok":true}', out1);
-    await router.chat({ ...req }); // second call trips the dead provider's breaker (after: 2)
-    const t0 = Date.now();
-    const out3 = await router.chat({ ...req });
-    check(
-      "open circuit on link 1 is skipped instantly",
-      out3 === '{"ok":true}' && Date.now() - t0 < 400,
-      { out3, ms: Date.now() - t0 },
-    );
-    check(
-      "empty chain reports no provider",
-      await new LlmRouter([]).chat({ ...req }).then(() => false, (e: Error) => /no LLM provider/.test(e.message)),
-    );
-    check("router disabled with empty chain", !new LlmRouter([]).enabled && router.enabled);
-    srv.close();
   }
 
   console.log("\ncoalition truce break (last fleet standing)");
