@@ -40,6 +40,7 @@ import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../src/brain
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import { dumpKnowledge, restoreKnowledge } from "../src/shared/knowledge";
+import { OpenRouter } from "../src/brain/openrouter";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
 import { TacticianAgent } from "../src/brain/agents/tactician";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -2243,6 +2244,38 @@ async function run(): Promise<void> {
     const off = await restoreKnowledge(new MemoryBus(), { dir: dumpDir, brainDir: mkdtempSync(join(tmpdir(), "brain-off-")) });
     delete process.env.KNOWLEDGE_RESTORE;
     check("KNOWLEDGE_RESTORE=0 disables the restore", off.kvSeeded.length === 0 && off.memorySeeded.length === 0, off);
+
+    // MERGE semantics: a dump while the KV is empty (TTL'd out during an LLM
+    // outage — the live incident that emptied kv.json) must NOT clobber the
+    // previously dumped learning; a live value still overwrites its entry.
+    const emptyBus = new MemoryBus();
+    const d2 = await dumpKnowledge(emptyBus, ["", "bot0:"], paths);
+    const keptKv = JSON.parse(readFileSync(join(dumpDir, "kv.json"), "utf8")) as Record<string, { aggression?: number }>;
+    check(
+      "empty-KV dump keeps previous entries (no {} clobber)",
+      d2.kvLive.length === 0 && keptKv["bot0:arena:kv:policy"]?.aggression === 0.9,
+      { live: d2.kvLive, kept: Object.keys(keptKv) },
+    );
+    const fresherBus = new MemoryBus();
+    await fresherBus.setKV("bot0:arena:kv:policy", mergePolicy(learned, { aggression: 0.4 }));
+    await dumpKnowledge(fresherBus, ["", "bot0:"], paths);
+    const overKv = JSON.parse(readFileSync(join(dumpDir, "kv.json"), "utf8")) as Record<string, { aggression?: number }>;
+    check("live value still overwrites its dump entry", overKv["bot0:arena:kv:policy"]?.aggression === 0.4, overKv["bot0:arena:kv:policy"]?.aggression);
+  }
+
+  console.log("\nLLM circuit breaker (provider-outage storm protection)");
+  {
+    // Unreachable base: every call fails fast. Threshold 2 for the test.
+    const or = new OpenRouter("test-key", "http://127.0.0.1:9", { after: 2, cooldownMs: 60_000 });
+    const req = { model: "m", system: "s", user: "u", timeoutMs: 300 };
+    let e1 = "", e2 = "", e3 = "";
+    try { await or.chat(req); } catch (e) { e1 = (e as Error).message; }
+    try { await or.chat(req); } catch (e) { e2 = (e as Error).message; }
+    const t0 = Date.now();
+    try { await or.chat(req); } catch (e) { e3 = (e as Error).message; }
+    const instant = Date.now() - t0 < 100;
+    check("failures below threshold hit the provider", !/circuit open/.test(e1) && !/circuit open/.test(e2), { e1, e2 });
+    check("circuit OPENS after threshold — calls fail instantly without API traffic", /circuit open/.test(e3) && instant, { e3, instant });
   }
 
   console.log("\ncoalition truce break (last fleet standing)");

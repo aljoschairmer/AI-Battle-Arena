@@ -61,23 +61,41 @@ export async function dumpKnowledge(
   bus: Bus,
   scopes: string[],
   paths: KnowledgePaths = knowledgePaths(),
-): Promise<{ kvKeys: string[]; memoryFiles: string[] }> {
+): Promise<{ kvKeys: string[]; kvLive: string[]; memoryFiles: string[] }> {
   mkdirSync(join(paths.dir, "brain"), { recursive: true });
 
-  // 1. Learned KV entries across every bot scope.
-  const kv: Record<string, unknown> = {};
+  // 1. Learned KV entries across every bot scope — MERGED over the existing
+  // dump, never replacing it wholesale. The KV mirror carries a ~300s TTL
+  // and is only rewritten when the Brain actually publishes; during an LLM
+  // provider outage the entries expire and a naive dump would clobber the
+  // committed seed with {} — measured live: an afternoon-long 402/429 storm
+  // silently emptied kv.json and the learned Tuner policies survived only in
+  // git history. A key is overwritten only when a live value exists; absent
+  // keys keep their last known value (stale learning beats no learning; the
+  // restore side is missing-only anyway, so a fresher live system ignores it).
+  const kvPath = join(paths.dir, "kv.json");
+  let kv: Record<string, unknown> = {};
+  try {
+    kv = JSON.parse(readFileSync(kvPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    /* no previous dump / unreadable — start fresh */
+  }
+  const kvLive: string[] = [];
   for (const scope of scopes) {
     for (const key of LEARNED_KEYS) {
       const full = scopedKey(scope, key);
       try {
         const value = await bus.getKV<unknown>(full);
-        if (value !== null) kv[full] = value;
+        if (value !== null) {
+          kv[full] = value;
+          kvLive.push(full);
+        }
       } catch {
-        /* bus unreachable — dump what we can */
+        /* bus unreachable — keep the previous dump's entries */
       }
     }
   }
-  writeFileSync(join(paths.dir, "kv.json"), JSON.stringify(kv, null, 2));
+  writeFileSync(kvPath, JSON.stringify(kv, null, 2));
 
   // 2. Brain memory files (round history, opponent profiles, insights).
   const memoryFiles: string[] = [];
@@ -91,7 +109,7 @@ export async function dumpKnowledge(
     /* no brain dir yet — nothing learned on disk */
   }
 
-  return { kvKeys: Object.keys(kv), memoryFiles };
+  return { kvKeys: Object.keys(kv), kvLive, memoryFiles };
 }
 
 /**
