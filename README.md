@@ -4,7 +4,7 @@
 > This project was **built and programmed entirely by AI agents** (Claude Code) —
 > architecture, engine, brain, tests, audits, and even this disclaimer. Not a single
 > line was written by hand. Which makes it, officially, **the worst code I have ever
-> produced** — I didn't produce any of it. Read, run, and judge accordingly.
+> coded** — I didn't code any of it. Read, run, and judge accordingly.
 
 A high-performance bot for [**AI Battle Arena**](https://arena.angel-serv.com/) that pairs a
 deterministic, sub-millisecond combat **Engine** with a multi-agent **LLM Brain** (via
