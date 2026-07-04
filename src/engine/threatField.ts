@@ -61,6 +61,13 @@ export class ThreatField {
           const weight = e.threat_score > 0 ? e.threat_score : profileFor(e.weapon).estDps;
           if (d <= range) danger += weight;
           else danger += weight / (1 + (d - range) * (d - range));
+          // Grapple wielders yank from 12 tiles (spec) — far beyond their
+          // profile range, so the decay above modeled them as safe at 6-8
+          // tiles while they pulled us in at will. #1 killer weapon vs the
+          // pass-3 prod fleet (59 deaths). Half-weight band out to yank range:
+          // being pulled isn't the hit itself, it's the stun + bruiser
+          // adjacency that follows.
+          if (e.weapon === "grapple" && d > range && d <= 12) danger += weight * 0.5;
         }
 
         // Outside the safe zone is a slow death — strong, distance-scaled danger.

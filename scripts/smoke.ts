@@ -35,6 +35,7 @@ import { TokenBucket } from "../src/shared/ratelimit";
 import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
 import { TelemetryLog } from "../src/engine/telemetryLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
+import { StrategistAgent } from "../src/brain/agents/strategist";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
@@ -1949,6 +1950,42 @@ async function run(): Promise<void> {
     gsMine.setFriendlies(new Set(["ally"]));
     const aMine = ctlM.decide(gsMine);
     check("no mine seeded in a shared retreat corridor (ally within 6)", aMine.action !== "place_mine", aMine);
+  }
+
+  console.log("\ngrapple yank-range threat modeling (deep dive 2)");
+  {
+    // A grapple wielder at 9 tiles: profile range ~5 says 'safe', the 12-tile
+    // yank says otherwise. Our tile must read meaningfully more dangerous than
+    // the same layout with a sword enemy (whose reach really is short).
+    const gsY = freshGameState();
+    gsY.applyTick(tickFrom(self(), [enemy({ bot_id: "hook", weapon: "grapple", position: [59, 50], attack_range: 0 })]));
+    const gsS = freshGameState();
+    gsS.applyTick(tickFrom(self(), [enemy({ bot_id: "swd", weapon: "sword", position: [59, 50], attack_range: 0 })]));
+    const yank = gsY.threatField().danger(50, 50);
+    const sword = gsS.threatField().danger(50, 50);
+    check("grapple wielder at 9 tiles reads far more dangerous than sword", yank > sword * 3, { yank, sword });
+    // Beyond yank range the band ends.
+    const gsFar = freshGameState();
+    gsFar.applyTick(tickFrom(self(), [enemy({ bot_id: "hook", weapon: "grapple", position: [64, 50], attack_range: 0 })]));
+    check(
+      "beyond 12 tiles the yank band is gone",
+      Math.abs(gsFar.threatField().danger(50, 50) - gsS.threatField().danger(50, 50)) < 5,
+      gsFar.threatField().danger(50, 50),
+    );
+  }
+
+  console.log("\nlearnings-authoritative drafting + double_bounty discipline (deep dive 2)");
+  {
+    const agent2 = new LoadoutAgent();
+    const sys = (agent2 as unknown as { systemPrompt(): string }).systemPrompt();
+    check("loadout prompt makes weapon history authoritative for every slot", sys.includes("EVIDENCE AUTHORITY") && sys.includes("including index 0"));
+    check("loadout prompt bans proven losers", sys.includes("BANNED"));
+    check(
+      "double_bounty is survival, not aggression, in all three prompts",
+      sys.includes("SURVIVAL build") &&
+        new StrategistAgent()["systemPrompt"]().includes("do NOT raise aggression") &&
+        new TacticianAgent()["systemPrompt"]().includes("MORE cautious"),
+    );
   }
 
   console.log("\nally repulsion: the pack spaces itself so splash can't form");
