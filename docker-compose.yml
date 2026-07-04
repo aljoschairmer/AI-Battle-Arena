@@ -7,6 +7,14 @@
 #
 # Run a pure deterministic bot (no LLM cost): leave OPENROUTER_API_KEY empty and
 # `docker compose up redis engine`.
+#
+# Live data view: `docker compose up redis-dashboard` serves RedisInsight on
+# http://localhost:5540 — pre-connected to the bus. The Browser tab shows the
+# KV mirror (bot0:arena:kv:* — current directive/policy/insights, ~300s TTL);
+# the Pub/Sub tool with pattern `*` streams the live bus traffic (snapshots,
+# directives, loadout plans, coop reports) as it flows Engine <-> Brain.
+# NOTE: only meaningful with BUS=redis (this topology). A BUS=memory process
+# keeps everything in-process and Redis stays empty.
 
 services:
   redis:
@@ -19,6 +27,73 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # Web dashboard for the Redis bus: RedisInsight (official GUI) on port 5540.
+  # The RI_REDIS_* variables preconfigure the connection on builds that still
+  # support them (<= v2); the init sidecar below covers current builds (v3
+  # dropped the env path — verified live on 3.6.0), so the page lands directly
+  # on the live database either way — no setup dialog.
+  redis-dashboard:
+    image: redis/redisinsight:latest
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "5540:5540"
+    environment:
+      RI_REDIS_HOST: redis
+      RI_REDIS_PORT: "6379"
+      RI_REDIS_ALIAS: battle-arena-bus
+    volumes:
+      # Persists the UI's own settings/history across container restarts.
+      - redisinsight-data:/data
+
+  # One-shot: registers the `redis` service in RedisInsight over its REST API
+  # (idempotent — skipped when the connection already exists), then exits.
+  redis-dashboard-init:
+    image: curlimages/curl:latest
+    depends_on:
+      redis-dashboard:
+        condition: service_started
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in $(seq 1 30); do
+          curl -sf http://redis-dashboard:5540/api/databases > /dev/null && break
+          sleep 2
+        done
+        if curl -sf http://redis-dashboard:5540/api/databases | grep -q '"battle-arena-bus"'; then
+          echo "dashboard: battle-arena-bus already registered"
+        else
+          curl -sf -X POST http://redis-dashboard:5540/api/databases \
+            -H 'Content-Type: application/json' \
+            -d '{"host":"redis","port":6379,"name":"battle-arena-bus"}' > /dev/null \
+            && echo "dashboard: battle-arena-bus registered" \
+            || echo "dashboard: auto-register failed — add host 'redis' port 6379 manually in the UI"
+        fi
+
+  # Public URL for the dashboard via a Cloudflare QUICK tunnel (no account,
+  # no config): prints a random https://<something>.trycloudflare.com URL in
+  # its logs on boot — `docker compose logs redis-dashboard-tunnel | grep
+  # trycloudflare`. SECURITY: the URL is unauthenticated and RedisInsight can
+  # WRITE to the bus Redis — share it only while you need it and stop the
+  # service afterwards (`docker compose stop redis-dashboard-tunnel`). The URL
+  # changes on every restart; that's inherent to quick tunnels.
+  redis-dashboard-tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      redis-dashboard:
+        condition: service_started
+    # http2 = edge connection over TCP:7844 instead of QUIC (UDP:7844) —
+    # survives UDP-blocking firewalls. Note: a bare `tunnel run` needs a NAMED
+    # tunnel (Cloudflare account + token); this stays a token-less quick
+    # tunnel. For a named tunnel with a stable domain, set TUNNEL_TOKEN in
+    # .env and swap the command for:
+    #   ["tunnel", "--no-autoupdate", "run", "--protocol", "http2", "--token", "${TUNNEL_TOKEN}"]
+    command: ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", "http://redis-dashboard:5540"]
 
   engine:
     build: .
@@ -83,3 +158,6 @@ services:
       NO_PROXY: ${NO_PROXY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LOG_FORMAT: ${LOG_FORMAT:-json}
+
+volumes:
+  redisinsight-data:

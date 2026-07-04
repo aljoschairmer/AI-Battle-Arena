@@ -30,7 +30,8 @@ export function tradeAdvantage(ctx: DecisionContext, e: NearbyBot): number {
   let incoming = enemyDps(e);
   const gankRadius = ctx.policy.gankRadius;
   const gankWeight = ctx.policy.gankApproachWeight;
-  for (const other of gs.enemies()) {
+  const visible = gs.enemies();
+  for (const other of visible) {
     if (other.bot_id === e.bot_id) continue;
     const d = dist(me, other.position);
     // In-range attacker: full ganker share (pre-existing behavior, unchanged).
@@ -50,6 +51,25 @@ export function tradeAdvantage(ctx: DecisionContext, e: NearbyBot): number {
     if (!cooling && !closing) continue;
     const fade = d <= 5 ? 1 : (gankRadius - d) / (gankRadius - 5);
     incoming += enemyDps(other) * 0.8 * gankWeight * fade;
+  }
+  // Out-of-fog hunters (spectator aggro graph): bots the server confirms are
+  // locked onto US but that our fog can't see yet. The gank loop above is
+  // structurally blind to them — fog radius 7 means a hunter at 8-14 tiles
+  // arrives mid-fight with zero warning. Same distance-faded DPS share, own
+  // weight/radius knobs; empty list (no feed / knob off) changes nothing.
+  const hunterWeight = ctx.policy.spectatorHunterWeight;
+  if (hunterWeight > 0) {
+    const hunterRadius = Math.max(ctx.policy.spectatorHunterRadius, 6);
+    const seen = new Set(visible.map((o) => o.bot_id));
+    for (const h of gs.spectatorHunters()) {
+      // Visible hunters are already counted (full ganker share) above; a
+      // "hunter" inside fog range we DON'T see means a stale frame — skip.
+      if (h.id === e.bot_id || seen.has(h.id)) continue;
+      const d = dist(me, h.pos);
+      if (d <= 5 || d > hunterRadius) continue;
+      const fade = (hunterRadius - d) / (hunterRadius - 5);
+      incoming += profileFor(h.weapon).estDps * 0.8 * hunterWeight * fade;
+    }
   }
   incoming *= 1 - Math.min(0.6, defenseRed);
 

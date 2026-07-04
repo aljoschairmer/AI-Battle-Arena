@@ -18,11 +18,12 @@ const CELL = 20;
  * hazards, kill feed, sudden_death (pass-4 API audit, finding 6). It is a
  * fog-of-war bypass the arena itself publishes.
  *
- * Consumed by the BRAIN only: the LLM layer is async and off the tick path by
- * design, so global intel enriches strategy prompts without the Engine's
- * deterministic controller ever depending on a second socket. Frames arrive at
- * 10 Hz (~17 KB); we simply keep the latest one — no queue, no parsing beyond
- * JSON, so the cost is negligible.
+ * Consumed by BOTH layers, differently: the Brain gets intel() folded into
+ * strategy prompts; the Engine reads engineIntel() at the top of each tick —
+ * a cached-property read, no I/O, never a second dependency on the socket
+ * being up (absent/stale frames return null and the engine plays fog-only).
+ * Frames arrive at 10 Hz (~17 KB); we simply keep the latest one — no queue,
+ * no parsing beyond JSON, so the cost is negligible.
  */
 export class SpectatorFeed {
   private ws: WebSocket | null = null;
@@ -117,6 +118,32 @@ export class SpectatorFeed {
     };
   }
 
+  /**
+   * Compact fog-free view for the ENGINE's deterministic layer (grid coords):
+   * every armed mine with its owner (fog NEVER shows enemy mines) and every
+   * other living bot's position/weapon/target. Null when the feed is absent
+   * or stale (>3s) — callers must degrade to fog-only behaviour on null.
+   * Pure transform of the cached frame: safe to call on the 10 Hz tick path.
+   */
+  engineIntel(selfId: string): EngineGlobalIntel | null {
+    const s = this.latest();
+    if (!s || !selfId) return null;
+    const toGrid = (p: GridVec): GridVec => [Math.round(p[0] / CELL), Math.round(p[1] / CELL)];
+    const mines = (s.landmines ?? [])
+      .filter((m) => m.armed && m.owner_id !== selfId)
+      .map((m) => ({ pos: toGrid(m.position), ownerId: m.owner_id }));
+    const bots = (s.bots ?? [])
+      .filter((b) => b.is_alive && b.id !== selfId)
+      .map((b) => ({
+        id: b.id,
+        weapon: b.weapon,
+        pos: toGrid(b.position),
+        hp: Math.round(b.hp),
+        targetId: b.target_id || null,
+      }));
+    return { tick: s.tick, mines, bots };
+  }
+
   private connect(): void {
     log.debug({ attempt: this.reconnectAttempts, url: this.url }, "connecting spectator feed");
     const ws = new WebSocket(this.url, {
@@ -188,6 +215,15 @@ export interface SpectatorIntel {
   huntingUs: string[];
   /** Armed enemy mines within ~12 tiles of us — invisible in bot fog. */
   minesNearUs: { position: GridVec; distance: number }[];
+}
+
+/** Fog-free per-tick view for the Engine (grid coordinates throughout). */
+export interface EngineGlobalIntel {
+  tick: number;
+  /** Every armed mine on the field that isn't ours, with its owner's bot_id. */
+  mines: { pos: GridVec; ownerId: string }[];
+  /** Every other living bot: live position, weapon, and who it's locked onto. */
+  bots: { id: string; weapon: string; pos: GridVec; hp: number; targetId: string | null }[];
 }
 
 function deriveSpectatorUrl(): string {

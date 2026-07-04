@@ -7,7 +7,8 @@
  * ever fought — the opponent-profile counter-picking loop only worked
  * within a single process lifetime.
  *
- * Brain-side only, never on the engine hot path. All I/O is best-effort:
+ * Never on the engine tick path (the engine reads it once per draft window
+ * via fleetWeaponWinRatesFromDisk; everything else is Brain-side). All I/O is best-effort:
  * a read/write failure degrades to in-memory behavior (exactly what the
  * bot did before this file existed) and warns once. Writes are debounced
  * (at most one per WRITE_DEBOUNCE_MS) and atomic (tmp + rename) so a

@@ -14,7 +14,7 @@ import { retreatAndHeal, survivalBehavior, tacticalDisengage } from "../src/engi
 import { combatBehavior } from "../src/engine/behaviors/combat";
 import { flankingPosition, grabPickup } from "../src/engine/behaviors/movement";
 import { selectTarget } from "../src/engine/behaviors/targeting";
-import { Coalition } from "../src/engine/coop";
+import { Coalition, onlyFleetRemains } from "../src/engine/coop";
 import { Channels } from "../src/bus";
 import { MemoryBus } from "../src/bus/memory";
 import { scoped } from "../src/bus";
@@ -36,7 +36,7 @@ import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
 import { TelemetryLog } from "../src/engine/telemetryLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
 import { StrategistAgent } from "../src/brain/agents/strategist";
-import { enforceWeaponEvidence } from "../src/brain/draftEvidence";
+import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../src/brain/draftEvidence";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
@@ -49,6 +49,7 @@ import { deriveStats, damagePerHit, dpsInto, fightPower, optimizeBuild } from ".
 import { WEAPONS } from "../src/engine/weapons";
 import { matchupRating, counterScore, rankCounterPicks } from "../src/engine/matchups";
 import { tradeAdvantage } from "../src/engine/combatMath";
+import { findPath } from "../src/engine/pathfinding";
 import { chebyshev } from "../src/shared/geometry";
 import { PolicyPatchSchema, StrategyOutputSchema, AnalystOutputSchema } from "../src/brain/agents/schemas";
 import type {
@@ -2054,12 +2055,12 @@ async function run(): Promise<void> {
     check("grapple with a clear pull line yanks as before", aGC?.action === "grapple" && aGC.target === "foe", aGC);
 
     // move_to paths are server-pathed and blind to invisible ally mines —
-    // allyMineOnPath flags a straight path crossing one.
+    // knownMineOnPath flags a straight path crossing one.
     const gsP = freshGameState();
     gsP.applyTick(tickFrom(self(), []));
     gsP.setAllyMines([[55, 50] as [number, number]]);
-    check("straight path over an ally mine is flagged", gsP.allyMineOnPath([60, 50]));
-    check("path well clear of the mine is not flagged", !gsP.allyMineOnPath([50, 60]));
+    check("straight path over an ally mine is flagged", gsP.knownMineOnPath([60, 50]));
+    check("path well clear of the mine is not flagged", !gsP.knownMineOnPath([50, 60]));
     check("believed own mines no longer expire (round-lifetime)", (() => {
       const g = freshGameState();
       g.applyTick(tickFrom(self({ position: [40, 40] }), []));
@@ -2108,6 +2109,138 @@ async function run(): Promise<void> {
       Math.abs(gsFar.threatField().danger(50, 50) - gsS.threatField().danger(50, 50)) < 5,
       gsFar.threatField().danger(50, 50),
     );
+  }
+
+  console.log("\nspectator intel → engine (fog-free mines / hunters / aggro graph)");
+  {
+    // Armed enemy mine (invisible in bot fog) becomes a first-class hazard.
+    const gsSpec = freshGameState();
+    gsSpec.applyTick(tickFrom(self(), []));
+    gsSpec.setGlobalIntel({ mines: [{ pos: [53, 50], ownerId: "villain" }], bots: [] });
+    check("spectator enemy mine rides hazardTiles", gsSpec.hazardTiles().some(([c, r]) => c === 53 && r === 50));
+    check("stepping next to a spectator mine is unsafe", !gsSpec.isSafeStep(52, 50));
+    check("move_to path over a spectator mine is flagged", gsSpec.knownMineOnPath([58, 50]));
+
+    // Feed gone/stale/knob off -> setGlobalIntel(null) restores fog-only play.
+    gsSpec.setGlobalIntel(null);
+    check(
+      "null intel clears spectator hazards entirely",
+      !gsSpec.hazardTiles().some(([c, r]) => c === 53 && r === 50) && !gsSpec.knownMineOnPath([58, 50]),
+    );
+
+    // Friendly-owned mines already arrive via the coop broadcast (allyMines) —
+    // the spectator copy is dropped so the threat field never double-counts.
+    const gsF = freshGameState();
+    gsF.applyTick(tickFrom(self(), []));
+    gsF.setFriendlies(new Set(["allyBot"]));
+    gsF.setGlobalIntel({ mines: [{ pos: [53, 50], ownerId: "allyBot" }], bots: [] });
+    check("friendly-owned spectator mines are filtered out", !gsF.hazardTiles().some(([c, r]) => c === 53 && r === 50));
+
+    // Out-of-fog hunter (server-confirmed target = us) worsens the trade read.
+    const mkDuel = (): GameState => {
+      const g = freshGameState();
+      g.applyTick(tickFrom(self(), [enemy({ bot_id: "duel", position: [51, 50], hp: 80 })]));
+      return g;
+    };
+    const gNo = mkDuel();
+    const dNo = tradeAdvantage({ gs: gNo, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: 100 }, gNo.enemies()[0]!);
+    const gYes = mkDuel();
+    gYes.setGlobalIntel({ mines: [], bots: [{ id: "third", weapon: "sword", pos: [60, 50], hp: 160, targetId: "me" }] });
+    const dYes = tradeAdvantage({ gs: gYes, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: 100 }, gYes.enemies()[0]!);
+    check("confirmed out-of-fog hunter lowers tradeAdvantage", dYes < dNo, { dNo, dYes });
+
+    const gOther = mkDuel();
+    gOther.setGlobalIntel({ mines: [], bots: [{ id: "third", weapon: "sword", pos: [60, 50], hp: 160, targetId: "someone-else" }] });
+    const dOther = tradeAdvantage({ gs: gOther, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: 100 }, gOther.enemies()[0]!);
+    check("a bot hunting someone ELSE doesn't change the trade", Math.abs(dOther - dNo) < 1e-9, { dNo, dOther });
+    check("aggro graph read-through (spectatorTargetOf)", gOther.spectatorTargetOf("third") === "someone-else");
+
+    const gOff = mkDuel();
+    gOff.setGlobalIntel({ mines: [], bots: [{ id: "third", weapon: "sword", pos: [60, 50], hp: 160, targetId: "me" }] });
+    const polOff = mergePolicy(DEFAULT_POLICY, { spectatorHunterWeight: 0 });
+    const dOff = tradeAdvantage({ gs: gOff, directive: DEFAULT_DIRECTIVE, policy: polOff, tick: 100 }, gOff.enemies()[0]!);
+    check("spectatorHunterWeight 0 disables the hunter share", Math.abs(dOff - dNo) < 1e-9, { dNo, dOff });
+
+    // New knobs ride the clamp table + Tuner patch schema like every sibling.
+    const clamped = mergePolicy(DEFAULT_POLICY, {
+      spectatorHunterWeight: 9,
+      spectatorHunterRadius: 100,
+      pathfindDangerWeight: -5,
+    });
+    check(
+      "new spectator/pathfind knobs clamp to safe ranges",
+      clamped.spectatorHunterWeight === 1 && clamped.spectatorHunterRadius === 25 && clamped.pathfindDangerWeight === 0,
+      clamped,
+    );
+    check(
+      "PolicyPatchSchema accepts the new knobs",
+      PolicyPatchSchema.safeParse({ spectatorIntel: false, spectatorHunterWeight: 0.5, pathfindDangerWeight: 2, reasoning: "x" }).success,
+    );
+
+    // Round transitions void the intel with every other transient observation.
+    const gsR = freshGameState();
+    gsR.applyTick(tickFrom(self(), []));
+    gsR.setGlobalIntel({ mines: [{ pos: [53, 50], ownerId: "v" }], bots: [] });
+    gsR.applyRoundStart({ type: "round_start", round_number: 2 } as RoundStartMsg);
+    check("round_start clears spectator intel", gsR.hazardTiles().length === 0, gsR.hazardTiles());
+  }
+
+  console.log("\ncoalition truce break (last fleet standing)");
+  {
+    const fleet = new Set(["mate1", "mate2"]);
+    check("all living outsiders are coalition -> truce over", onlyFleetRemains([{ id: "mate1" }, { id: "mate2" }], fleet));
+    check("one real enemy alive -> truce holds", !onlyFleetRemains([{ id: "mate1" }, { id: "stranger" }], fleet));
+    check("no spectator frame -> truce holds (conservative)", !onlyFleetRemains(null, fleet));
+    check("empty alive list -> truce holds", !onlyFleetRemains([], fleet));
+    check("no coalition members known -> truce holds", !onlyFleetRemains([{ id: "mate1" }], new Set()));
+
+    // With the friendly set cleared, an ex-ally is a normal target again:
+    // enemies() sees it and selectTarget picks it.
+    const gsT = freshGameState();
+    gsT.applyTick(tickFrom(self(), [enemy({ bot_id: "mate1", position: [52, 50] })]));
+    gsT.setFriendlies(new Set(["mate1"]));
+    check("truce on: coalition partner is not an enemy", gsT.enemies().length === 0);
+    gsT.setFriendlies(new Set());
+    check("truce over: ex-ally is a valid target", gsT.enemies().length === 1);
+    const pick = selectTarget({ gs: gsT, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: gsT.tick });
+    check("selectTarget engages the ex-ally", pick?.bot_id === "mate1", pick);
+    check("coopTruceBreak knob rides the clamp table", mergePolicy(DEFAULT_POLICY, { coopTruceBreak: false }).coopTruceBreak === false);
+  }
+
+  console.log("\nthreat-weighted A* retreat (pathfinder)");
+  {
+    // Weighted findPath detours around a danger stripe with a cheap gap while
+    // the unweighted planner goes straight through.
+    const stripeCost = (c: number, r: number): number => (c === 55 && r !== 45 ? 100 : 0);
+    const straight = findPath([50, 50], [60, 50], 100, () => true);
+    const weighted = findPath([50, 50], [60, 50], 100, () => true, stripeCost);
+    check("unweighted path crosses the stripe head-on", straight !== null && straight.some(([c, r]) => c === 55 && r === 50));
+    check(
+      "weighted path detours through the cheap gap",
+      weighted !== null && weighted.some(([c, r]) => c === 55 && r === 45) && !weighted.some(([c, r]) => c === 55 && r !== 45),
+      weighted,
+    );
+
+    // plannedRetreatStep: knob off -> null (callers keep the greedy step).
+    const gsPlan = freshGameState();
+    gsPlan.applyTick(tickFrom(self(), [enemy({ bot_id: "brute", position: [52, 50], attack_range: 1, threat_score: 8 })]));
+    check("pathfindDangerWeight 0 disables the planner", gsPlan.plannedRetreatStep(0) === null);
+    const step = gsPlan.plannedRetreatStep(DEFAULT_POLICY.pathfindDangerWeight);
+    check(
+      "planned retreat step is a unit step away from the threat",
+      step !== null &&
+        Math.max(Math.abs(step[0]), Math.abs(step[1])) === 1 &&
+        chebyshev([50 + step[0], 50 + step[1]], [52, 50]) > chebyshev([50, 50], [52, 50]),
+      step,
+    );
+    if (step) {
+      check("planned step lands on safe ground", gsPlan.isSafeStep(50 + step[0], 50 + step[1]), step);
+    }
+    // Nothing dangerous around -> no plan (danger at goal isn't meaningfully
+    // lower than here), so quiet phases never burn ticks on phantom retreats.
+    const gsCalm = freshGameState();
+    gsCalm.applyTick(tickFrom(self(), []));
+    check("calm field produces no planned retreat", gsCalm.plannedRetreatStep(1) === null);
   }
 
   console.log("\nlearnings-authoritative drafting + double_bounty discipline (deep dive 2)");
@@ -2233,6 +2366,15 @@ async function run(): Promise<void> {
       "loadFleet merges every bot's disk memory (bow win visible to bot0)",
       fleetSnaps.length === 2 && weapons.has("bow") && weapons.has("daggers"),
       { snaps: fleetSnaps.length, weapons: [...weapons] },
+    );
+
+    // The shared merge helper (used by BOTH the orchestrator and the engine's
+    // fallback draft) tallies wins/played across the fleet's files.
+    const rates = fleetWeaponWinRatesFromDisk(new BrainMemoryStore("bot0"));
+    check(
+      "fleetWeaponWinRatesFromDisk merges evidence across the fleet",
+      rates.bow?.played === 1 && rates.bow.wins === 1 && (rates.daggers?.played ?? 0) >= 1,
+      rates,
     );
     delete process.env.BRAIN_MEMORY_DIR;
   }

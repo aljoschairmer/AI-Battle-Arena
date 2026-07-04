@@ -13,6 +13,15 @@ import type { GridVec } from "../types/protocol";
 
 export type Passable = (col: number, row: number) => boolean;
 
+/**
+ * Optional additive per-tile entry cost for weighted A* (threat-aware
+ * routing). Must be >= 0 everywhere or the octile heuristic stops being
+ * admissible and paths silently degrade. With costs the search behaves more
+ * like Dijkstra inside high-danger pockets — still fine, the expansion cap
+ * bounds the worst case and callers pass a small window anyway.
+ */
+export type TileCost = (col: number, row: number) => number;
+
 const MAX_EXPANSIONS = 1500;
 
 interface Node {
@@ -47,6 +56,7 @@ export function findPath(
   goal: GridVec,
   size: number,
   passable: Passable,
+  tileCost?: TileCost,
 ): GridVec[] | null {
   if (start[0] === goal[0] && start[1] === goal[1]) return [start];
 
@@ -91,7 +101,7 @@ export function findPath(
       }
       const nk = key(nc, nr);
       if (closed.has(nk)) continue;
-      const tentativeG = current.g + cost;
+      const tentativeG = current.g + cost + (tileCost ? Math.max(0, tileCost(nc, nr)) : 0);
       const prevG = gScore.get(nk);
       if (prevG !== undefined && tentativeG >= prevG) continue;
       gScore.set(nk, tentativeG);
@@ -113,8 +123,9 @@ export function nextStep(
   goal: GridVec,
   size: number,
   passable: Passable,
+  tileCost?: TileCost,
 ): GridVec | null {
-  const path = findPath(start, goal, size, passable);
+  const path = findPath(start, goal, size, passable, tileCost);
   if (!path || path.length < 2) return null;
   return path[1]!;
 }

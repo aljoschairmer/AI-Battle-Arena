@@ -20,8 +20,10 @@ import type {
   TickMsg,
   Weapon,
 } from "../types/protocol";
+import { getSpectatorFeed } from "../arena/spectator";
+import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../brain/draftEvidence";
 import { Controller } from "./controller";
-import { Coalition } from "./coop";
+import { Coalition, onlyFleetRemains } from "./coop";
 import { GameState } from "./gameState";
 import { chooseFallbackLoadout } from "./loadout";
 import { buildSnapshot } from "./telemetry";
@@ -74,6 +76,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   );
   // Bot-to-bot coalition (only when a global coop bus was provided).
   const coop = opts.coopBus ? new Coalition(opts.coopBus, () => gs.selfId) : null;
+  // Public spectator feed (fog-free global state; one shared WS per process,
+  // no auth). null when disabled via ARENA_SPECTATOR=false. The engine only
+  // ever reads its cached frame — a dead feed degrades to fog-only play.
+  const spectator = getSpectatorFeed();
 
   let loadoutSent = false;
   // The arena locks the loadout once a game/round is active ("Cannot change
@@ -103,6 +109,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   // Throttle for sudden-death map refreshes (new void tiles only appear via
   // /arena/map, so we re-poll it while the flag is up — never on the tick path).
   let lastSuddenDeathMapRefresh = -1000;
+
+  // Coalition truce state (for transition logging only — the decision itself
+  // is recomputed every tick from the live spectator frame).
+  let coopTruceBroken = false;
 
   // --- Per-round telemetry accumulator (published to Brain at round_end) ---
   let roundStartTick = 0;
@@ -264,6 +274,38 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       lobbyWeapons: gs.lobbyWeapons,
       fleetIndex: fleetIndex ?? undefined,
     });
+
+    // Evidence-enforce the DETERMINISTIC fallback too, not just the Brain's
+    // plan: with slow (free-tier) models the Brain regularly loses the race
+    // against the 8s selection deadline below — measured live, the plan
+    // landed 400ms after the fallback fired and the fleet re-drafted its
+    // proven-loser weapon (daggers, ~3% over 200+ rounds) while bow ran 23%.
+    // Off the tick path (connect/lobby time); disk read is best-effort.
+    if (fleetSize > 1) {
+      try {
+        const better = enforceWeaponEvidence(
+          fallbackLoadout.weapon,
+          fleetIndex,
+          fleetSize,
+          fleetWeaponWinRatesFromDisk(),
+        );
+        if (better) {
+          const from = fallbackLoadout.weapon;
+          fallbackLoadout = chooseFallbackLoadout({
+            availableWeapons: [better],
+            modifier,
+            budget: gs.statBudget,
+            min: gs.statMin,
+            max: gs.statMax,
+            lobbyWeapons: gs.lobbyWeapons,
+            fleetIndex: fleetIndex ?? undefined,
+          });
+          log.info({ from, to: better }, "fallback draft overridden by fleet weapon evidence");
+        }
+      } catch (e) {
+        log.debug({ err: (e as Error).message }, "fallback evidence check failed — keeping ranked pick");
+      }
+    }
 
     if (!publishToBrain) {
       sendLoadout(fallbackLoadout);
@@ -473,6 +515,8 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       gs.applyRoundStart(msg);
       controller.onRoundStart();
       resetRoundTracking();
+      // Fresh round, everyone respawns — the coalition truce is back on.
+      coopTruceBroken = false;
       telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       telemetryLog.roundStart(String(msg.round_number));
       log.info(
@@ -511,17 +555,44 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         roundEnemyWeaponsSeen[e.weapon] = (roundEnemyWeaponsSeen[e.weapon] ?? 0) + 1;
       }
 
+      // Fog-free global intel — fetched BEFORE the coop block so the truce
+      // check can see the arena-wide alive list, ingested into GameState after
+      // it (the friendly filter must be current when mines are classified).
+      const intel =
+        controller.getPolicy().spectatorIntel && gs.selfId
+          ? (spectator?.engineIntel(gs.selfId) ?? null)
+          : null;
+
       // Bot-to-bot coalition: exclude allies from targeting, focus-fire a shared
       // enemy, and periodically broadcast what we see. Best-effort and additive —
       // if disabled or peers are silent, the bot fights exactly as before.
       if (coop && gs.selfId) {
-        gs.setFriendlies(coop.friendlyIds());
+        const friendlyIds = coop.friendlyIds();
+        // LAST FLEET STANDING: exactly one bot can win a round, so when the
+        // spectator frame confirms every living bot out there is coalition,
+        // the truce ends — the friendly set clears, and targeting, threat
+        // field and splash guards all revert to normal free-for-all against
+        // the ex-allies. Re-evaluated every tick: a stale feed or an enemy
+        // respawn flips it back to peace (the conservative direction).
+        const truceOver =
+          controller.getPolicy().coopTruceBreak && onlyFleetRemains(intel?.bots, friendlyIds);
+        if (truceOver !== coopTruceBroken) {
+          coopTruceBroken = truceOver;
+          log.info(
+            { fleetBotsAlive: (intel?.bots.length ?? 0) + 1 },
+            truceOver
+              ? "coalition truce ENDS — only our fleet remains, free-for-all"
+              : "coalition truce restored",
+          );
+        }
+        gs.setFriendlies(truceOver ? new Set() : friendlyIds);
         // Allies' mines are invisible to us server-side; their broadcast
         // tiles become threat-field hazards so we route around them instead
-        // of dying to our own squad's area denial.
+        // of dying to our own squad's area denial. Kept even after the truce
+        // breaks — ex-ally mines are just as lethal.
         gs.setAllyMines(coop.friendlyMines());
-        controller.setCoopFocus(coop.focus());
-        controller.setCoopRole(coop.role());
+        controller.setCoopFocus(truceOver ? null : coop.focus());
+        controller.setCoopRole(truceOver ? null : coop.role());
         if (gs.tick % COOP_EVERY_TICKS === 0) {
           const seen = gs.enemies().slice(0, 8).map((e) => ({ id: e.bot_id, hp: e.hp, pos: e.position }));
           coop.report({
@@ -537,18 +608,24 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         }
       }
 
+      // Ingest the fog-free intel (AFTER the coop block so the friendly
+      // filter is current): enemy mines become hazard tiles, the aggro graph
+      // feeds gank math + target scoring. null — feed stale/absent or knob
+      // off — clears it all, restoring exact fog-only behaviour.
+      gs.setGlobalIntel(intel);
+
       // Route this engine's per-tick telemetry to its own bot channel — three
       // interleaved engines in one process otherwise write into whichever
       // bot's file was opened last.
       telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       let action = controller.decide(gs);
-      // Server-pathed moves (move_to) walk straight through invisible ally
-      // mines — the server's A* can't know them. When the straight path
-      // crosses a broadcast mine tile, reroute with a local threat-aware step
-      // (which DOES see them) and let next tick re-plan. This was the residual
-      // teammate-kill channel after every attack-side guard: our dominant
-      // action type simply never consulted the mine map.
-      if (action.action === "move_to" && gs.allyMineOnPath(action.target_position)) {
+      // Server-pathed moves (move_to) walk straight through mines the server's
+      // A* won't route around for us — coalition allies' invisible mines AND
+      // enemy mines hidden by fog (spectator-known). When the straight path
+      // crosses one, reroute with a local threat-aware step (which DOES see
+      // them) and let next tick re-plan. Ally mines were the residual
+      // teammate-kill channel; enemy mines were silent '?' deaths.
+      if (action.action === "move_to" && gs.knownMineOnPath(action.target_position)) {
         const step = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
         if (step) action = { type: "action", tick: action.tick, action: "move", direction: step };
       }
