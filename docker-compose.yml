@@ -29,8 +29,10 @@ services:
       retries: 5
 
   # Web dashboard for the Redis bus: RedisInsight (official GUI) on port 5540.
-  # Ships pre-connected to the `redis` service via the RI_REDIS_* variables,
-  # so opening the page lands directly on the live database — no setup dialog.
+  # The RI_REDIS_* variables preconfigure the connection on builds that still
+  # support them (<= v2); the init sidecar below covers current builds (v3
+  # dropped the env path — verified live on 3.6.0), so the page lands directly
+  # on the live database either way — no setup dialog.
   redis-dashboard:
     image: redis/redisinsight:latest
     restart: unless-stopped
@@ -46,6 +48,31 @@ services:
     volumes:
       # Persists the UI's own settings/history across container restarts.
       - redisinsight-data:/data
+
+  # One-shot: registers the `redis` service in RedisInsight over its REST API
+  # (idempotent — skipped when the connection already exists), then exits.
+  redis-dashboard-init:
+    image: curlimages/curl:latest
+    depends_on:
+      redis-dashboard:
+        condition: service_started
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in $(seq 1 30); do
+          curl -sf http://redis-dashboard:5540/api/databases > /dev/null && break
+          sleep 2
+        done
+        if curl -sf http://redis-dashboard:5540/api/databases | grep -q '"battle-arena-bus"'; then
+          echo "dashboard: battle-arena-bus already registered"
+        else
+          curl -sf -X POST http://redis-dashboard:5540/api/databases \
+            -H 'Content-Type: application/json' \
+            -d '{"host":"redis","port":6379,"name":"battle-arena-bus"}' > /dev/null \
+            && echo "dashboard: battle-arena-bus registered" \
+            || echo "dashboard: auto-register failed — add host 'redis' port 6379 manually in the UI"
+        fi
 
   engine:
     build: .
