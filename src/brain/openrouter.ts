@@ -22,12 +22,29 @@ interface ChatCompletion {
 /**
  * Minimal OpenRouter chat client built on fetch — no SDK needed. Adds the
  * attribution headers OpenRouter recommends, a hard timeout (so a hung LLM can
- * never stall the strategy loop), and one retry on transient failures.
+ * never stall the strategy loop), one retry on transient failures, and a
+ * process-wide CIRCUIT BREAKER.
+ *
+ * The breaker exists because of a measured live incident: the free-tier
+ * provider went down (402 upstream balance) and six agents kept hammering it
+ * every 2.5-3s — ~1950 failed calls in one afternoon, which tripped
+ * OpenRouter's own "too many failed attempts, wait 30s" lockout (429) and
+ * kept the account locked in a spiral. Worse, every failure logged only a
+ * per-call WARN, so the outage was invisible unless you grepped for it.
+ * After BREAK_AFTER consecutive failures the circuit OPENS for COOLDOWN_MS:
+ * calls fail instantly without touching the API (the deterministic fallback
+ * plays on, exactly as designed) and ONE loud ERROR marks the outage. After
+ * the cooldown the next call probes; success closes the circuit, failure
+ * re-opens it (one ERROR per cooldown period, not thousands of WARNs).
  */
 export class OpenRouter {
+  private consecutiveFailures = 0;
+  private circuitOpenUntil = 0;
+
   constructor(
     private readonly apiKey = config.openrouter.apiKey,
     private readonly base = config.openrouter.base,
+    private readonly breaker: { after: number; cooldownMs: number } = { after: 8, cooldownMs: 90_000 },
   ) {}
 
   get enabled(): boolean {
@@ -69,11 +86,22 @@ export class OpenRouter {
   }
 
   async chat(req: ChatRequest): Promise<string> {
+    const now = Date.now();
+    if (now < this.circuitOpenUntil) {
+      throw new Error(
+        `LLM circuit open — cooling down ${Math.ceil((this.circuitOpenUntil - now) / 1000)}s after repeated provider failures`,
+      );
+    }
     const timeout = req.timeoutMs ?? config.openrouter.timeoutMs;
     let lastErr: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await this.once(req, timeout);
+        const out = await this.once(req, timeout);
+        if (this.consecutiveFailures >= this.breaker.after) {
+          log.info("LLM circuit CLOSED — provider recovered");
+        }
+        this.consecutiveFailures = 0;
+        return out;
       } catch (e) {
         lastErr = e;
         const msg = (e as Error).message;
@@ -82,6 +110,20 @@ export class OpenRouter {
         log.debug({ attempt, err: msg }, "chat attempt failed, retrying");
         await sleep(250 * (attempt + 1));
       }
+    }
+    this.consecutiveFailures += 1;
+    if (this.consecutiveFailures >= this.breaker.after) {
+      this.circuitOpenUntil = Date.now() + this.breaker.cooldownMs;
+      // ERROR on purpose (the only one this client emits): a dead LLM layer
+      // must be impossible to miss in the logs, unlike per-call WARNs.
+      log.error(
+        {
+          consecutiveFailures: this.consecutiveFailures,
+          cooldownS: Math.round(this.breaker.cooldownMs / 1000),
+          lastErr: lastErr instanceof Error ? lastErr.message.slice(0, 160) : String(lastErr),
+        },
+        "LLM circuit OPEN — provider failing repeatedly, pausing all LLM calls (deterministic fallback active)",
+      );
     }
     throw lastErr instanceof Error ? lastErr : new Error("OpenRouter chat failed");
   }
