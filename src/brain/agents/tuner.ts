@@ -71,6 +71,8 @@ export class TunerAgent extends Agent<TunerInput, PolicyPatch> {
       "- spectatorHunterRadius (6..25 tiles): how far out those hunters still count.",
       "- pathfindDangerWeight (0..3): retreat routes plan around enemy coverage via weighted A*.",
       "  Raise for wider, safer detours when fleeing; 0 = greedy single-step retreat.",
+      "- coopTruceBreak (bool): when only OUR fleet is left alive, drop the coalition truce and",
+      "  fight it out (exactly one bot can win a round). false = stay peaceful and let the zone decide.",
       "- aggression (0..1): BASELINE aggressiveness (the Tactician layers short-term deltas on top).",
       "- posture (aggressive|balanced|defensive|retreat): baseline stance for the whole session.",
       "- Per-weapon tactics (booleans): bowAlwaysCharge, daggerFlank (circle for backstabs),",

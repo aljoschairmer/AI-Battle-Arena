@@ -14,7 +14,7 @@ import { retreatAndHeal, survivalBehavior, tacticalDisengage } from "../src/engi
 import { combatBehavior } from "../src/engine/behaviors/combat";
 import { flankingPosition, grabPickup } from "../src/engine/behaviors/movement";
 import { selectTarget } from "../src/engine/behaviors/targeting";
-import { Coalition } from "../src/engine/coop";
+import { Coalition, onlyFleetRemains } from "../src/engine/coop";
 import { Channels } from "../src/bus";
 import { MemoryBus } from "../src/bus/memory";
 import { scoped } from "../src/bus";
@@ -2183,6 +2183,28 @@ async function run(): Promise<void> {
     gsR.setGlobalIntel({ mines: [{ pos: [53, 50], ownerId: "v" }], bots: [] });
     gsR.applyRoundStart({ type: "round_start", round_number: 2 } as RoundStartMsg);
     check("round_start clears spectator intel", gsR.hazardTiles().length === 0, gsR.hazardTiles());
+  }
+
+  console.log("\ncoalition truce break (last fleet standing)");
+  {
+    const fleet = new Set(["mate1", "mate2"]);
+    check("all living outsiders are coalition -> truce over", onlyFleetRemains([{ id: "mate1" }, { id: "mate2" }], fleet));
+    check("one real enemy alive -> truce holds", !onlyFleetRemains([{ id: "mate1" }, { id: "stranger" }], fleet));
+    check("no spectator frame -> truce holds (conservative)", !onlyFleetRemains(null, fleet));
+    check("empty alive list -> truce holds", !onlyFleetRemains([], fleet));
+    check("no coalition members known -> truce holds", !onlyFleetRemains([{ id: "mate1" }], new Set()));
+
+    // With the friendly set cleared, an ex-ally is a normal target again:
+    // enemies() sees it and selectTarget picks it.
+    const gsT = freshGameState();
+    gsT.applyTick(tickFrom(self(), [enemy({ bot_id: "mate1", position: [52, 50] })]));
+    gsT.setFriendlies(new Set(["mate1"]));
+    check("truce on: coalition partner is not an enemy", gsT.enemies().length === 0);
+    gsT.setFriendlies(new Set());
+    check("truce over: ex-ally is a valid target", gsT.enemies().length === 1);
+    const pick = selectTarget({ gs: gsT, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: gsT.tick });
+    check("selectTarget engages the ex-ally", pick?.bot_id === "mate1", pick);
+    check("coopTruceBreak knob rides the clamp table", mergePolicy(DEFAULT_POLICY, { coopTruceBreak: false }).coopTruceBreak === false);
   }
 
   console.log("\nthreat-weighted A* retreat (pathfinder)");

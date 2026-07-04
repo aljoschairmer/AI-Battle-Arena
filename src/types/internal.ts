@@ -232,6 +232,14 @@ export interface EnginePolicy {
   /** Tiles within which an out-of-fog hunter counts toward the trade (6..25). */
   spectatorHunterRadius: number;
   /**
+   * End the coalition truce when the spectator frame confirms only OUR fleet
+   * is still alive: exactly one bot can win a round, so the last members
+   * standing fight it out (friendly set clears — targeting, threat field and
+   * splash guards all revert to normal free-for-all). Re-evaluated per tick;
+   * a stale feed or an enemy respawn restores the truce.
+   */
+  coopTruceBreak: boolean;
+  /**
    * Threat-weighted A* for retreat/disengage/zone-return: plan a short route
    * to the safest tile in the threat window with per-tile danger folded into
    * the step cost, instead of the greedy one-tile gradient descent
@@ -335,6 +343,7 @@ export const DEFAULT_POLICY: EnginePolicy = {
   spectatorIntel: true,
   spectatorHunterWeight: 0.4,
   spectatorHunterRadius: 14,
+  coopTruceBreak: true,
   pathfindDangerWeight: 1,
   friendlySplashGuard: true,
   flankMaxDeferTicks: 6,
@@ -403,6 +412,7 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     spectatorIntel: asBool(patch.spectatorIntel, base.spectatorIntel),
     spectatorHunterWeight: clampNum(patch.spectatorHunterWeight, 0, 1, base.spectatorHunterWeight),
     spectatorHunterRadius: clampNum(patch.spectatorHunterRadius, 6, 25, base.spectatorHunterRadius),
+    coopTruceBreak: asBool(patch.coopTruceBreak, base.coopTruceBreak),
     pathfindDangerWeight: clampNum(patch.pathfindDangerWeight, 0, 3, base.pathfindDangerWeight),
     friendlySplashGuard: asBool(patch.friendlySplashGuard, base.friendlySplashGuard),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),

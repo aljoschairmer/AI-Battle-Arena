@@ -153,6 +153,7 @@ export const PolicyPatchSchema = z.object({
   spectatorIntel: z.boolean().optional(),
   spectatorHunterWeight: z.number().optional(),
   spectatorHunterRadius: z.number().optional(),
+  coopTruceBreak: z.boolean().optional(),
   pathfindDangerWeight: z.number().optional(),
   endgameZoneRadius: z.number().optional(),
   endgameTradeCaution: z.number().optional(),

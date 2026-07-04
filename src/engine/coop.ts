@@ -5,6 +5,24 @@ import { DEFAULT_COOP_DIRECTIVE, isFresher } from "../types/internal";
 
 const log = child("coop");
 
+/**
+ * LAST FLEET STANDING: true when the fog-free spectator frame shows that
+ * every living bot besides ourselves is one of OUR coalition members. Only
+ * one bot can win a round, so from that moment the truce is pointless — the
+ * engine clears its friendly set and the fleet fights it out instead of
+ * idling next to each other until the zone decides. Deliberately
+ * conservative: no frame (feed down/stale), an empty alive list, or an empty
+ * friendly set all mean "keep the truce".
+ */
+export function onlyFleetRemains(
+  aliveOthers: { id: string }[] | null | undefined,
+  friendly: Set<string>,
+): boolean {
+  if (!aliveOthers || aliveOthers.length === 0) return false;
+  if (friendly.size === 0) return false;
+  return aliveOthers.every((b) => friendly.has(b.id));
+}
+
 const MEMBER_TTL_MS = 8000; // drop an ally we haven't heard from in this long
 const ENEMY_TTL_MS = 4000; // forget an ally-reported enemy after this long
 const DIRECTIVE_STALE_MS = 12000; // ignore a Coordinator directive this old
