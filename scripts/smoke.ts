@@ -1807,6 +1807,65 @@ async function run(): Promise<void> {
     check("grappleZoneEscape=false restores walking", aOff?.action !== "grapple", aOff);
   }
 
+  console.log("\nfriendly splash guard: sword cleave / staff AoE never clip coalition allies");
+  {
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+
+    // Sword bot, enemy adjacent, ALLY also adjacent -> no swing (cleave would
+    // clip the ally); it repositions instead.
+    const gsC = freshGameState();
+    gsC.applyTick(
+      tickFrom(self({ weapon: "sword" }), [
+        enemy({ bot_id: "foe", position: [51, 50] }),
+        enemy({ bot_id: "ally", position: [50, 51] }),
+      ]),
+    );
+    gsC.setFriendlies(new Set(["ally"]));
+    const foe = gsC.enemies().find((e) => e.bot_id === "foe")!;
+    const aC = combatBehavior(ctxOf(gsC), foe);
+    check("sword + ally in the arc -> repositions instead of cleaving", aC?.action !== "attack", aC);
+
+    // Ally hugging the TARGET (2 tiles from us) also blocks the swing.
+    const gsT2 = freshGameState();
+    gsT2.applyTick(
+      tickFrom(self({ weapon: "sword" }), [
+        enemy({ bot_id: "foe", position: [51, 50] }),
+        enemy({ bot_id: "ally", position: [52, 50] }),
+      ]),
+    );
+    gsT2.setFriendlies(new Set(["ally"]));
+    const aT2 = combatBehavior(ctxOf(gsT2), gsT2.enemies().find((e) => e.bot_id === "foe")!);
+    check("sword + ally hugging the target -> holds the swing", aT2?.action !== "attack", aT2);
+
+    // No ally around -> swings exactly as before.
+    const gsFree = freshGameState();
+    gsFree.applyTick(tickFrom(self({ weapon: "sword" }), [enemy({ bot_id: "foe", position: [51, 50] })]));
+    const aFree = combatBehavior(ctxOf(gsFree), gsFree.enemies()[0]!);
+    check("sword with no ally around -> attacks as before", aFree?.action === "attack", aFree);
+
+    // Toggle restores the old behavior even with an ally adjacent.
+    const off = mergePolicy(DEFAULT_POLICY, { friendlySplashGuard: false });
+    const aOff = combatBehavior(ctxOf(gsC, off), foe);
+    check("friendlySplashGuard=false restores cleaving", aOff?.action === "attack", aOff);
+
+    // Staff: AoE tile re-aims off an ally-adjacent cluster centroid.
+    const gsS = freshGameState();
+    gsS.applyTick(
+      tickFrom(self({ weapon: "staff" }), [
+        enemy({ bot_id: "foe", position: [54, 50] }),
+        enemy({ bot_id: "ally", position: [54, 51] }),
+      ]),
+    );
+    gsS.setFriendlies(new Set(["ally"]));
+    const aS = combatBehavior(ctxOf(gsS), gsS.enemies().find((e) => e.bot_id === "foe")!);
+    check(
+      "staff never drops AoE on an ally tile (re-aims or repositions)",
+      aS === null || aS.action !== "attack" || !("target_position" in aS) || aS.target_position === undefined ||
+        Math.max(Math.abs(aS.target_position[0] - 54), Math.abs(aS.target_position[1] - 51)) > 1,
+      aS,
+    );
+  }
+
   console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
   {
     const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));

@@ -84,8 +84,31 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
         // Place the delayed AoE/burn field on the enemy cluster centroid (to catch
         // several bots) or — since the field is delayed — where this target is
         // heading rather than where it stands now (target leading).
-        const aoe = enemyCluster(ctx, 2) ?? gs.predictEnemyPos(target, ctx.policy.leadTicks);
+        let aoe = enemyCluster(ctx, 2) ?? gs.predictEnemyPos(target, ctx.policy.leadTicks);
+        // AoE is indiscriminate: never drop the burn field on a coalition ally.
+        if (ctx.policy.friendlySplashGuard && gs.allyNear(aoe, 1)) {
+          aoe = target.position;
+          if (gs.allyNear(aoe, 1)) {
+            const spacing = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+            return spacing ? move(tick, spacing) : null;
+          }
+        }
         return attackAt(tick, target.bot_id, aoe);
+      }
+
+      // Sword cleave clips every adjacent bot indiscriminately — never swing
+      // with a coalition ally in the arc (attacker-adjacent) or hugging the
+      // target. Four live teammate kills in the pass-3 prod fleet, ALL by the
+      // sword slots, forced this guard: targeting filters can't stop
+      // server-side splash. Step to spacing instead; the swing comes next
+      // tick from a clean angle.
+      if (
+        ctx.policy.friendlySplashGuard &&
+        self.weapon === "sword" &&
+        (gs.allyNear(me, 1.5) || gs.allyNear(target.position, 1))
+      ) {
+        const spacing = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+        return spacing ? move(tick, spacing) : null;
       }
 
       // Shield: bash disrupted targets for bonus damage

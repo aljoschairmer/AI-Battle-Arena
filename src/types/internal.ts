@@ -200,6 +200,13 @@ export interface EnginePolicy {
   /** Minimum tiles outside the zone edge before spending a grapple on escape. */
   grappleZoneEscapeMinDist: number;
   /**
+   * Never land indiscriminate damage on coalition allies: sword refuses to
+   * cleave with an ally in the arc, staff never drops its AoE on an ally's
+   * tile. Forced by four live teammate kills (all sword) in the pass-3 fleet —
+   * targeting filters can't stop server-side splash.
+   */
+  friendlySplashGuard: boolean;
+  /**
    * Max CONSECUTIVE ticks the dagger in-range flank deferral may hold before
    * committing to a head-on attack. 0 = never defer (attack head-on always).
    * Bounds the pass-2 audit's confirmed orbit: an unterminated defer loop let
@@ -282,6 +289,7 @@ export const DEFAULT_POLICY: EnginePolicy = {
   shoveInterruptCharged: true,
   grappleZoneEscape: true,
   grappleZoneEscapeMinDist: 4,
+  friendlySplashGuard: true,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
   idleHealBelowHpFraction: 0.75,
@@ -343,6 +351,7 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     shoveInterruptCharged: asBool(patch.shoveInterruptCharged, base.shoveInterruptCharged),
     grappleZoneEscape: asBool(patch.grappleZoneEscape, base.grappleZoneEscape),
     grappleZoneEscapeMinDist: clampNum(patch.grappleZoneEscapeMinDist, 2, 12, base.grappleZoneEscapeMinDist),
+    friendlySplashGuard: asBool(patch.friendlySplashGuard, base.friendlySplashGuard),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
     idleHealBelowHpFraction: clampNum(patch.idleHealBelowHpFraction, 0, 1, base.idleHealBelowHpFraction),

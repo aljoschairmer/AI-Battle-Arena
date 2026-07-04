@@ -154,6 +154,7 @@ export const PolicyPatchSchema = z.object({
   shoveInterruptCharged: z.boolean().optional(),
   grappleZoneEscape: z.boolean().optional(),
   grappleZoneEscapeMinDist: z.number().optional(),
+  friendlySplashGuard: z.boolean().optional(),
   flankMaxDeferTicks: z.number().optional(),
   retreatFireWhileKiting: z.boolean().optional(),
   idleHealBelowHpFraction: z.number().optional(),

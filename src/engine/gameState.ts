@@ -530,6 +530,17 @@ export class GameState {
     return this.allyMines;
   }
 
+  /** Is a coalition ally within `r` (chebyshev) of the given tile? Fog-local. */
+  allyNear(pos: GridVec, r: number): boolean {
+    for (const e of this.entities) {
+      if (e.type !== "bot") continue;
+      const b = e as NearbyBot;
+      if (!b.is_alive || !this.friendlies.has(b.bot_id)) continue;
+      if (Math.max(Math.abs(b.position[0] - pos[0]), Math.abs(b.position[1] - pos[1])) <= r) return true;
+    }
+    return false;
+  }
+
   /** Replace the known bounty board (out-of-band REST refresh). */
   setBounties(entries: { botId?: string | null; name?: string | null }[]): void {
     this.bountyIds.clear();
