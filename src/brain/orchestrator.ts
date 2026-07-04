@@ -21,7 +21,7 @@ import type {
 } from "../types/internal";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../types/internal";
 import type { LeaderboardEntry, Weapon } from "../types/protocol";
-import { enforceWeaponEvidence } from "./draftEvidence";
+import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "./draftEvidence";
 import { chooseFallbackLoadout } from "../engine/loadout";
 import { AnalystAgent } from "./agents/analyst";
 import { LoadoutAgent } from "./agents/loadout";
@@ -412,21 +412,11 @@ export class Orchestrator {
 
   /** Merge per-weapon win/played evidence across every fleet member's disk memory. */
   private fleetWeaponWinRates(): Partial<Record<Weapon, { wins: number; played: number }>> {
-    const merged: Partial<Record<Weapon, { wins: number; played: number }>> = {};
-    const add = (w: Weapon | null, won: boolean) => {
-      if (!w) return;
-      const e = merged[w] ?? { wins: 0, played: 0 };
-      e.played += 1;
-      if (won) e.wins += 1;
-      merged[w] = e;
-    };
     // Siblings' snapshots include our own persisted rounds, so disk is the
-    // single source; fall back to in-memory history when disk is empty.
-    const fleet = this.memoryStore.loadFleet();
-    if (fleet.length === 0) return this.roundHistory.summary().weaponWinRates;
-    for (const snap of fleet) {
-      for (const r of snap.rounds) add(r.ourWeapon, r.won);
-    }
+    // single source (shared with the Engine's fallback draft); fall back to
+    // in-memory history when disk is empty.
+    const merged = fleetWeaponWinRatesFromDisk(this.memoryStore);
+    if (Object.keys(merged).length === 0) return this.roundHistory.summary().weaponWinRates;
     return merged;
   }
 

@@ -21,6 +21,7 @@ import type {
   Weapon,
 } from "../types/protocol";
 import { getSpectatorFeed } from "../arena/spectator";
+import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../brain/draftEvidence";
 import { Controller } from "./controller";
 import { Coalition } from "./coop";
 import { GameState } from "./gameState";
@@ -269,6 +270,38 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       lobbyWeapons: gs.lobbyWeapons,
       fleetIndex: fleetIndex ?? undefined,
     });
+
+    // Evidence-enforce the DETERMINISTIC fallback too, not just the Brain's
+    // plan: with slow (free-tier) models the Brain regularly loses the race
+    // against the 8s selection deadline below — measured live, the plan
+    // landed 400ms after the fallback fired and the fleet re-drafted its
+    // proven-loser weapon (daggers, ~3% over 200+ rounds) while bow ran 23%.
+    // Off the tick path (connect/lobby time); disk read is best-effort.
+    if (fleetSize > 1) {
+      try {
+        const better = enforceWeaponEvidence(
+          fallbackLoadout.weapon,
+          fleetIndex,
+          fleetSize,
+          fleetWeaponWinRatesFromDisk(),
+        );
+        if (better) {
+          const from = fallbackLoadout.weapon;
+          fallbackLoadout = chooseFallbackLoadout({
+            availableWeapons: [better],
+            modifier,
+            budget: gs.statBudget,
+            min: gs.statMin,
+            max: gs.statMax,
+            lobbyWeapons: gs.lobbyWeapons,
+            fleetIndex: fleetIndex ?? undefined,
+          });
+          log.info({ from, to: better }, "fallback draft overridden by fleet weapon evidence");
+        }
+      } catch (e) {
+        log.debug({ err: (e as Error).message }, "fallback evidence check failed — keeping ranked pick");
+      }
+    }
 
     if (!publishToBrain) {
       sendLoadout(fallbackLoadout);

@@ -36,7 +36,7 @@ import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
 import { TelemetryLog } from "../src/engine/telemetryLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
 import { StrategistAgent } from "../src/brain/agents/strategist";
-import { enforceWeaponEvidence } from "../src/brain/draftEvidence";
+import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../src/brain/draftEvidence";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
@@ -2344,6 +2344,15 @@ async function run(): Promise<void> {
       "loadFleet merges every bot's disk memory (bow win visible to bot0)",
       fleetSnaps.length === 2 && weapons.has("bow") && weapons.has("daggers"),
       { snaps: fleetSnaps.length, weapons: [...weapons] },
+    );
+
+    // The shared merge helper (used by BOTH the orchestrator and the engine's
+    // fallback draft) tallies wins/played across the fleet's files.
+    const rates = fleetWeaponWinRatesFromDisk(new BrainMemoryStore("bot0"));
+    check(
+      "fleetWeaponWinRatesFromDisk merges evidence across the fleet",
+      rates.bow?.played === 1 && rates.bow.wins === 1 && (rates.daggers?.played ?? 0) >= 1,
+      rates,
     );
     delete process.env.BRAIN_MEMORY_DIR;
   }

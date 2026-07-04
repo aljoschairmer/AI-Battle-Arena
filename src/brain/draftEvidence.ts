@@ -1,4 +1,5 @@
 import type { Weapon } from "../types/protocol";
+import { BrainMemoryStore } from "../shared/memoryStore";
 
 /**
  * Deterministic evidence enforcement for the fleet draft. The Loadout LLM
@@ -67,4 +68,30 @@ export function enforceWeaponEvidence(
   // while bow ran 20%+ in the same fleet. A banned pick beats archetype
   // purity only until the evidence is overwhelming.
   return bestIn(allowed) ?? bestIn(Object.keys(rates) as Weapon[]);
+}
+
+/**
+ * Merge per-weapon win/played evidence across every fleet member's on-disk
+ * memory (see BrainMemoryStore.loadFleet for why fleet-wide, not per-bot).
+ * Shared by the Brain's orchestrator AND the Engine's fallback draft: with
+ * slow (free-tier) models the Brain regularly loses the race against the
+ * engine's 8s selection deadline, so the deterministic fallback is the
+ * ACTUAL draft — it needs the same evidence check or it happily re-drafts
+ * the fleet's proven-loser weapon every time the LLM is late. Boot/draft
+ * time only, best-effort ({} on any read failure).
+ */
+export function fleetWeaponWinRatesFromDisk(
+  store: BrainMemoryStore = new BrainMemoryStore(),
+): WeaponWinRates {
+  const merged: WeaponWinRates = {};
+  for (const snap of store.loadFleet()) {
+    for (const r of snap.rounds) {
+      if (!r.ourWeapon) continue;
+      const e = merged[r.ourWeapon] ?? { wins: 0, played: 0 };
+      e.played += 1;
+      if (r.won) e.wins += 1;
+      merged[r.ourWeapon] = e;
+    }
+  }
+  return merged;
 }
