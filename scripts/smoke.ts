@@ -1909,6 +1909,33 @@ async function run(): Promise<void> {
     const aClear = combatBehavior(ctxOf(gsClear), gsClear.enemies().find((e) => e.bot_id === "foe")!);
     check("bow with a clear lane fires as before", aClear?.action === "attack", aClear);
 
+    // Grapple yank drags the target's body along the pull line — blocked when
+    // an ally stands on it (two live kills by the grapple slot).
+    const gsG = freshGameState();
+    gsG.applyTick(
+      tickFrom(self({ weapon: "grapple", grapple_charges: 2, grapple_cooldown: 0 }), [
+        enemy({ bot_id: "foe", position: [58, 50] }),
+        enemy({ bot_id: "ally", position: [54, 50] }),
+      ]),
+    );
+    gsG.setFriendlies(new Set(["ally"]));
+    const aG = combatBehavior(ctxOf(gsG), gsG.enemies().find((e) => e.bot_id === "foe")!);
+    check(
+      "grapple never yanks a target through an ally on the pull line",
+      !(aG?.action === "grapple" && aG.target === "foe"),
+      aG,
+    );
+    const gsGClear = freshGameState();
+    gsGClear.applyTick(
+      tickFrom(self({ weapon: "grapple", grapple_charges: 2, grapple_cooldown: 0 }), [
+        enemy({ bot_id: "foe", position: [58, 50] }),
+        enemy({ bot_id: "ally", position: [54, 45] }),
+      ]),
+    );
+    gsGClear.setFriendlies(new Set(["ally"]));
+    const aGC = combatBehavior(ctxOf(gsGClear), gsGClear.enemies().find((e) => e.bot_id === "foe")!);
+    check("grapple with a clear pull line yanks as before", aGC?.action === "grapple" && aGC.target === "foe", aGC);
+
     // Retreat mine suppressed when an ally trails within 6 tiles.
     const ctlM = new Controller();
     ctlM.onRoundStart();

@@ -185,17 +185,23 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
     if (gwAction) return gwAction;
   }
 
+  // A grapple yank drags the target's BODY along the line to us — an ally on
+  // that path gets slammed (two live teammate kills by the grapple slot,
+  // mechanism invisible to the attack-path fire-lane guard because these
+  // branches return before it).
+  const pullLaneClear = !ctx.policy.friendlySplashGuard || !gs.allyInFireLane(target.position);
+
   // Grapple weapon: use position-grapple to anchor self to walls when kiting ranged
   if (self.weapon === "grapple" && self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
     // Primary: pull target toward us
-    if (d <= 12 && target.has_los) {
+    if (d <= 12 && target.has_los && pullLaneClear) {
       return grappleTarget(tick, target.bot_id);
     }
   }
 
   // Universal grapple-to-target for melee weapons: close the gap (LLM-tunable threshold).
   if (!profile.ranged && self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
-    if (d > range + ctx.policy.grappleCloseMinGap && d <= 12 && target.has_los) {
+    if (d > range + ctx.policy.grappleCloseMinGap && d <= 12 && target.has_los && pullLaneClear) {
       return grappleTarget(tick, target.bot_id);
     }
   }
