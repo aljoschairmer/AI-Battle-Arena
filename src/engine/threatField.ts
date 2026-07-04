@@ -66,6 +66,14 @@ export class ThreatField {
           if (chebyshev(cell, hz) <= 1) danger += 50;
         }
 
+        // Coalition allies' broadcast mines: the server hides mines from
+        // non-owners (allies included), so they never appear in `hazards` —
+        // without this teammates walk blind into each other's minefields
+        // (observed live as two coalition kills in the pass-3 prod run).
+        for (const am of gs.allyMineTiles()) {
+          if (chebyshev(cell, am) <= 1) danger += 50;
+        }
+
         grid[(row - originRow) * w + (col - originCol)] = danger;
       }
     }

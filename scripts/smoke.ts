@@ -1388,6 +1388,39 @@ async function run(): Promise<void> {
       { b: coopB.focus(), a: coopA.focus() },
     );
 
+    // Ally minefield sharing (pass-3 live fix): the server hides mines from
+    // non-owners, so coalition partners walked blind into each other's mines
+    // (two live coalition kills). Allies broadcast believed mine tiles; the
+    // threat field treats them as hazards.
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [], focusVote: null, mines: [[60, 60], [61, 60]] });
+    await new Promise((r) => setTimeout(r, 10));
+    check(
+      "ally mine tiles reach the coalition (B sees A's mines)",
+      coopB.friendlyMines().some(([x, y]) => x === 60 && y === 60) && coopB.friendlyMines().length === 2,
+      coopB.friendlyMines(),
+    );
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [], focusVote: null, mines: [] });
+    await new Promise((r) => setTimeout(r, 10));
+    check("an ally's empty mine list clears its previous tiles", coopB.friendlyMines().length === 0, coopB.friendlyMines());
+
+    // Own-mine bookkeeping + threat-field integration.
+    const gsM = freshGameState();
+    gsM.applyTick(tickFrom(self({ position: [55, 55] }), []));
+    gsM.noteIssuedAction({ type: "action", tick: 100, action: "place_mine" });
+    check(
+      "issued place_mine is remembered at our position",
+      gsM.ownMinePositions().length === 1 && gsM.ownMinePositions()[0]![0] === 55,
+      gsM.ownMinePositions(),
+    );
+    const gsT = freshGameState();
+    gsT.applyTick(tickFrom(self(), []));
+    const calm = gsT.threatField().danger(60, 60);
+    gsT.setAllyMines([[60, 60] as [number, number]]);
+    const mined = gsT.threatField().danger(60, 60);
+    check("ally mine tile reads as a hazard in the threat field", mined >= calm + 50, { calm, mined });
+    gsT.applyRoundStart({ type: "round_start", round_number: 99, round_modifier: "", bots_in_round: 4 } as RoundStartMsg);
+    check("round transition clears ally-mine beliefs", gsT.threatField().danger(60, 60) < mined, gsT.allyMineTiles());
+
     // Coalition rides the global channel, not a per-bot scope.
     check("coalition uses the global coop channel", Channels.coop === "arena:coop", Channels.coop);
     coopA.stop();

@@ -34,6 +34,8 @@ export class Coalition {
    */
   private readonly everMembers = new Set<string>();
   private readonly enemies = new Map<string, { hp: number; ts: number }>(); // enemyId -> latest
+  /** Latest broadcast mine tiles per ally (mines are invisible to non-owners). */
+  private readonly memberMines = new Map<string, { tiles: [number, number][]; ts: number }>();
   private coopDirective: CoopDirective = { ...DEFAULT_COOP_DIRECTIVE };
   private unsub: (() => void) | null = null;
   private unsubDirective: (() => void) | null = null;
@@ -49,6 +51,9 @@ export class Coalition {
       const now = Date.now();
       this.members.set(m.botId, now);
       this.everMembers.add(m.botId);
+      // Latest report wins wholesale: an ally with no live mines broadcasts
+      // an empty list, clearing its previous tiles.
+      this.memberMines.set(m.botId, { tiles: Array.isArray(m.mines) ? m.mines : [], ts: now });
       // A member is never an enemy: purge it from the shared pool (it may have
       // been inserted by an ally whose own friendly set was momentarily stale)
       // and never let a report re-insert any known member.
@@ -128,6 +133,31 @@ export class Coalition {
       return d.focusTargetId;
     }
     return best;
+  }
+
+  /**
+   * All coalition allies' broadcast mine tiles (deduped). TTL'd on the
+   * MEMBER_TTL_MS recency window: a silent ally's mines eventually expire with
+   * the round anyway, and stale tiles would phantom-block ground forever.
+   */
+  friendlyMines(): [number, number][] {
+    const now = Date.now();
+    const out: [number, number][] = [];
+    const seen = new Set<string>();
+    for (const [id, m] of this.memberMines) {
+      if (now - m.ts >= MEMBER_TTL_MS) {
+        this.memberMines.delete(id);
+        continue;
+      }
+      for (const t of m.tiles) {
+        const key = `${t[0]},${t[1]}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(t);
+        }
+      }
+    }
+    return out;
   }
 
   /** Our assigned squad role (hold/flank/support), or null with no fresh call. */

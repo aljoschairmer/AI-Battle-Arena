@@ -438,6 +438,14 @@ export interface CoopMessage {
   enemies: { id: string; hp: number; pos: GridVec }[];
   /** Our vote for the focus-fire target (lowest-HP enemy we see), or null. */
   focusVote: string | null;
+  /**
+   * Tiles where WE have live mines planted. The server hides mines from
+   * everyone but their owner — including coalition allies — so without this
+   * broadcast teammates walk blind into each other's minefields (observed
+   * live as two coalition kills in the pass-3 prod run). Optional for
+   * backward compatibility with older peers.
+   */
+  mines?: GridVec[];
 }
 
 /**

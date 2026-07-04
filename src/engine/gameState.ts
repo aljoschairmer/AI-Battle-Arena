@@ -62,6 +62,11 @@ export class GameState {
   private bountyIds = new Set<string>();
   private bountyNames = new Set<string>();
 
+  /** Where WE planted mines (believed, from issued actions; capped at 3). */
+  private ownMines: { pos: GridVec; ts: number }[] = [];
+  /** Coalition allies' broadcast mine tiles — treated as hazards to route around. */
+  private allyMines: GridVec[] = [];
+
   /** True while we are in the post-death wait before a respawn. */
   isRespawning = false;
 
@@ -160,6 +165,10 @@ export class GameState {
     this.nearbyMines = 0;
     this.lastSeenEnemies = {};
     this.enemyVel = {};
+    // Mines don't survive round transitions (everyone respawns on a fresh
+    // field); stale beliefs would phantom-block tiles all next round.
+    this.ownMines = [];
+    this.allyMines = [];
     this.threatCache = null;
     this.pendingDodge = null;
     this.lastTargetId = null;
@@ -192,6 +201,12 @@ export class GameState {
   noteIssuedAction(a: ClientAction): void {
     if (a.action === "shove") {
       this.lastShoveTick = a.tick;
+    } else if (a.action === "place_mine") {
+      // Believed own-mine positions, broadcast to coalition allies so they
+      // can route around them (the server hides mines from non-owners, allies
+      // included). Server cap is 3 live mines per bot; oldest belief drops.
+      this.ownMines.push({ pos: [...this.position] as GridVec, ts: Date.now() });
+      if (this.ownMines.length > 3) this.ownMines.shift();
     } else if (a.action === "use_gravity_well") {
       this.gravityWellCharges = Math.max(0, this.gravityWellCharges - 1);
     } else if (a.action === "use_item") {
@@ -471,6 +486,25 @@ export class GameState {
     return (this.self?.effects ?? []).some(
       (e) => e.name === "burn" || e.name === "poison" || e.name === "dot",
     );
+  }
+
+  /** Believed positions of our own live mines (for the coalition broadcast). */
+  ownMinePositions(maxAgeMs = 90_000): GridVec[] {
+    const now = Date.now();
+    return this.ownMines.filter((m) => now - m.ts <= maxAgeMs).map((m) => m.pos);
+  }
+
+  /** Replace the coalition allies' broadcast mine tiles. */
+  setAllyMines(tiles: GridVec[]): void {
+    this.allyMines = tiles;
+    // The threat field bakes these in — never serve a cached field built
+    // against the old tile set (ordering vs applyTick must not matter).
+    this.threatCache = null;
+  }
+
+  /** Coalition allies' mine tiles — hazards for threat-field routing. */
+  allyMineTiles(): GridVec[] {
+    return this.allyMines;
   }
 
   /** Replace the known bounty board (out-of-band REST refresh). */

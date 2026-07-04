@@ -11,8 +11,8 @@ export interface RoundOutcome {
   ourWeapon: Weapon | null;
   kills: number;
   deaths: number;
-  /** bot_ids + names that killed us this round */
-  killedBy: { botId: string; name: string; weapon: Weapon }[];
+  /** bot_ids + names that killed us this round ("" weapon = unknown) */
+  killedBy: { botId: string; name: string; weapon: Weapon | "" }[];
   /** bot_ids + names we killed this round */
   weKilled: { botId: string; name: string; weapon: Weapon }[];
   /** Weapons we saw on enemies this round */
@@ -229,9 +229,35 @@ export class OpponentRegistry {
     }
   }
 
-  recordKilledUs(botId: string, name: string, weapon: Weapon, round: number): void {
-    this.recordSighting(botId, name, weapon, round);
-    const p = this.profiles.get(botId)!;
+  recordKilledUs(botId: string, name: string, weapon: Weapon | "", round: number): void {
+    if (weapon) {
+      this.recordSighting(botId, name, weapon, round);
+      const p = this.profiles.get(botId)!;
+      p.killsVsUs++;
+      return;
+    }
+    // Unknown weapon: still credit the kill against us, but don't pollute the
+    // weapons-seen histogram with a guess.
+    let p = this.profiles.get(botId);
+    if (!p) {
+      p = {
+        botId,
+        name,
+        elo: 1000,
+        weaponsSeen: {},
+        primaryWeapon: null,
+        killsVsUs: 0,
+        deathsVsUs: 0,
+        roundsFaced: 0,
+        lastSeenRound: -1,
+      };
+      this.profiles.set(botId, p);
+    }
+    p.name = name || p.name;
+    if (p.lastSeenRound !== round) {
+      p.lastSeenRound = round;
+      p.roundsFaced++;
+    }
     p.killsVsUs++;
   }
 

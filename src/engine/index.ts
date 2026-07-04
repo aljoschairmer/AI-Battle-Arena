@@ -447,6 +447,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       // if disabled or peers are silent, the bot fights exactly as before.
       if (coop && gs.selfId) {
         gs.setFriendlies(coop.friendlyIds());
+        // Allies' mines are invisible to us server-side; their broadcast
+        // tiles become threat-field hazards so we route around them instead
+        // of dying to our own squad's area denial.
+        gs.setAllyMines(coop.friendlyMines());
         controller.setCoopFocus(coop.focus());
         controller.setCoopRole(coop.role());
         if (gs.tick % COOP_EVERY_TICKS === 0) {
@@ -461,6 +465,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
             hp: gs.self?.hp ?? 0,
             enemies: seen,
             focusVote,
+            mines: gs.ownMinePositions(),
           });
         }
       }
@@ -507,7 +512,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         (e) => e.type === "bot" && e.bot_id === msg.killed_by,
       ) as { name?: string; weapon?: Weapon } | undefined;
       const killerName = msg.killer_name || killerEntity?.name || "";
-      const killerWeapon: Weapon = msg.weapon_used || killerEntity?.weapon || "sword";
+      // "" when neither the frame nor our last-seen entities know the weapon —
+      // an honest unknown. (A guessed default here sent the pass-3
+      // friendly-fire investigation chasing a phantom sword.)
+      const killerWeapon: Weapon | "" = msg.weapon_used || killerEntity?.weapon || "";
       log.info({ by: killerName || msg.killed_by, weapon: killerWeapon, respawn: msg.respawn }, "died");
       roundKilledBy.push({ botId: msg.killed_by, name: killerName, weapon: killerWeapon });
       if (msg.respawn) gs.isRespawning = true;
