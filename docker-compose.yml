@@ -87,7 +87,13 @@ services:
     depends_on:
       redis-dashboard:
         condition: service_started
-    command: ["tunnel", "--no-autoupdate", "--url", "http://redis-dashboard:5540"]
+    # http2 = edge connection over TCP:7844 instead of QUIC (UDP:7844) —
+    # survives UDP-blocking firewalls. Note: a bare `tunnel run` needs a NAMED
+    # tunnel (Cloudflare account + token); this stays a token-less quick
+    # tunnel. For a named tunnel with a stable domain, set TUNNEL_TOKEN in
+    # .env and swap the command for:
+    #   ["tunnel", "--no-autoupdate", "run", "--protocol", "http2", "--token", "${TUNNEL_TOKEN}"]
+    command: ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", "http://redis-dashboard:5540"]
 
   engine:
     build: .
