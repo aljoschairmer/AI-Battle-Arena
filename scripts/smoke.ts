@@ -2052,6 +2052,33 @@ async function run(): Promise<void> {
       "scoped stores use distinct files (parallel bots don't clobber)",
       new BrainMemoryStore("bot1").load() === null,
     );
+
+    // Fleet-wide evidence: a second bot's snapshot on disk is visible to the
+    // first bot's loadFleet() — the weapon proof doesn't stay siloed.
+    const store3 = new BrainMemoryStore("bot1");
+    const h3 = new RoundHistory(30);
+    h3.push({
+      round: 6,
+      roundModifier: "none",
+      ourWeapon: "bow",
+      kills: 3,
+      deaths: 0,
+      killedBy: [],
+      weKilled: [],
+      enemyWeaponsSeen: {},
+      won: true,
+      ticksSurvived: 1500,
+      hpAtDeath: 0,
+    });
+    store3.save({ rounds: h3.toJSON(), profiles: [], insights: null });
+    store3.flush();
+    const fleetSnaps = new BrainMemoryStore("bot0").loadFleet();
+    const weapons = new Set(fleetSnaps.flatMap((s) => s.rounds.map((r) => r.ourWeapon)));
+    check(
+      "loadFleet merges every bot's disk memory (bow win visible to bot0)",
+      fleetSnaps.length === 2 && weapons.has("bow") && weapons.has("daggers"),
+      { snaps: fleetSnaps.length, weapons: [...weapons] },
+    );
     delete process.env.BRAIN_MEMORY_DIR;
   }
 

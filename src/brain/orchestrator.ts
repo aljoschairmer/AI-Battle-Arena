@@ -19,7 +19,7 @@ import type {
   LoadoutRequest,
 } from "../types/internal";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../types/internal";
-import type { LeaderboardEntry } from "../types/protocol";
+import type { LeaderboardEntry, Weapon } from "../types/protocol";
 import { AnalystAgent } from "./agents/analyst";
 import { LoadoutAgent } from "./agents/loadout";
 import { StrategistAgent } from "./agents/strategist";
@@ -290,9 +290,10 @@ export class Orchestrator {
         opponentProfiles: this.opponents.forPrompt(8),
         fleetIndex: req.context.fleetIndex ?? null,
         fleetSize: req.context.fleetSize ?? 1,
-        // Learned per-weapon evidence from OUR recent rounds — the draft
-        // should weigh proven wins over theoretical tier lists.
-        weaponWinRates: this.roundHistory.summary().weaponWinRates,
+        // Learned per-weapon evidence — FLEET-WIDE, not just this bot's own
+        // history: a bot that always drafted X never accumulates evidence
+        // about Y; the proof lives in a sibling's memory file.
+        weaponWinRates: this.fleetWeaponWinRates(),
       },
     });
 
@@ -353,6 +354,26 @@ export class Orchestrator {
     await Promise.all([this.runAnalyst(outcome), this.runTuner(outcome)]);
     // And once more with the fresh insights included.
     this.persistMemory();
+  }
+
+  /** Merge per-weapon win/played evidence across every fleet member's disk memory. */
+  private fleetWeaponWinRates(): Partial<Record<Weapon, { wins: number; played: number }>> {
+    const merged: Partial<Record<Weapon, { wins: number; played: number }>> = {};
+    const add = (w: Weapon | null, won: boolean) => {
+      if (!w) return;
+      const e = merged[w] ?? { wins: 0, played: 0 };
+      e.played += 1;
+      if (won) e.wins += 1;
+      merged[w] = e;
+    };
+    // Siblings' snapshots include our own persisted rounds, so disk is the
+    // single source; fall back to in-memory history when disk is empty.
+    const fleet = this.memoryStore.loadFleet();
+    if (fleet.length === 0) return this.roundHistory.summary().weaponWinRates;
+    for (const snap of fleet) {
+      for (const r of snap.rounds) add(r.ourWeapon, r.won);
+    }
+    return merged;
   }
 
   private persistMemory(): void {
