@@ -315,6 +315,23 @@ docker compose up --build
 docker compose up --build redis engine
 ```
 
+**Redis live dashboard (web UI):** the `redis-dashboard` service serves
+[RedisInsight](https://redis.io/insight/) on <http://localhost:5540>,
+pre-connected to the bus — no setup dialog on first open:
+
+```bash
+docker compose up redis redis-dashboard
+```
+
+- **Browser** tab → the KV mirror (`bot0:arena:kv:*`): current directive,
+  tuning policy, learning insights (entries carry a ~300s TTL, so an idle
+  bot's keys expire — that's normal, not a bug).
+- **Pub/Sub** tool → subscribe to pattern `*` to stream the live bus traffic
+  (snapshots, directives, loadout plans, coalition reports) as it flows
+  between Engine and Brain.
+- Only meaningful with `BUS=redis` (the compose topology). A `BUS=memory`
+  process keeps the bus in-process and Redis stays empty.
+
 ### 3. Verify
 
 ```bash
