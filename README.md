@@ -209,6 +209,7 @@ npm run dev
 | `TELEMETRY_LOG=1` + `analyze-telemetry.ts` | per-tick decision traces: which priority rung claimed each tick and why |
 | `docker compose up redis redis-dashboard redis-dashboard-init` | **live web dashboard** — [RedisInsight](https://redis.io/insight/) on <http://localhost:5540>, pre-connected; Browser tab = current directives/policies/insights (KV mirror), Pub/Sub tab = the live Engine↔Brain traffic |
 | `docker compose up -d redis-dashboard-tunnel` | public quick-tunnel URL for the dashboard (`docker compose logs redis-dashboard-tunnel \| grep trycloudflare`) — unauthenticated, share with care |
+| `npm run knowledge:dump` / [`data/knowledge/`](data/knowledge/) | **repo-persisted learning**: learned policies + insights (Redis KV) and brain memory (rounds, opponent profiles) snapshot into the repo — written automatically on every graceful shutdown, replayed automatically on start (missing-only, live state always wins; `KNOWLEDGE_RESTORE=0` disables). Commit the folder and a fresh clone starts with everything the fleet ever learned. |
 
 ## ⚙️ Configuration
 

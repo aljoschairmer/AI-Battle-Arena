@@ -2,6 +2,7 @@ import { assertConfigForRole, config, configWarnings, llmEnabled, runsBrain, run
 import { getBus, scoped } from "./bus";
 import { startBrain, startCoopCoordinator, type BrainHandle } from "./brain";
 import { startEngine, type EngineHandle } from "./engine";
+import { dumpKnowledge, restoreKnowledge } from "./shared/knowledge";
 import { logger } from "./shared/logger";
 import { installFetchProxy } from "./shared/proxy";
 
@@ -43,6 +44,17 @@ async function main(): Promise<void> {
   if (config.bus === "redis" && !busHealthy) {
     logger.warn("Redis ping failed — workers will keep retrying in the background");
   }
+  // Replay the committed knowledge dump (data/knowledge/) BEFORE any brain
+  // starts: seeds the KV mirror (learned policies/insights) and the brain
+  // memory files, missing-only — live state and local learning always win.
+  // A fresh clone/container starts with everything the fleet ever learned.
+  const knowledgeScopes = [...new Set(["", ...bots.map((b) => b.scope)])];
+  try {
+    await restoreKnowledge(bus);
+  } catch (e) {
+    logger.warn({ err: (e as Error).message }, "knowledge restore failed — starting without seed");
+  }
+
   // Split-deployment trap: bus scopes (bot0:, bot1:, ...) are derived from the
   // key COUNT. A ROLE=brain process whose env lacks the engine process's
   // ARENA_API_KEYS listens on the UNSCOPED channels while the engines publish
@@ -108,6 +120,16 @@ async function main(): Promise<void> {
       } catch (e) {
         logger.warn({ err: (e as Error).message }, "error during shutdown");
       }
+    }
+    // Snapshot everything learned into the repo dump on every stop — AFTER
+    // the handles stopped (orchestrator.stop() flushes brain memory to disk)
+    // and BEFORE the bus closes (the KV mirror is still readable). Commit
+    // data/knowledge/ to carry the learning to the next clone/container.
+    try {
+      const dumped = await dumpKnowledge(bus, knowledgeScopes);
+      logger.info(dumped, "knowledge dumped to repo");
+    } catch (e) {
+      logger.warn({ err: (e as Error).message }, "knowledge dump failed — learning stays in logs/ only");
     }
     await bus.close();
     process.exit(0);
