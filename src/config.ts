@@ -190,10 +190,14 @@ export const config = {
     siteUrl: str("OPENROUTER_SITE_URL", "https://arena.angel-serv.com"),
     appName: str("OPENROUTER_APP_NAME", "ai-battle-arena-bot"),
     models: {
-      strategist: str("OPENROUTER_MODEL_STRATEGIST", "anthropic/claude-sonnet-4.6"),
-      loadout: str("OPENROUTER_MODEL_LOADOUT", "anthropic/claude-sonnet-4.6"),
-      tactician: str("OPENROUTER_MODEL_TACTICIAN", "anthropic/claude-haiku-4.5"),
-      coordinator: str("OPENROUTER_MODEL_COORDINATOR", "anthropic/claude-sonnet-4.6"),
+      // Free-tier defaults: the account ran out of OpenRouter credits mid-pass
+      // and every paid call 402'd. The deterministic evidence enforcement in
+      // the orchestrator covers for weaker draft compliance; set the env vars
+      // to paid models when credits are available.
+      strategist: str("OPENROUTER_MODEL_STRATEGIST", "qwen/qwen3-next-80b-a3b-instruct:free"),
+      loadout: str("OPENROUTER_MODEL_LOADOUT", "qwen/qwen3-next-80b-a3b-instruct:free"),
+      tactician: str("OPENROUTER_MODEL_TACTICIAN", "qwen/qwen3-next-80b-a3b-instruct:free"),
+      coordinator: str("OPENROUTER_MODEL_COORDINATOR", "qwen/qwen3-next-80b-a3b-instruct:free"),
     },
     tacticianIntervalMs: int("TACTICIAN_INTERVAL_MS", 2500),
     // Floor of 1s: a zero/negative timeout (typo'd env) would abort every LLM
