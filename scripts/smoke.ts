@@ -2019,8 +2019,8 @@ async function run(): Promise<void> {
     };
     check("index 0 proven-loser pick is overridden to the proven winner", enforceWeaponEvidence("daggers", 0, 3, rates) === "bow");
     check(
-      "slot 2 keeps its banned pick when its archetype has no proven winner",
-      enforceWeaponEvidence("sword", 2, 3, rates) === null,
+      "slot 2 with a dead archetype promotes to the GLOBAL proven winner",
+      enforceWeaponEvidence("sword", 2, 3, rates) === "bow",
     );
     check("slot 1 loser pick promotes to bow (in its archetype)", enforceWeaponEvidence("staff", 1, 3, { ...rates, staff: { wins: 1, played: 20 } }) === "bow");
     check("solo bots are never overridden", enforceWeaponEvidence("daggers", null, 1, rates) === null);

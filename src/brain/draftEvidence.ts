@@ -47,15 +47,24 @@ export function enforceWeaponEvidence(
   if (pickRate === null || pickRate >= BAN_RATE) return null; // unproven or fine
 
   const allowed = SLOT_WEAPONS[fleetIndex] ?? (Object.keys(rates) as Weapon[]);
-  let best: Weapon | null = null;
-  let bestRate = PROMOTE_RATE;
-  for (const w of allowed) {
-    if (w === pick) continue;
-    const r = rateOf(rates, w);
-    if (r !== null && r >= bestRate) {
-      bestRate = r;
-      best = w;
+  const bestIn = (set: Weapon[]): Weapon | null => {
+    let best: Weapon | null = null;
+    let bestRate = PROMOTE_RATE;
+    for (const w of set) {
+      if (w === pick) continue;
+      const r = rateOf(rates, w);
+      if (r !== null && r >= bestRate) {
+        bestRate = r;
+        best = w;
+      }
     }
-  }
-  return best;
+    return best;
+  };
+  // Prefer a proven winner inside the slot's archetype; when the WHOLE
+  // archetype is losing/unproven, fall back to the global proven best —
+  // measured live: the frontline slot sat on a 7% spear for 29 rounds
+  // because sword (2%) and shield (unproven) were its only in-set options
+  // while bow ran 20%+ in the same fleet. A banned pick beats archetype
+  // purity only until the evidence is overwhelming.
+  return bestIn(allowed) ?? bestIn(Object.keys(rates) as Weapon[]);
 }
