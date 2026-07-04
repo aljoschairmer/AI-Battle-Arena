@@ -36,6 +36,7 @@ import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
 import { TelemetryLog } from "../src/engine/telemetryLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
 import { StrategistAgent } from "../src/brain/agents/strategist";
+import { enforceWeaponEvidence } from "../src/brain/draftEvidence";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
@@ -1986,6 +1987,25 @@ async function run(): Promise<void> {
         new StrategistAgent()["systemPrompt"]().includes("do NOT raise aggression") &&
         new TacticianAgent()["systemPrompt"]().includes("MORE cautious"),
     );
+  }
+
+  console.log("\ndeterministic draft-evidence enforcement");
+  {
+    const rates = {
+      daggers: { wins: 2, played: 99 },
+      bow: { wins: 25, played: 123 },
+      sword: { wins: 2, played: 80 },
+      staff: { wins: 0, played: 3 },
+    };
+    check("index 0 proven-loser pick is overridden to the proven winner", enforceWeaponEvidence("daggers", 0, 3, rates) === "bow");
+    check(
+      "slot 2 keeps its banned pick when its archetype has no proven winner",
+      enforceWeaponEvidence("sword", 2, 3, rates) === null,
+    );
+    check("slot 1 loser pick promotes to bow (in its archetype)", enforceWeaponEvidence("staff", 1, 3, { ...rates, staff: { wins: 1, played: 20 } }) === "bow");
+    check("solo bots are never overridden", enforceWeaponEvidence("daggers", null, 1, rates) === null);
+    check("unproven picks (<10 played) are never overridden", enforceWeaponEvidence("spear", 0, 3, rates) === null);
+    check("healthy picks stand", enforceWeaponEvidence("bow", 1, 3, rates) === null);
   }
 
   console.log("\nally repulsion: the pack spaces itself so splash can't form");

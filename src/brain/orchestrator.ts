@@ -20,6 +20,8 @@ import type {
 } from "../types/internal";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../types/internal";
 import type { LeaderboardEntry, Weapon } from "../types/protocol";
+import { enforceWeaponEvidence } from "./draftEvidence";
+import { chooseFallbackLoadout } from "../engine/loadout";
 import { AnalystAgent } from "./agents/analyst";
 import { LoadoutAgent } from "./agents/loadout";
 import { StrategistAgent } from "./agents/strategist";
@@ -278,6 +280,12 @@ export class Orchestrator {
     });
 
     await this.refreshMeta();
+    const fleetIndex = req.context.fleetIndex ?? null;
+    const fleetSize = req.context.fleetSize ?? 1;
+    // Learned per-weapon evidence — FLEET-WIDE, not just this bot's own
+    // history: a bot that always drafted X never accumulates evidence
+    // about Y; the proof lives in a sibling's memory file.
+    const weaponWinRates = this.fleetWeaponWinRates();
     const out = await this.loadoutAgent.run({
       request: req,
       meta: {
@@ -288,12 +296,9 @@ export class Orchestrator {
         arenaBotsConnected: req.context.arenaBotsConnected,
         insights: this.insights,
         opponentProfiles: this.opponents.forPrompt(8),
-        fleetIndex: req.context.fleetIndex ?? null,
-        fleetSize: req.context.fleetSize ?? 1,
-        // Learned per-weapon evidence — FLEET-WIDE, not just this bot's own
-        // history: a bot that always drafted X never accumulates evidence
-        // about Y; the proof lives in a sibling's memory file.
-        weaponWinRates: this.fleetWeaponWinRates(),
+        fleetIndex,
+        fleetSize,
+        weaponWinRates,
       },
     });
 
@@ -304,20 +309,44 @@ export class Orchestrator {
       // autopilot runs fallback_behavior when we miss ticks and doesn't know
       // the coalition — hunting behaviors attack the nearest bot, teammates
       // included. Downgrade them for fleets even if the LLM ignored the rule.
-      const fleet = (req.context.fleetSize ?? 1) > 1;
+      const fleet = fleetSize > 1;
       const fb =
         fleet && out.fallback_behavior === "hunter"
           ? "opportunistic"
           : fleet && out.fallback_behavior === "aggressive"
             ? "territorial"
             : out.fallback_behavior;
-      plan = {
-        weapon: out.weapon,
-        stats: normalizeStats(out.stats, c.statBudget, c.statMin, c.statMax),
-        fallback_behavior: fb,
-        reasoning: out.reasoning,
-        source: "loadout-agent",
-      };
+      // Evidence enforcement (deterministic): live drafts showed the LLM
+      // ignoring the weapon-history authority rule and re-picking a ~2%
+      // weapon over a 20%+ one. If its pick is a proven loser and the slot
+      // has a proven winner available, override — stats and fallback are
+      // rebuilt for the substituted weapon.
+      const better = enforceWeaponEvidence(out.weapon, fleetIndex, fleetSize, weaponWinRates);
+      if (better) {
+        const rebuilt = chooseFallbackLoadout({
+          availableWeapons: [better],
+          modifier: req.context.roundModifier,
+          budget: c.statBudget,
+          min: c.statMin,
+          max: c.statMax,
+          lobbyWeapons: req.context.lobbyWeapons,
+          fleetIndex: fleetIndex ?? undefined,
+        });
+        log.info({ from: out.weapon, to: better }, "draft overridden by fleet weapon evidence");
+        plan = {
+          ...rebuilt,
+          reasoning: `evidence override: ${out.weapon} is a proven loser in our history, ${better} is a proven winner`,
+          source: "loadout-agent+evidence",
+        };
+      } else {
+        plan = {
+          weapon: out.weapon,
+          stats: normalizeStats(out.stats, c.statBudget, c.statMin, c.statMax),
+          fallback_behavior: fb,
+          reasoning: out.reasoning,
+          source: "loadout-agent",
+        };
+      }
     } else {
       plan = { ...req.fallback, reasoning: "fallback (agent unavailable)", source: "fallback" };
     }
