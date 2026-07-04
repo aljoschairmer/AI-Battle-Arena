@@ -33,6 +33,13 @@ export function chooseFallbackLoadout(opts: {
   max?: number;
   /** Weapon counts seen in the pre-round lobby — drives the counter-pick. */
   lobbyWeapons?: Partial<Record<Weapon, number>>;
+  /**
+   * Position in our own fleet (0-based). N bots ranking identical inputs pick
+   * identical weapons (observed live: the whole fleet opening daggers every
+   * round); rotating each bot onto a different top-3 pick keeps the
+   * deterministic fallback fleet complementary. Omit for a lone bot.
+   */
+  fleetIndex?: number;
 }): LoadoutSelection {
   const available = opts.availableWeapons?.length
     ? opts.availableWeapons
@@ -43,11 +50,13 @@ export function chooseFallbackLoadout(opts: {
   // Rank by standalone strength (metaScore + modifier fit) blended with the
   // matchup edge against whatever weapons the lobby is fielding (Strategy-tab
   // matrix). With no lobby intel the counter term is 0 and this is pure meta.
-  const weapon = rankCounterPicks(
+  const ranked = rankCounterPicks(
     available,
     opts.lobbyWeapons ?? {},
     (w) => WEAPONS[w].metaScore + modifierBonus(w, mod),
-  )[0]!.weapon;
+  );
+  const slot = opts.fleetIndex !== undefined ? opts.fleetIndex % Math.min(3, ranked.length) : 0;
+  const weapon = ranked[slot]!.weapon;
 
   // Fight-power-optimal spread for the ACTUAL round budget/bounds (the arena can
   // vary them per round), honouring the weapon's mobility/durability floors.

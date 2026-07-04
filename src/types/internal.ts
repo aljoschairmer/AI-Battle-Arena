@@ -590,6 +590,15 @@ export interface RoundContext {
   } | null;
   /** How many bots are connected in the arena right now (best-effort). */
   arenaBotsConnected: number | null;
+  /**
+   * This bot's position in our own coalition fleet (0-based) and the fleet
+   * size — null/1 for a lone bot. Drafting inputs: N bots drafting from
+   * identical information converge on identical weapons (observed live: the
+   * whole fleet opening daggers every round), so the Loadout agent uses the
+   * index to assign complementary archetypes.
+   */
+  fleetIndex: number | null;
+  fleetSize: number;
   /** Opponent weapons seen in the pre-round lobby (best-effort, may be empty). */
   lobbyWeapons: Partial<Record<Weapon, number>>;
   /** Constraints from the `connected` handshake. */

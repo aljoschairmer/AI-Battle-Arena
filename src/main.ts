@@ -76,6 +76,8 @@ async function main(): Promise<void> {
           botName: b.name,
           botColor: b.color,
           label: b.name,
+          botIndex: b.index,
+          fleetSize: bots.length,
           // Coalition comms ride the GLOBAL (unscoped) bus so every parallel bot
           // hears every other; scoped buses would isolate them from each other.
           coopBus: config.coop.enabled ? bus : undefined,

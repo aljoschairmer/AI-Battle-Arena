@@ -288,6 +288,11 @@ export class Orchestrator {
         arenaBotsConnected: req.context.arenaBotsConnected,
         insights: this.insights,
         opponentProfiles: this.opponents.forPrompt(8),
+        fleetIndex: req.context.fleetIndex ?? null,
+        fleetSize: req.context.fleetSize ?? 1,
+        // Learned per-weapon evidence from OUR recent rounds — the draft
+        // should weigh proven wins over theoretical tier lists.
+        weaponWinRates: this.roundHistory.summary().weaponWinRates,
       },
     });
 

@@ -1444,6 +1444,8 @@ async function run(): Promise<void> {
         bounties: [],
         ourStats: null,
         arenaBotsConnected: 6,
+        fleetIndex: 1,
+        fleetSize: 3,
         lobbyWeapons: {},
         constraints: { statBudget: 20, statMin: 1, statMax: 10, availableWeapons: [] },
       },
@@ -1460,6 +1462,11 @@ async function run(): Promise<void> {
       ourStats: null,
       arenaBotsConnected: 6,
       insights: { ...DEFAULT_INSIGHTS },
+      fleetIndex: 1 as number | null,
+      fleetSize: 3,
+      weaponWinRates: { daggers: { wins: 0, played: 4 }, staff: { wins: 1, played: 1 } } as Partial<
+        Record<Weapon, { wins: number; played: number }>
+      >,
     };
     const withProfile = promptOf({
       request: req,
@@ -1482,6 +1489,30 @@ async function run(): Promise<void> {
     check(
       "system prompt instructs counter-picking known opponents",
       (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("known_opponents"),
+    );
+
+    // Fleet diversity + learned weapon evidence (win-rate pass follow-up):
+    // three bots drafting from identical inputs all opened daggers every
+    // round; the prompt now carries fleet position and OUR per-weapon record.
+    check(
+      "prompt carries fleet position and learned weapon history",
+      withProfile.includes('"fleet_index":1') &&
+        withProfile.includes('"fleet_size":3') &&
+        withProfile.includes('"daggers":{"wins":0,"played":4}'),
+    );
+    check(
+      "system prompt instructs fleet archetype diversity from learnings",
+      (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("FLEET DIVERSITY"),
+    );
+
+    // Deterministic fallback rotates the fleet across the top-ranked picks —
+    // never three copies of one weapon.
+    const picks = [0, 1, 2].map((i) => chooseFallbackLoadout({ fleetIndex: i }).weapon);
+    check("fallback fleet drafts three distinct weapons", new Set(picks).size === 3, picks);
+    check(
+      "lone bot (no fleetIndex) keeps the old best pick",
+      chooseFallbackLoadout({}).weapon === picks[0],
+      { solo: chooseFallbackLoadout({}).weapon, picks },
     );
   }
 

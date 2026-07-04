@@ -44,6 +44,9 @@ export interface EngineOptions {
   botName?: string;
   botColor?: string;
   label?: string;
+  /** Position in our own fleet (0-based) and fleet size, for draft diversity. */
+  botIndex?: number;
+  fleetSize?: number;
   /** Global (unscoped) bus for bot-to-bot coalition comms; enables BOT_COOP. */
   coopBus?: Bus;
 }
@@ -53,6 +56,8 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   const botName = opts.botName ?? config.arena.botName;
   const botColor = opts.botColor ?? config.arena.botColor;
   const label = opts.label ?? "";
+  const fleetSize = opts.fleetSize ?? 1;
+  const fleetIndex = fleetSize > 1 ? (opts.botIndex ?? 0) : null;
   const log = child(label ? `engine:${label}` : "engine");
   // Per-bot REST client (bot/stats + config are key-scoped, so each bot needs
   // its own; public endpoints work regardless).
@@ -239,6 +244,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       min: gs.statMin,
       max: gs.statMax,
       lobbyWeapons: gs.lobbyWeapons,
+      fleetIndex: fleetIndex ?? undefined,
     });
 
     if (!publishToBrain) {
@@ -312,6 +318,8 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
           }
         : null,
       arenaBotsConnected: arenaStatus?.bots_connected ?? null,
+      fleetIndex,
+      fleetSize,
       lobbyWeapons: { ...gs.lobbyWeapons },
       constraints: {
         statBudget: gs.statBudget,
