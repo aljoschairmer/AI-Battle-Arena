@@ -38,6 +38,11 @@ export class ThreatField {
 
     const enemies = gs.enemies();
     const hazards = gs.hazardTiles();
+    const dormant = gs.dormantHazardTiles();
+    // Residual cost of an off-phase pulse hazard. A module literal like its
+    // +50/+60 siblings above: the field builds inside GameState with no
+    // EnginePolicy access, and the whole weight set tunes together or not at all.
+    const dormantDanger = 12;
     const self = gs.self;
     const zoneCenter = self?.zone_center ?? [50, 50];
     const zoneRadius = self?.zone_radius ?? 50;
@@ -72,6 +77,13 @@ export class ThreatField {
         // (observed live as two coalition kills in the pass-3 prod run).
         for (const am of gs.allyMineTiles()) {
           if (chebyshev(cell, am) <= 1) danger += 50;
+        }
+
+        // Dormant (off-phase) pulse hazards: crossable right now, but they
+        // WILL re-arm — a residual cost discourages lingering/camping on them
+        // without walling off the corridor like the full +50 used to.
+        for (const dz of dormant) {
+          if (chebyshev(cell, dz) <= 1) danger += dormantDanger;
         }
 
         grid[(row - originRow) * w + (col - originCol)] = danger;

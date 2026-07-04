@@ -191,6 +191,15 @@ export interface EnginePolicy {
    */
   shoveInterruptCharged: boolean;
   /**
+   * When caught outside the safe zone with a grapple charge ready, anchor-pull
+   * toward the zone instead of walking (12-tile yank vs 1-tile steps at
+   * 3 HP/tick of zone damage). Verified absent before pass 3's deep dive: the
+   * only route back in was walking.
+   */
+  grappleZoneEscape: boolean;
+  /** Minimum tiles outside the zone edge before spending a grapple on escape. */
+  grappleZoneEscapeMinDist: number;
+  /**
    * Max CONSECUTIVE ticks the dagger in-range flank deferral may hold before
    * committing to a head-on attack. 0 = never defer (attack head-on always).
    * Bounds the pass-2 audit's confirmed orbit: an unterminated defer loop let
@@ -271,6 +280,8 @@ export const DEFAULT_POLICY: EnginePolicy = {
   endgameTradeCaution: 0.3,
   endgameCenterHoldFraction: 0.4,
   shoveInterruptCharged: true,
+  grappleZoneEscape: true,
+  grappleZoneEscapeMinDist: 4,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
   idleHealBelowHpFraction: 0.75,
@@ -330,6 +341,8 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     endgameTradeCaution: clampNum(patch.endgameTradeCaution, 0, 0.6, base.endgameTradeCaution),
     endgameCenterHoldFraction: clampNum(patch.endgameCenterHoldFraction, 0.1, 0.9, base.endgameCenterHoldFraction),
     shoveInterruptCharged: asBool(patch.shoveInterruptCharged, base.shoveInterruptCharged),
+    grappleZoneEscape: asBool(patch.grappleZoneEscape, base.grappleZoneEscape),
+    grappleZoneEscapeMinDist: clampNum(patch.grappleZoneEscapeMinDist, 2, 12, base.grappleZoneEscapeMinDist),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
     idleHealBelowHpFraction: clampNum(patch.idleHealBelowHpFraction, 0, 1, base.idleHealBelowHpFraction),

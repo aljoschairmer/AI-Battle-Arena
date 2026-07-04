@@ -50,6 +50,25 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
   // raw zone-centre move when no local step actually improves on standing still
   // (e.g. we're already at the best nearby tile and need the longer server path).
   if (!self.in_safe_zone) {
+    // Deep outside with a grapple charge ready: anchor-pull toward the zone
+    // (12-tile yank vs 1-tile steps). At 3 HP/tick of zone damage, every
+    // walked tile from far out is HP a fight later doesn't have — before this
+    // the ONLY way back in was walking (verified: no zone-aware grapple path
+    // existed anywhere).
+    if (
+      ctx.policy.grappleZoneEscape &&
+      self.distance_to_zone_edge >= ctx.policy.grappleZoneEscapeMinDist &&
+      self.grapple_charges > 0 &&
+      self.grapple_cooldown <= 0
+    ) {
+      const toward = gs.stepToward(self.zone_center);
+      const reach = Math.min(12, self.distance_to_zone_edge + 2);
+      const dest: GridVec = [
+        Math.max(0, Math.min(gs.gridSize - 1, Math.round(gs.position[0] + toward[0] * reach))),
+        Math.max(0, Math.min(gs.gridSize - 1, Math.round(gs.position[1] + toward[1] * reach))),
+      ];
+      if (gs.isPassable(dest[0], dest[1])) return grappleTo(tick, dest);
+    }
     const fieldStep = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
     if (fieldStep) return move(tick, fieldStep);
     return moveTo(tick, self.zone_center);

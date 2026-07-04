@@ -10,7 +10,7 @@
  */
 import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
-import { retreatAndHeal, tacticalDisengage } from "../src/engine/behaviors/survival";
+import { retreatAndHeal, survivalBehavior, tacticalDisengage } from "../src/engine/behaviors/survival";
 import { combatBehavior } from "../src/engine/behaviors/combat";
 import { flankingPosition, grabPickup } from "../src/engine/behaviors/movement";
 import { selectTarget } from "../src/engine/behaviors/targeting";
@@ -1740,6 +1740,70 @@ async function run(): Promise<void> {
       first?.action === "shove" && second?.action === "attack",
       { first, second },
     );
+  }
+
+  console.log("\nhazard pulse awareness (deep dive): dormant hazards are crossable, not campable");
+  {
+    const hazard = (active: boolean | undefined, pos: [number, number]) =>
+      ({ type: "hazard", position: pos, radius: 1, active }) as unknown as NearbyEntity;
+
+    const gsH = freshGameState();
+    gsH.applyTick(tickFrom(self(), [hazard(true, [52, 50]), hazard(false, [48, 50])]));
+    check("active hazard blocks safe stepping", !gsH.isSafeStep(52, 50) && !gsH.isSafeStep(53, 50));
+    check("dormant hazard is crossable (off-phase)", gsH.isSafeStep(48, 50), gsH.hazardTiles());
+    check(
+      "dormant hazard keeps a residual threat cost (don't camp it)",
+      gsH.threatField().danger(48, 50) > 0 && gsH.threatField().danger(48, 50) < 50,
+      gsH.threatField().danger(48, 50),
+    );
+    check(
+      "hazard with no active field stays lethal (unknown = dangerous)",
+      (() => {
+        const gsU = freshGameState();
+        gsU.applyTick(tickFrom(self(), [hazard(undefined, [52, 50])]));
+        return !gsU.isSafeStep(52, 50);
+      })(),
+    );
+  }
+
+  console.log("\nzone-escape grapple (deep dive): anchor-pull back in instead of walking");
+  {
+    const stranded = (over: Partial<SelfState> = {}) =>
+      self({
+        in_safe_zone: false,
+        distance_to_zone_edge: 8,
+        zone_center: [50, 50],
+        position: [70, 50],
+        grapple_charges: 1,
+        grapple_cooldown: 0,
+        ...over,
+      });
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+
+    const gsZ = freshGameState();
+    gsZ.applyTick(tickFrom(stranded(), []));
+    const aZ = survivalBehavior(ctxOf(gsZ));
+    check(
+      "deep outside + charge ready -> grapples toward the zone",
+      aZ?.action === "grapple" && aZ.target_position !== undefined && aZ.target_position[0] < 70,
+      aZ,
+    );
+
+    const gsNoCharge = freshGameState();
+    gsNoCharge.applyTick(tickFrom(stranded({ grapple_charges: 0 }), []));
+    const aNC = survivalBehavior(ctxOf(gsNoCharge));
+    check("no charge -> walks back as before", aNC?.action === "move" || aNC?.action === "move_to", aNC);
+
+    const gsNear = freshGameState();
+    gsNear.applyTick(tickFrom(stranded({ distance_to_zone_edge: 2 }), []));
+    const aNear = survivalBehavior(ctxOf(gsNear));
+    check("just outside the edge -> saves the charge, walks", aNear?.action !== "grapple", aNear);
+
+    const off = mergePolicy(DEFAULT_POLICY, { grappleZoneEscape: false });
+    const gsOff = freshGameState();
+    gsOff.applyTick(tickFrom(stranded(), []));
+    const aOff = survivalBehavior(ctxOf(gsOff, off));
+    check("grappleZoneEscape=false restores walking", aOff?.action !== "grapple", aOff);
   }
 
   console.log("\nbrain memory persistence (disk survives restart + KV expiry)");

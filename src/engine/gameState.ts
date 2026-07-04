@@ -341,19 +341,35 @@ export class GameState {
     );
   }
 
-  /** Hazards we should not stand on (burn fields, void, generic hazards, mines). */
+  /**
+   * Hazards we should not stand on RIGHT NOW (burn fields, void, generic
+   * hazards, mines). Pulsing hazards advertise `active: false` during their
+   * off-phase — those are excluded here (walkable this instant) and surfaced
+   * via dormantHazardTiles() instead, so routing can cross a dormant pulse
+   * zone while the threat field still discourages lingering on it. Before
+   * this split every hazard was permanently lethal to the model: dormant
+   * pulse zones blocked corridors all round (and burn fields ignored the
+   * `active` filter that burnFields() already applied).
+   */
   hazardTiles(): GridVec[] {
     const out: GridVec[] = [];
     for (const e of this.entities) {
-      if (e.type === "burn_field") {
-        out.push(e.position);
-      } else if (
-        e.type === "hazard" ||
-        e.type === "void" ||
-        e.type === "mine" ||
-        e.type === "gravity_well"
-      ) {
+      if (e.type === "burn_field" || e.type === "hazard") {
+        if ((e as { active?: boolean }).active !== false) out.push(e.position);
+      } else if (e.type === "void" || e.type === "mine" || e.type === "gravity_well") {
+        // No off-phase for these: void is void, mines don't pulse.
         out.push((e as { position: GridVec }).position);
+      }
+    }
+    return out;
+  }
+
+  /** Pulsing hazards currently in their off-phase — crossable but not campable. */
+  dormantHazardTiles(): GridVec[] {
+    const out: GridVec[] = [];
+    for (const e of this.entities) {
+      if ((e.type === "burn_field" || e.type === "hazard") && (e as { active?: boolean }).active === false) {
+        out.push(e.position);
       }
     }
     return out;
