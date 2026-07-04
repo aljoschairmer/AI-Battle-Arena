@@ -1938,6 +1938,26 @@ async function run(): Promise<void> {
     const aGC = combatBehavior(ctxOf(gsGClear), gsGClear.enemies().find((e) => e.bot_id === "foe")!);
     check("grapple with a clear pull line yanks as before", aGC?.action === "grapple" && aGC.target === "foe", aGC);
 
+    // move_to paths are server-pathed and blind to invisible ally mines —
+    // allyMineOnPath flags a straight path crossing one.
+    const gsP = freshGameState();
+    gsP.applyTick(tickFrom(self(), []));
+    gsP.setAllyMines([[55, 50] as [number, number]]);
+    check("straight path over an ally mine is flagged", gsP.allyMineOnPath([60, 50]));
+    check("path well clear of the mine is not flagged", !gsP.allyMineOnPath([50, 60]));
+    check("believed own mines no longer expire (round-lifetime)", (() => {
+      const g = freshGameState();
+      g.applyTick(tickFrom(self({ position: [40, 40] }), []));
+      g.noteIssuedAction({ type: "action", tick: 100, action: "place_mine" });
+      const realNow = Date.now;
+      Date.now = () => realNow() + 200_000;
+      try {
+        return g.ownMinePositions().length === 1;
+      } finally {
+        Date.now = realNow;
+      }
+    })());
+
     // Retreat mine suppressed when an ally trails within 6 tiles.
     const ctlM = new Controller();
     ctlM.onRoundStart();

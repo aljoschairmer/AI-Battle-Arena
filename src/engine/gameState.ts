@@ -511,10 +511,15 @@ export class GameState {
     );
   }
 
-  /** Believed positions of our own live mines (for the coalition broadcast). */
-  ownMinePositions(maxAgeMs = 90_000): GridVec[] {
-    const now = Date.now();
-    return this.ownMines.filter((m) => now - m.ts <= maxAgeMs).map((m) => m.pos);
+  /**
+   * Believed positions of our own live mines (for the coalition broadcast).
+   * No age expiry: the spec gives mines no lifetime, so the safe assumption
+   * is they persist until the round resets (which clears this list) — a 90s
+   * TTL was silently dropping broadcast protection while the mine still sat
+   * armed on the field.
+   */
+  ownMinePositions(): GridVec[] {
+    return this.ownMines.map((m) => m.pos);
   }
 
   /** Replace the coalition allies' broadcast mine tiles. */
@@ -561,6 +566,28 @@ export class GameState {
       const py = ay + u * dy;
       const distSq = (t[0] - px) ** 2 + (t[1] - py) ** 2;
       if (distSq <= 0.8 * 0.8) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Does the straight segment from us to `target` pass within 1 tile of a
+   * coalition ally's broadcast mine? Server-side pathfinding (move_to) knows
+   * nothing about invisible ally mines, so the engine must reroute locally.
+   * Straight-line approximation of the server's A* — imperfect, but paths are
+   * near-straight in open ground and the reroute re-evaluates every tick.
+   */
+  allyMineOnPath(target: GridVec): boolean {
+    const [ax, ay] = this.position;
+    const dx = target[0] - ax;
+    const dy = target[1] - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return false;
+    for (const m of this.allyMines) {
+      const u = Math.max(0, Math.min(1, ((m[0] - ax) * dx + (m[1] - ay) * dy) / len2));
+      const px = ax + u * dx;
+      const py = ay + u * dy;
+      if ((m[0] - px) ** 2 + (m[1] - py) ** 2 <= 1.2 * 1.2) return true;
     }
     return false;
   }

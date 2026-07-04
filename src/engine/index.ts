@@ -499,7 +499,17 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       // interleaved engines in one process otherwise write into whichever
       // bot's file was opened last.
       telemetryLog.setActiveBot(gs.selfId ?? "unknown");
-      const action = controller.decide(gs);
+      let action = controller.decide(gs);
+      // Server-pathed moves (move_to) walk straight through invisible ally
+      // mines — the server's A* can't know them. When the straight path
+      // crosses a broadcast mine tile, reroute with a local threat-aware step
+      // (which DOES see them) and let next tick re-plan. This was the residual
+      // teammate-kill channel after every attack-side guard: our dominant
+      // action type simply never consulted the mine map.
+      if (action.action === "move_to" && gs.allyMineOnPath(action.target_position)) {
+        const step = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
+        if (step) action = { type: "action", tick: action.tick, action: "move", direction: step };
+      }
       socket.send(action);
 
       if (publishToBrain && gs.tick % SNAPSHOT_EVERY_TICKS === 0) {

@@ -136,8 +136,14 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
 
       // Never shoot through a teammate: projectiles may hit the first bot in
       // the path (one live teammate kill by a bow slot). Step for a clean lane
-      // instead; the shot comes next tick.
-      if (ctx.policy.friendlySplashGuard && profile.ranged && !profile.aoe && gs.allyInFireLane(target.position)) {
+      // instead; the shot comes next tick. Grapple's in-range attack is a
+      // slam that can scatter — an ally near the target blocks it too.
+      if (
+        ctx.policy.friendlySplashGuard &&
+        profile.ranged &&
+        !profile.aoe &&
+        (gs.allyInFireLane(target.position) || (self.weapon === "grapple" && gs.allyNear(target.position, 2)))
+      ) {
         const spacing = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
         return spacing ? move(tick, spacing) : null;
       }
@@ -186,10 +192,12 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
   }
 
   // A grapple yank drags the target's BODY along the line to us — an ally on
-  // that path gets slammed (two live teammate kills by the grapple slot,
-  // mechanism invisible to the attack-path fire-lane guard because these
-  // branches return before it).
-  const pullLaneClear = !ctx.policy.friendlySplashGuard || !gs.allyInFireLane(target.position);
+  // that path gets slammed; the slam can also scatter beyond the line, so an
+  // ally simply NEAR the target blocks the pull too (grapple slots kept
+  // producing teammate kills after the lane-only guard).
+  const pullLaneClear =
+    !ctx.policy.friendlySplashGuard ||
+    (!gs.allyInFireLane(target.position) && !gs.allyNear(target.position, 2));
 
   // Grapple weapon: use position-grapple to anchor self to walls when kiting ranged
   if (self.weapon === "grapple" && self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
