@@ -74,6 +74,21 @@ services:
             || echo "dashboard: auto-register failed — add host 'redis' port 6379 manually in the UI"
         fi
 
+  # Public URL for the dashboard via a Cloudflare QUICK tunnel (no account,
+  # no config): prints a random https://<something>.trycloudflare.com URL in
+  # its logs on boot — `docker compose logs redis-dashboard-tunnel | grep
+  # trycloudflare`. SECURITY: the URL is unauthenticated and RedisInsight can
+  # WRITE to the bus Redis — share it only while you need it and stop the
+  # service afterwards (`docker compose stop redis-dashboard-tunnel`). The URL
+  # changes on every restart; that's inherent to quick tunnels.
+  redis-dashboard-tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      redis-dashboard:
+        condition: service_started
+    command: ["tunnel", "--no-autoupdate", "--url", "http://redis-dashboard:5540"]
+
   engine:
     build: .
     restart: unless-stopped
