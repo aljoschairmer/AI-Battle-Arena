@@ -23,6 +23,22 @@ export function onlyFleetRemains(
   return aliveOthers.every((b) => friendly.has(b.id));
 }
 
+/**
+ * Count-based truce-break fallback for when the spectator feed is disabled
+ * or stale (ARENA_SPECTATOR=false ran a whole A/B arm with the truce
+ * permanently stuck on): the arena's REST status reports the GLOBAL alive
+ * count, coop reports give OUR alive count — when they match, everyone still
+ * standing is ours. Strict equality on purpose: a global count LOWER than
+ * our believed count means one of our alive-beliefs is stale (a survivor
+ * could be an enemy), so no break. Needs 2+ of us (a duel takes two) and a
+ * known count; both missing/ambiguous cases keep the truce.
+ */
+export function onlyFleetRemainsByCount(globalAlive: number | null, ourAlive: number): boolean {
+  if (globalAlive === null || globalAlive <= 0) return false;
+  if (ourAlive < 2) return false;
+  return globalAlive === ourAlive;
+}
+
 const MEMBER_TTL_MS = 8000; // drop an ally we haven't heard from in this long
 const ENEMY_TTL_MS = 4000; // forget an ally-reported enemy after this long
 const DIRECTIVE_STALE_MS = 12000; // ignore a Coordinator directive this old
@@ -52,6 +68,8 @@ export class Coalition {
    */
   private readonly everMembers = new Set<string>();
   private readonly enemies = new Map<string, { hp: number; ts: number }>(); // enemyId -> latest
+  /** Latest reported HP per ally — liveness data, TTL'd unlike membership. */
+  private readonly memberHp = new Map<string, { hp: number; ts: number }>();
   /** Latest broadcast mine tiles per ally (mines are invisible to non-owners). */
   private readonly memberMines = new Map<string, { tiles: [number, number][]; ts: number }>();
   private coopDirective: CoopDirective = { ...DEFAULT_COOP_DIRECTIVE };
@@ -69,6 +87,9 @@ export class Coalition {
       const now = Date.now();
       this.members.set(m.botId, now);
       this.everMembers.add(m.botId);
+      // Live HP per ally (reports flow even while dead, hp 0) — feeds the
+      // count-based truce-break fallback (aliveAllies).
+      this.memberHp.set(m.botId, { hp: typeof m.hp === "number" ? m.hp : 0, ts: now });
       // Latest report wins wholesale: an ally with no live mines broadcasts
       // an empty list, clearing its previous tiles.
       this.memberMines.set(m.botId, { tiles: Array.isArray(m.mines) ? m.mines : [], ts: now });
@@ -114,6 +135,23 @@ export class Coalition {
       if (now - ts >= MEMBER_TTL_MS) this.members.delete(id);
     }
     return new Set(this.everMembers);
+  }
+
+  /**
+   * How many allies (NOT counting ourselves) are alive right now, judged by
+   * fresh coop reports with hp > 0. Reports keep flowing while an ally is
+   * dead/respawning (hp 0), so this is accurate within a report interval;
+   * an ally whose reports stopped entirely (crash, eliminated) ages out via
+   * the TTL and stops counting. Powers the truce-break fallback when the
+   * spectator feed is unavailable.
+   */
+  aliveAllies(maxAgeMs = 4000): number {
+    const now = Date.now();
+    let n = 0;
+    for (const [, s] of this.memberHp) {
+      if (now - s.ts <= maxAgeMs && s.hp > 0) n++;
+    }
+    return n;
   }
 
   /**

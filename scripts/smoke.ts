@@ -14,7 +14,7 @@ import { retreatAndHeal, survivalBehavior, tacticalDisengage } from "../src/engi
 import { combatBehavior } from "../src/engine/behaviors/combat";
 import { flankingPosition, grabPickup } from "../src/engine/behaviors/movement";
 import { selectTarget } from "../src/engine/behaviors/targeting";
-import { Coalition, onlyFleetRemains } from "../src/engine/coop";
+import { Coalition, onlyFleetRemains, onlyFleetRemainsByCount } from "../src/engine/coop";
 import { Channels } from "../src/bus";
 import { MemoryBus } from "../src/bus/memory";
 import { scoped } from "../src/bus";
@@ -2265,6 +2265,28 @@ async function run(): Promise<void> {
     const pick = selectTarget({ gs: gsT, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: gsT.tick });
     check("selectTarget engages the ex-ally", pick?.bot_id === "mate1", pick);
     check("coopTruceBreak knob rides the clamp table", mergePolicy(DEFAULT_POLICY, { coopTruceBreak: false }).coopTruceBreak === false);
+
+    // Count-based fallback (spectator feed off): REST global alive count vs
+    // our own coop-derived alive count.
+    check("count fallback: global == ours -> truce over", onlyFleetRemainsByCount(3, 3));
+    check("count fallback: an enemy still alive -> truce holds", !onlyFleetRemainsByCount(4, 3));
+    check("count fallback: stale our-count (global < ours) -> truce holds", !onlyFleetRemainsByCount(2, 3));
+    check("count fallback: no count known -> truce holds", !onlyFleetRemainsByCount(null, 3));
+    check("count fallback: solo survivor -> nothing to break", !onlyFleetRemainsByCount(1, 1));
+
+    // aliveAllies counts only FRESH reports with hp > 0 (dead allies keep
+    // reporting hp 0 and must not count).
+    const busAA = new MemoryBus();
+    const coopAA = new Coalition(busAA, () => "self");
+    await coopAA.start();
+    const reportOf = (botId: string, hp: number) => ({
+      ts: Date.now(), botId, name: botId, weapon: "sword" as const, pos: [50, 50] as [number, number], hp, enemies: [], mines: [],
+    });
+    await busAA.publish(Channels.coop, reportOf("mateA", 80));
+    await busAA.publish(Channels.coop, reportOf("mateB", 0)); // dead, still reporting
+    await new Promise((r) => setTimeout(r, 20));
+    check("aliveAllies counts living allies only", coopAA.aliveAllies() === 1, coopAA.aliveAllies());
+    coopAA.stop();
   }
 
   console.log("\nthreat-weighted A* retreat (pathfinder)");
