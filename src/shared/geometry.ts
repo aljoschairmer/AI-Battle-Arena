@@ -2,10 +2,6 @@ import type { GridVec } from "../types/protocol";
 
 /** Grid geometry helpers. All operate on integer [col, row] grid coordinates. */
 
-export function add(a: GridVec, b: GridVec): GridVec {
-  return [a[0] + b[0], a[1] + b[1]];
-}
-
 export function sub(a: GridVec, b: GridVec): GridVec {
   return [a[0] - b[0], a[1] - b[1]];
 }
@@ -17,20 +13,9 @@ export function dist(a: GridVec, b: GridVec): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-/** Squared distance — cheaper when you only need to compare. */
-export function dist2(a: GridVec, b: GridVec): number {
-  const dx = a[0] - b[0];
-  const dy = a[1] - b[1];
-  return dx * dx + dy * dy;
-}
-
 /** Chebyshev (king-move) distance — matches tile adjacency. */
 export function chebyshev(a: GridVec, b: GridVec): number {
   return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
-}
-
-export function equal(a: GridVec, b: GridVec): boolean {
-  return a[0] === b[0] && a[1] === b[1];
 }
 
 /** The eight unit step directions, including diagonals. */
@@ -43,13 +28,6 @@ export const DIRECTIONS8: readonly GridVec[] = [
   [1, -1],
   [-1, 1],
   [-1, -1],
-];
-
-export const DIRECTIONS4: readonly GridVec[] = [
-  [1, 0],
-  [-1, 0],
-  [0, 1],
-  [0, -1],
 ];
 
 /** Round a continuous direction vector to the nearest of the 8 unit steps. */
@@ -88,6 +66,3 @@ export function project(p: GridVec, dir: GridVec, steps: number, size: number): 
   return clampToGrid([p[0] + dir[0] * steps, p[1] + dir[1] * steps], size);
 }
 
-export function magnitude(v: GridVec): number {
-  return Math.sqrt(v[0] * v[0] + v[1] * v[1]);
-}

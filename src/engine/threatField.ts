@@ -20,7 +20,6 @@ export class ThreatField {
   private constructor(
     private readonly originCol: number,
     private readonly originRow: number,
-    private readonly size: number,
     private readonly grid: Float32Array,
   ) {}
 
@@ -33,11 +32,16 @@ export class ThreatField {
     const maxRow = Math.min(gs.gridSize - 1, me[1] + R);
     const w = maxCol - originCol + 1;
     const h = maxRow - originRow + 1;
-    const size = Math.max(w, h);
     const grid = new Float32Array(w * h);
 
     const enemies = gs.enemies();
     const hazards = gs.hazardTiles();
+    const dormant = gs.dormantHazardTiles();
+    const allyTiles = gs.allyTiles();
+    // Residual cost of an off-phase pulse hazard. A module literal like its
+    // +50/+60 siblings above: the field builds inside GameState with no
+    // EnginePolicy access, and the whole weight set tunes together or not at all.
+    const dormantDanger = 12;
     const self = gs.self;
     const zoneCenter = self?.zone_center ?? [50, 50];
     const zoneRadius = self?.zone_radius ?? 50;
@@ -55,6 +59,13 @@ export class ThreatField {
           const weight = e.threat_score > 0 ? e.threat_score : profileFor(e.weapon).estDps;
           if (d <= range) danger += weight;
           else danger += weight / (1 + (d - range) * (d - range));
+          // Grapple wielders yank from 12 tiles (spec) — far beyond their
+          // profile range, so the decay above modeled them as safe at 6-8
+          // tiles while they pulled us in at will. #1 killer weapon vs the
+          // pass-3 prod fleet (59 deaths). Half-weight band out to yank range:
+          // being pulled isn't the hit itself, it's the stun + bruiser
+          // adjacency that follows.
+          if (e.weapon === "grapple" && d > range && d <= 12) danger += weight * 0.5;
         }
 
         // Outside the safe zone is a slow death — strong, distance-scaled danger.
@@ -66,11 +77,35 @@ export class ThreatField {
           if (chebyshev(cell, hz) <= 1) danger += 50;
         }
 
+        // (Coalition allies' broadcast mines ride hazardTiles() itself now —
+        // they're covered by the hazards loop above, same as visible mines.)
+
+        // Ally repulsion: a mild cost near coalition allies keeps the pack
+        // spaced so splash interactions can't form at all. The decision-time
+        // splash guard can't stop simultaneous-movement races (two teammate
+        // kills landed within 5 minutes of it deploying: both bots stepped
+        // into cleave range in the same tick the swing resolved) — spacing
+        // fixes the CLASS: cleave arcs, mine walk-ins, and AoE overlap all
+        // need packed allies to happen. Mild by design (~1/3 of a hazard):
+        // focus-fire still converges, it just approaches from spread angles.
+        for (const at of allyTiles) {
+          const dAlly = chebyshev(cell, at);
+          if (dAlly <= 1) danger += 15;
+          else if (dAlly === 2) danger += 5;
+        }
+
+        // Dormant (off-phase) pulse hazards: crossable right now, but they
+        // WILL re-arm — a residual cost discourages lingering/camping on them
+        // without walling off the corridor like the full +50 used to.
+        for (const dz of dormant) {
+          if (chebyshev(cell, dz) <= 1) danger += dormantDanger;
+        }
+
         grid[(row - originRow) * w + (col - originCol)] = danger;
       }
     }
 
-    const field = new ThreatField(originCol, originRow, size, grid);
+    const field = new ThreatField(originCol, originRow, grid);
     field.width = w;
     field.height = h;
     return field;

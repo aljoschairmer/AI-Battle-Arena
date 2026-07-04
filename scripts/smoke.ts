@@ -10,7 +10,7 @@
  */
 import { Controller } from "../src/engine/controller";
 import { GameState } from "../src/engine/gameState";
-import { retreatAndHeal, tacticalDisengage } from "../src/engine/behaviors/survival";
+import { retreatAndHeal, survivalBehavior, tacticalDisengage } from "../src/engine/behaviors/survival";
 import { combatBehavior } from "../src/engine/behaviors/combat";
 import { flankingPosition, grabPickup } from "../src/engine/behaviors/movement";
 import { selectTarget } from "../src/engine/behaviors/targeting";
@@ -33,7 +33,10 @@ import {
 } from "../src/types/internal";
 import { TokenBucket } from "../src/shared/ratelimit";
 import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
+import { TelemetryLog } from "../src/engine/telemetryLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
+import { StrategistAgent } from "../src/brain/agents/strategist";
+import { enforceWeaponEvidence } from "../src/brain/draftEvidence";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
@@ -1465,10 +1468,10 @@ async function run(): Promise<void> {
     await coopC.start();
 
     const pos = [0, 0] as [number, number];
-    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [{ id: "e1", hp: 80, pos }, { id: "e2", hp: 30, pos }], focusVote: "e2" });
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [{ id: "e1", hp: 80, pos }, { id: "e2", hp: 30, pos }] });
     // C mistakenly reports ally "A" as an enemy at 1 HP — the coalition must NOT
     // focus-fire it (guards against a friendly-classification race).
-    coopC.report({ ts: Date.now(), botId: "C", name: "C", weapon: "bow", pos, hp: 100, enemies: [{ id: "A", hp: 1, pos }, { id: "e9", hp: 40, pos }], focusVote: "A" });
+    coopC.report({ ts: Date.now(), botId: "C", name: "C", weapon: "bow", pos, hp: 100, enemies: [{ id: "A", hp: 1, pos }, { id: "e9", hp: 40, pos }] });
     await new Promise((r) => setTimeout(r, 10)); // flush pub/sub
 
     check("B learns allies A and C (friendlyIds)", coopB.friendlyIds().has("A") && coopB.friendlyIds().has("C"), [...coopB.friendlyIds()]);
@@ -1476,6 +1479,69 @@ async function run(): Promise<void> {
     check("coalition focus = lowest-HP true enemy (e2 @30)", coopB.focus() === "e2", coopB.focus());
     check("coalition never focus-fires a friendly (skips A @1)", coopB.focus() !== "A", coopB.focus());
     check("pooled intel crosses the fog (B sees A-reported e2)", coopB.focus() === "e2", coopB.focus());
+
+    // Non-aggression is permanent (pass-3 live fix): coalition reports are
+    // tick-driven and stop between rounds / across reconnects, so the old 8s
+    // TTL emptied friendly sets while teammates were still ours — observed
+    // live as NeuralReaper killing GhostProtocol at endgame. Membership must
+    // never expire within a process lifetime.
+    check(
+      "an ally stays friendly even after its reports stop (no TTL on membership)",
+      (() => {
+        // jump the clock a minute ahead — far past MEMBER_TTL_MS with no new
+        // reports — and confirm the friendly set survives the recency purge.
+        const realNow = Date.now;
+        Date.now = () => realNow() + 60_000;
+        try {
+          const later = coopB.friendlyIds();
+          return later.has("A") && later.has("C");
+        } finally {
+          Date.now = realNow;
+        }
+      })(),
+    );
+    // A teammate reported as an "enemy" by a confused ally must never enter
+    // the shared pool — even for readers that HAVEN'T yet met the teammate
+    // directly (C reported A@1hp above; A is a known member to B).
+    check(
+      "member ids never poison the pooled enemy list",
+      coopB.focus() !== "A" && coopA.focus() !== "A",
+      { b: coopB.focus(), a: coopA.focus() },
+    );
+
+    // Ally minefield sharing (pass-3 live fix): the server hides mines from
+    // non-owners, so coalition partners walked blind into each other's mines
+    // (two live coalition kills). Allies broadcast believed mine tiles; the
+    // threat field treats them as hazards.
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [], mines: [[60, 60], [61, 60]] });
+    await new Promise((r) => setTimeout(r, 10));
+    check(
+      "ally mine tiles reach the coalition (B sees A's mines)",
+      coopB.friendlyMines().some(([x, y]) => x === 60 && y === 60) && coopB.friendlyMines().length === 2,
+      coopB.friendlyMines(),
+    );
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [], mines: [] });
+    await new Promise((r) => setTimeout(r, 10));
+    check("an ally's empty mine list clears its previous tiles", coopB.friendlyMines().length === 0, coopB.friendlyMines());
+
+    // Own-mine bookkeeping + threat-field integration.
+    const gsM = freshGameState();
+    gsM.applyTick(tickFrom(self({ position: [55, 55] }), []));
+    gsM.noteIssuedAction({ type: "action", tick: 100, action: "place_mine" });
+    check(
+      "issued place_mine is remembered at our position",
+      gsM.ownMinePositions().length === 1 && gsM.ownMinePositions()[0]![0] === 55,
+      gsM.ownMinePositions(),
+    );
+    const gsT = freshGameState();
+    gsT.applyTick(tickFrom(self(), []));
+    const calm = gsT.threatField().danger(60, 60);
+    gsT.setAllyMines([[60, 60] as [number, number]]);
+    const mined = gsT.threatField().danger(60, 60);
+    check("ally mine tile reads as a hazard in the threat field", mined >= calm + 50, { calm, mined });
+    check("ally mine tile hard-blocks safe stepping (not just discouraged)", !gsT.isSafeStep(60, 60) && !gsT.isSafeStep(61, 60));
+    gsT.applyRoundStart({ type: "round_start", round_number: 99, round_modifier: "", bots_in_round: 4 } as RoundStartMsg);
+    check("round transition clears ally-mine beliefs", gsT.threatField().danger(60, 60) < mined, gsT.threatField().danger(60, 60));
 
     // Coalition rides the global channel, not a per-bot scope.
     check("coalition uses the global coop channel", Channels.coop === "arena:coop", Channels.coop);
@@ -1494,12 +1560,10 @@ async function run(): Promise<void> {
         ts: Date.now(),
         round: 3,
         roundModifier: "",
-        roundModifierLabel: "",
-        botsInRound: 0,
-        leaderboardTop: [],
-        bounties: [],
         ourStats: null,
         arenaBotsConnected: 6,
+        fleetIndex: 1,
+        fleetSize: 3,
         lobbyWeapons: {},
         constraints: { statBudget: 20, statMin: 1, statMax: 10, availableWeapons: [] },
       },
@@ -1516,6 +1580,11 @@ async function run(): Promise<void> {
       ourStats: null,
       arenaBotsConnected: 6,
       insights: { ...DEFAULT_INSIGHTS },
+      fleetIndex: 1 as number | null,
+      fleetSize: 3,
+      weaponWinRates: { daggers: { wins: 0, played: 4 }, staff: { wins: 1, played: 1 } } as Partial<
+        Record<Weapon, { wins: number; played: number }>
+      >,
     };
     const withProfile = promptOf({
       request: req,
@@ -1538,6 +1607,42 @@ async function run(): Promise<void> {
     check(
       "system prompt instructs counter-picking known opponents",
       (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("known_opponents"),
+    );
+
+    // Fleet diversity + learned weapon evidence (win-rate pass follow-up):
+    // three bots drafting from identical inputs all opened daggers every
+    // round; the prompt now carries fleet position and OUR per-weapon record.
+    check(
+      "prompt carries fleet position and learned weapon history",
+      withProfile.includes('"fleet_index":1') &&
+        withProfile.includes('"fleet_size":3') &&
+        withProfile.includes('"daggers":{"wins":0,"played":4}'),
+    );
+    check(
+      "system prompt instructs fleet archetype diversity from learnings",
+      (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("FLEET DIVERSITY"),
+    );
+
+    // Deterministic fallback rotates the fleet across the top-ranked picks —
+    // never three copies of one weapon.
+    const picks = [0, 1, 2].map((i) => chooseFallbackLoadout({ fleetIndex: i }).weapon);
+    check("fallback fleet drafts three distinct weapons", new Set(picks).size === 3, picks);
+    check(
+      "lone bot (no fleetIndex) keeps the old best pick",
+      chooseFallbackLoadout({}).weapon === picks[0],
+      { solo: chooseFallbackLoadout({}).weapon, picks },
+    );
+    // Server autopilot fleet rule: fleets never hand the server a hunting
+    // fallback (autopilot attacks the nearest bot, teammates included).
+    const fleetFallbacks = [0, 1, 2].map((i) => chooseFallbackLoadout({ fleetIndex: i }).fallback_behavior);
+    check(
+      "fleet fallback behaviors are never hunter/aggressive",
+      fleetFallbacks.every((f) => f !== "hunter" && f !== "aggressive"),
+      fleetFallbacks,
+    );
+    check(
+      "loadout system prompt carries the autopilot fleet rule",
+      (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("never hunter"),
     );
   }
 
@@ -1767,6 +1872,296 @@ async function run(): Promise<void> {
     );
   }
 
+  console.log("\nhazard pulse awareness (deep dive): dormant hazards are crossable, not campable");
+  {
+    const hazard = (active: boolean | undefined, pos: [number, number]) =>
+      ({ type: "hazard", position: pos, radius: 1, active }) as unknown as NearbyEntity;
+
+    const gsH = freshGameState();
+    gsH.applyTick(tickFrom(self(), [hazard(true, [52, 50]), hazard(false, [48, 50])]));
+    check("active hazard blocks safe stepping", !gsH.isSafeStep(52, 50) && !gsH.isSafeStep(53, 50));
+    check("dormant hazard is crossable (off-phase)", gsH.isSafeStep(48, 50), gsH.hazardTiles());
+    check(
+      "dormant hazard keeps a residual threat cost (don't camp it)",
+      gsH.threatField().danger(48, 50) > 0 && gsH.threatField().danger(48, 50) < 50,
+      gsH.threatField().danger(48, 50),
+    );
+    check(
+      "hazard with no active field stays lethal (unknown = dangerous)",
+      (() => {
+        const gsU = freshGameState();
+        gsU.applyTick(tickFrom(self(), [hazard(undefined, [52, 50])]));
+        return !gsU.isSafeStep(52, 50);
+      })(),
+    );
+  }
+
+  console.log("\nzone-escape grapple (deep dive): anchor-pull back in instead of walking");
+  {
+    const stranded = (over: Partial<SelfState> = {}) =>
+      self({
+        in_safe_zone: false,
+        distance_to_zone_edge: 8,
+        zone_center: [50, 50],
+        position: [70, 50],
+        grapple_charges: 1,
+        grapple_cooldown: 0,
+        ...over,
+      });
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+
+    const gsZ = freshGameState();
+    gsZ.applyTick(tickFrom(stranded(), []));
+    const aZ = survivalBehavior(ctxOf(gsZ));
+    check(
+      "deep outside + charge ready -> grapples toward the zone",
+      aZ?.action === "grapple" && aZ.target_position !== undefined && aZ.target_position[0] < 70,
+      aZ,
+    );
+
+    const gsNoCharge = freshGameState();
+    gsNoCharge.applyTick(tickFrom(stranded({ grapple_charges: 0 }), []));
+    const aNC = survivalBehavior(ctxOf(gsNoCharge));
+    check("no charge -> walks back as before", aNC?.action === "move" || aNC?.action === "move_to", aNC);
+
+    const gsNear = freshGameState();
+    gsNear.applyTick(tickFrom(stranded({ distance_to_zone_edge: 2 }), []));
+    const aNear = survivalBehavior(ctxOf(gsNear));
+    check("just outside the edge -> saves the charge, walks", aNear?.action !== "grapple", aNear);
+
+    const off = mergePolicy(DEFAULT_POLICY, { grappleZoneEscape: false });
+    const gsOff = freshGameState();
+    gsOff.applyTick(tickFrom(stranded(), []));
+    const aOff = survivalBehavior(ctxOf(gsOff, off));
+    check("grappleZoneEscape=false restores walking", aOff?.action !== "grapple", aOff);
+  }
+
+  console.log("\nfriendly splash guard: sword cleave / staff AoE never clip coalition allies");
+  {
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+
+    // Sword bot, enemy adjacent, ALLY also adjacent -> no swing (cleave would
+    // clip the ally); it repositions instead.
+    const gsC = freshGameState();
+    gsC.applyTick(
+      tickFrom(self({ weapon: "sword" }), [
+        enemy({ bot_id: "foe", position: [51, 50] }),
+        enemy({ bot_id: "ally", position: [50, 51] }),
+      ]),
+    );
+    gsC.setFriendlies(new Set(["ally"]));
+    const foe = gsC.enemies().find((e) => e.bot_id === "foe")!;
+    const aC = combatBehavior(ctxOf(gsC), foe);
+    check("sword + ally in the arc -> repositions instead of cleaving", aC?.action !== "attack", aC);
+
+    // Ally hugging the TARGET (2 tiles from us) also blocks the swing.
+    const gsT2 = freshGameState();
+    gsT2.applyTick(
+      tickFrom(self({ weapon: "sword" }), [
+        enemy({ bot_id: "foe", position: [51, 50] }),
+        enemy({ bot_id: "ally", position: [52, 50] }),
+      ]),
+    );
+    gsT2.setFriendlies(new Set(["ally"]));
+    const aT2 = combatBehavior(ctxOf(gsT2), gsT2.enemies().find((e) => e.bot_id === "foe")!);
+    check("sword + ally hugging the target -> holds the swing", aT2?.action !== "attack", aT2);
+
+    // No ally around -> swings exactly as before.
+    const gsFree = freshGameState();
+    gsFree.applyTick(tickFrom(self({ weapon: "sword" }), [enemy({ bot_id: "foe", position: [51, 50] })]));
+    const aFree = combatBehavior(ctxOf(gsFree), gsFree.enemies()[0]!);
+    check("sword with no ally around -> attacks as before", aFree?.action === "attack", aFree);
+
+    // Toggle restores the old behavior even with an ally adjacent.
+    const off = mergePolicy(DEFAULT_POLICY, { friendlySplashGuard: false });
+    const aOff = combatBehavior(ctxOf(gsC, off), foe);
+    check("friendlySplashGuard=false restores cleaving", aOff?.action === "attack", aOff);
+
+    // Staff: AoE tile re-aims off an ally-adjacent cluster centroid.
+    const gsS = freshGameState();
+    gsS.applyTick(
+      tickFrom(self({ weapon: "staff" }), [
+        enemy({ bot_id: "foe", position: [54, 50] }),
+        enemy({ bot_id: "ally", position: [54, 51] }),
+      ]),
+    );
+    gsS.setFriendlies(new Set(["ally"]));
+    const aS = combatBehavior(ctxOf(gsS), gsS.enemies().find((e) => e.bot_id === "foe")!);
+    check(
+      "staff never drops AoE on an ally tile (re-aims or repositions)",
+      aS === null || aS.action !== "attack" || !("target_position" in aS) || aS.target_position === undefined ||
+        Math.max(Math.abs(aS.target_position[0] - 54), Math.abs(aS.target_position[1] - 51)) > 1,
+      aS,
+    );
+  }
+
+  console.log("\nfire-lane + retreat-mine discipline (coalition)");
+  {
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+
+    // Bow bot, target at 6 tiles, ally standing ON the line at 3 tiles -> no shot.
+    const gsL = freshGameState();
+    gsL.setConfirmedAttackRange(8); // freshGameState pins melee range 1
+    gsL.applyTick(
+      tickFrom(self({ weapon: "bow" }), [
+        enemy({ bot_id: "foe", position: [56, 50], attack_range: 8 }),
+        enemy({ bot_id: "ally", position: [53, 50] }),
+      ]),
+    );
+    gsL.setFriendlies(new Set(["ally"]));
+    const foeL = gsL.enemies().find((e) => e.bot_id === "foe")!;
+    const aL = combatBehavior(ctxOf(gsL), foeL);
+    check("bow never shoots through an ally in the fire lane", aL?.action !== "attack", aL);
+
+    // Ally clearly off the line -> shot goes out unchanged.
+    const gsClear = freshGameState();
+    gsClear.setConfirmedAttackRange(8);
+    gsClear.applyTick(
+      tickFrom(self({ weapon: "bow" }), [
+        enemy({ bot_id: "foe", position: [56, 50], attack_range: 8 }),
+        enemy({ bot_id: "ally", position: [53, 46] }),
+      ]),
+    );
+    gsClear.setFriendlies(new Set(["ally"]));
+    const aClear = combatBehavior(ctxOf(gsClear), gsClear.enemies().find((e) => e.bot_id === "foe")!);
+    check("bow with a clear lane fires as before", aClear?.action === "attack", aClear);
+
+    // Grapple yank drags the target's body along the pull line — blocked when
+    // an ally stands on it (two live kills by the grapple slot).
+    const gsG = freshGameState();
+    gsG.applyTick(
+      tickFrom(self({ weapon: "grapple", grapple_charges: 2, grapple_cooldown: 0 }), [
+        enemy({ bot_id: "foe", position: [58, 50] }),
+        enemy({ bot_id: "ally", position: [54, 50] }),
+      ]),
+    );
+    gsG.setFriendlies(new Set(["ally"]));
+    const aG = combatBehavior(ctxOf(gsG), gsG.enemies().find((e) => e.bot_id === "foe")!);
+    check(
+      "grapple never yanks a target through an ally on the pull line",
+      !(aG?.action === "grapple" && aG.target === "foe"),
+      aG,
+    );
+    const gsGClear = freshGameState();
+    gsGClear.applyTick(
+      tickFrom(self({ weapon: "grapple", grapple_charges: 2, grapple_cooldown: 0 }), [
+        enemy({ bot_id: "foe", position: [58, 50] }),
+        enemy({ bot_id: "ally", position: [54, 45] }),
+      ]),
+    );
+    gsGClear.setFriendlies(new Set(["ally"]));
+    const aGC = combatBehavior(ctxOf(gsGClear), gsGClear.enemies().find((e) => e.bot_id === "foe")!);
+    check("grapple with a clear pull line yanks as before", aGC?.action === "grapple" && aGC.target === "foe", aGC);
+
+    // move_to paths are server-pathed and blind to invisible ally mines —
+    // allyMineOnPath flags a straight path crossing one.
+    const gsP = freshGameState();
+    gsP.applyTick(tickFrom(self(), []));
+    gsP.setAllyMines([[55, 50] as [number, number]]);
+    check("straight path over an ally mine is flagged", gsP.allyMineOnPath([60, 50]));
+    check("path well clear of the mine is not flagged", !gsP.allyMineOnPath([50, 60]));
+    check("believed own mines no longer expire (round-lifetime)", (() => {
+      const g = freshGameState();
+      g.applyTick(tickFrom(self({ position: [40, 40] }), []));
+      g.noteIssuedAction({ type: "action", tick: 100, action: "place_mine" });
+      const realNow = Date.now;
+      Date.now = () => realNow() + 200_000;
+      try {
+        return g.ownMinePositions().length === 1;
+      } finally {
+        Date.now = realNow;
+      }
+    })());
+
+    // Retreat mine suppressed when an ally trails within 6 tiles.
+    const ctlM = new Controller();
+    ctlM.onRoundStart();
+    const gsMine = freshGameState();
+    gsMine.applyTick(
+      tickFrom(self({ hp: 20, max_hp: 160 }), [
+        enemy({ bot_id: "chaser", position: [48, 50] }),
+        enemy({ bot_id: "ally", position: [52, 50] }),
+      ]),
+    );
+    gsMine.setFriendlies(new Set(["ally"]));
+    const aMine = ctlM.decide(gsMine);
+    check("no mine seeded in a shared retreat corridor (ally within 6)", aMine.action !== "place_mine", aMine);
+  }
+
+  console.log("\ngrapple yank-range threat modeling (deep dive 2)");
+  {
+    // A grapple wielder at 9 tiles: profile range ~5 says 'safe', the 12-tile
+    // yank says otherwise. Our tile must read meaningfully more dangerous than
+    // the same layout with a sword enemy (whose reach really is short).
+    const gsY = freshGameState();
+    gsY.applyTick(tickFrom(self(), [enemy({ bot_id: "hook", weapon: "grapple", position: [59, 50], attack_range: 0 })]));
+    const gsS = freshGameState();
+    gsS.applyTick(tickFrom(self(), [enemy({ bot_id: "swd", weapon: "sword", position: [59, 50], attack_range: 0 })]));
+    const yank = gsY.threatField().danger(50, 50);
+    const sword = gsS.threatField().danger(50, 50);
+    check("grapple wielder at 9 tiles reads far more dangerous than sword", yank > sword * 3, { yank, sword });
+    // Beyond yank range the band ends.
+    const gsFar = freshGameState();
+    gsFar.applyTick(tickFrom(self(), [enemy({ bot_id: "hook", weapon: "grapple", position: [64, 50], attack_range: 0 })]));
+    check(
+      "beyond 12 tiles the yank band is gone",
+      Math.abs(gsFar.threatField().danger(50, 50) - gsS.threatField().danger(50, 50)) < 5,
+      gsFar.threatField().danger(50, 50),
+    );
+  }
+
+  console.log("\nlearnings-authoritative drafting + double_bounty discipline (deep dive 2)");
+  {
+    const agent2 = new LoadoutAgent();
+    const sys = (agent2 as unknown as { systemPrompt(): string }).systemPrompt();
+    check("loadout prompt makes weapon history authoritative for every slot", sys.includes("EVIDENCE AUTHORITY") && sys.includes("including index 0"));
+    check("loadout prompt bans proven losers", sys.includes("BANNED"));
+    check(
+      "double_bounty is survival, not aggression, in all three prompts",
+      sys.includes("SURVIVAL build") &&
+        new StrategistAgent()["systemPrompt"]().includes("do NOT raise aggression") &&
+        new TacticianAgent()["systemPrompt"]().includes("MORE cautious"),
+    );
+  }
+
+  console.log("\ndeterministic draft-evidence enforcement");
+  {
+    const rates = {
+      daggers: { wins: 2, played: 99 },
+      bow: { wins: 25, played: 123 },
+      sword: { wins: 2, played: 80 },
+      staff: { wins: 0, played: 3 },
+    };
+    check("index 0 proven-loser pick is overridden to the proven winner", enforceWeaponEvidence("daggers", 0, 3, rates) === "bow");
+    check(
+      "slot 2 with a dead archetype promotes to the GLOBAL proven winner",
+      enforceWeaponEvidence("sword", 2, 3, rates) === "bow",
+    );
+    check("slot 1 loser pick promotes to bow (in its archetype)", enforceWeaponEvidence("staff", 1, 3, { ...rates, staff: { wins: 1, played: 20 } }) === "bow");
+    check("solo bots are never overridden", enforceWeaponEvidence("daggers", null, 1, rates) === null);
+    check("unproven picks (<10 played) are never overridden", enforceWeaponEvidence("spear", 0, 3, rates) === null);
+    check("healthy picks stand", enforceWeaponEvidence("bow", 1, 3, rates) === null);
+  }
+
+  console.log("\nally repulsion: the pack spaces itself so splash can't form");
+  {
+    const gsR = freshGameState();
+    gsR.applyTick(tickFrom(self(), [enemy({ bot_id: "ally", position: [52, 50] })]));
+    gsR.setFriendlies(new Set(["ally"]));
+    const nearAlly = gsR.threatField().danger(52, 50);
+    const besideAlly = gsR.threatField().danger(53, 50);
+    const clear = gsR.threatField().danger(46, 50);
+    check("tiles near an ally carry repulsion cost", nearAlly > clear && besideAlly > clear, { nearAlly, besideAlly, clear });
+    check("repulsion is mild, not a hazard wall", nearAlly - clear <= 20, nearAlly - clear);
+    // Repulsion is local: beyond 2 tiles of the ally there is no cost at all
+    // (an ally radiates no weapon-coverage danger — it's excluded from
+    // enemies() — so distant tiles must read clean).
+    check("repulsion stops beyond 2 tiles of the ally", gsR.threatField().danger(49, 50) === clear, {
+      at3: gsR.threatField().danger(49, 50),
+      clear,
+    });
+  }
+
   console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
   {
     const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));
@@ -1812,6 +2207,33 @@ async function run(): Promise<void> {
       "scoped stores use distinct files (parallel bots don't clobber)",
       new BrainMemoryStore("bot1").load() === null,
     );
+
+    // Fleet-wide evidence: a second bot's snapshot on disk is visible to the
+    // first bot's loadFleet() — the weapon proof doesn't stay siloed.
+    const store3 = new BrainMemoryStore("bot1");
+    const h3 = new RoundHistory(30);
+    h3.push({
+      round: 6,
+      roundModifier: "none",
+      ourWeapon: "bow",
+      kills: 3,
+      deaths: 0,
+      killedBy: [],
+      weKilled: [],
+      enemyWeaponsSeen: {},
+      won: true,
+      ticksSurvived: 1500,
+      hpAtDeath: 0,
+    });
+    store3.save({ rounds: h3.toJSON(), profiles: [], insights: null });
+    store3.flush();
+    const fleetSnaps = new BrainMemoryStore("bot0").loadFleet();
+    const weapons = new Set(fleetSnaps.flatMap((s) => s.rounds.map((r) => r.ourWeapon)));
+    check(
+      "loadFleet merges every bot's disk memory (bow win visible to bot0)",
+      fleetSnaps.length === 2 && weapons.has("bow") && weapons.has("daggers"),
+      { snaps: fleetSnaps.length, weapons: [...weapons] },
+    );
     delete process.env.BRAIN_MEMORY_DIR;
   }
 
@@ -1855,6 +2277,50 @@ async function run(): Promise<void> {
       "tactician system prompt instructs modifier reactions",
       (tac as unknown as { systemPrompt(): string }).systemPrompt().includes("round_modifier"),
     );
+  }
+
+  console.log("\ntelemetry log: per-bot channels (fleet mode doesn't clobber)");
+  {
+    const dir = mkdtempSync(join(tmpdir(), "telemetry-fleet-"));
+    process.env.TELEMETRY_LOG = "1";
+    process.env.TELEMETRY_LOG_DIR = dir;
+    const t = new TelemetryLog();
+    const tick = (n: number) => ({
+      tick: n,
+      priority: "engage_target" as const,
+      fellThrough: [],
+      reason: "test",
+      hp: 100,
+      maxHp: 100,
+      posX: 1,
+      posY: 1,
+    });
+    // Two engines interleaving within one process, as a fleet does.
+    t.setActiveBot("bot-a");
+    t.roundStart("9");
+    t.tickDecision(tick(1));
+    t.setActiveBot("bot-b");
+    t.roundStart("9");
+    t.tickDecision(tick(2));
+    t.setActiveBot("bot-a");
+    t.tickDecision(tick(3));
+    t.roundEnd("9", "win");
+    t.setActiveBot("bot-b");
+    t.roundEnd("9", "loss");
+    await new Promise((r) => setTimeout(r, 150)); // let streams flush
+    const a = readFileSync(join(dir, "bot-a_9.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const b = readFileSync(join(dir, "bot-b_9.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    check(
+      "each bot gets its own round file with only its own events",
+      a.length === 4 && b.length === 3 && a.every((e) => e.t !== "tick_decision" || [1, 3].includes(e.tick)) && b.every((e) => e.t !== "tick_decision" || e.tick === 2),
+      { a: a.map((e) => [e.t, e.tick]), b: b.map((e) => [e.t, e.tick]) },
+    );
+    check(
+      "round boundaries carry the right botId and outcome",
+      a[0]!.botId === "bot-a" && a[3]!.outcome === "win" && b[0]!.botId === "bot-b" && b[2]!.outcome === "loss",
+    );
+    delete process.env.TELEMETRY_LOG;
+    delete process.env.TELEMETRY_LOG_DIR;
   }
 
   console.log("\noutcome log (win-rate pass measurement infra)");

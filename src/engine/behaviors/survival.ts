@@ -50,6 +50,25 @@ export function survivalBehavior(ctx: DecisionContext): ClientAction | null {
   // raw zone-centre move when no local step actually improves on standing still
   // (e.g. we're already at the best nearby tile and need the longer server path).
   if (!self.in_safe_zone) {
+    // Deep outside with a grapple charge ready: anchor-pull toward the zone
+    // (12-tile yank vs 1-tile steps). At 3 HP/tick of zone damage, every
+    // walked tile from far out is HP a fight later doesn't have — before this
+    // the ONLY way back in was walking (verified: no zone-aware grapple path
+    // existed anywhere).
+    if (
+      ctx.policy.grappleZoneEscape &&
+      self.distance_to_zone_edge >= ctx.policy.grappleZoneEscapeMinDist &&
+      self.grapple_charges > 0 &&
+      self.grapple_cooldown <= 0
+    ) {
+      const toward = gs.stepToward(self.zone_center);
+      const reach = Math.min(12, self.distance_to_zone_edge + 2);
+      const dest: GridVec = [
+        Math.max(0, Math.min(gs.gridSize - 1, Math.round(gs.position[0] + toward[0] * reach))),
+        Math.max(0, Math.min(gs.gridSize - 1, Math.round(gs.position[1] + toward[1] * reach))),
+      ];
+      if (gs.isPassable(dest[0], dest[1])) return grappleTo(tick, dest);
+    }
     const fieldStep = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
     if (fieldStep) return move(tick, fieldStep);
     return moveTo(tick, self.zone_center);
@@ -182,7 +201,6 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   if (self.dodge_cooldown > 0 || self.invuln_ticks > 0 || self.stun_ticks > 0) return null;
 
   const me = gs.position;
-  const myRange = gs.effectiveAttackRange();
   const enemies = gs.enemies();
 
   const { chargedIncoming, highChargeBow } = imminentHitTriggers(ctx);
@@ -346,10 +364,16 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
     const dThreat = dist(me, threat.position);
     if (profile.ranged && threat.has_los && !threat.is_dodging && dThreat <= range + 0.5 && dThreat > 1.6) {
       if (self.weapon === "staff") {
-        return attackAt(tick, threat.bot_id, gs.predictEnemyPos(threat, ctx.policy.leadTicks));
+        const aoe = gs.predictEnemyPos(threat, ctx.policy.leadTicks);
+        // AoE / fire-lane discipline also applies while kiting.
+        if (!ctx.policy.friendlySplashGuard || !gs.allyNear(aoe, 1)) {
+          return attackAt(tick, threat.bot_id, aoe);
+        }
+      } else if (!ctx.policy.friendlySplashGuard || !gs.allyInFireLane(threat.position)) {
+        const charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
+        return attack(tick, threat.bot_id, charged);
       }
-      const charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
-      return attack(tick, threat.bot_id, charged);
+      // Ally in the lane/blast — keep kiting; the shot waits for a clean angle.
     }
   }
 

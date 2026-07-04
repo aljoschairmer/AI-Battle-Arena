@@ -20,7 +20,9 @@ import type {
   LoadoutRequest,
 } from "../types/internal";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../types/internal";
-import type { LeaderboardEntry } from "../types/protocol";
+import type { LeaderboardEntry, Weapon } from "../types/protocol";
+import { enforceWeaponEvidence } from "./draftEvidence";
+import { chooseFallbackLoadout } from "../engine/loadout";
 import { AnalystAgent } from "./agents/analyst";
 import { LoadoutAgent } from "./agents/loadout";
 import { StrategistAgent } from "./agents/strategist";
@@ -300,14 +302,16 @@ export class Orchestrator {
     // Cache our latest lifetime stats.
     if (req.context.ourStats) this.ourStats = req.context.ourStats;
 
-    // Sync leaderboard ELOs into the opponent registry.
-    void this.refreshMeta().then(() => {
-      for (const e of this.meta.leaderboardTop as (LeaderboardEntry & { bot_id?: string })[]) {
-        if (e.bot_id) this.opponents.upsertFromLeaderboard(e as { bot_id: string; name: string; elo: number });
-      }
-    });
-
+    // refreshMeta itself syncs leaderboard ELOs into the opponent registry —
+    // a previous duplicate fire-and-forget copy of that sync raced this await
+    // into double parallel fetches on cold paths.
     await this.refreshMeta();
+    const fleetIndex = req.context.fleetIndex ?? null;
+    const fleetSize = req.context.fleetSize ?? 1;
+    // Learned per-weapon evidence — FLEET-WIDE, not just this bot's own
+    // history: a bot that always drafted X never accumulates evidence
+    // about Y; the proof lives in a sibling's memory file.
+    const weaponWinRates = this.fleetWeaponWinRates();
     const out = await this.loadoutAgent.run({
       request: req,
       meta: {
@@ -318,24 +322,61 @@ export class Orchestrator {
         arenaBotsConnected: req.context.arenaBotsConnected,
         insights: this.insights,
         opponentProfiles: this.opponents.forPrompt(8),
+        fleetIndex,
+        fleetSize,
+        weaponWinRates,
       },
     });
 
     let plan: LoadoutPlan;
     const c = req.context.constraints;
     if (out) {
-      plan = {
-        weapon: out.weapon,
-        stats: normalizeStats(out.stats, c.statBudget, c.statMin, c.statMax),
-        fallback_behavior: out.fallback_behavior,
-        reasoning: out.reasoning,
-        source: "loadout-agent",
-      };
+      // Fleet safety net (deterministic, prompt-independent): the server
+      // autopilot runs fallback_behavior when we miss ticks and doesn't know
+      // the coalition — hunting behaviors attack the nearest bot, teammates
+      // included. Downgrade them for fleets even if the LLM ignored the rule.
+      const fleet = fleetSize > 1;
+      const fb =
+        fleet && out.fallback_behavior === "hunter"
+          ? "opportunistic"
+          : fleet && out.fallback_behavior === "aggressive"
+            ? "territorial"
+            : out.fallback_behavior;
+      // Evidence enforcement (deterministic): live drafts showed the LLM
+      // ignoring the weapon-history authority rule and re-picking a ~2%
+      // weapon over a 20%+ one. If its pick is a proven loser and the slot
+      // has a proven winner available, override — stats and fallback are
+      // rebuilt for the substituted weapon.
+      const better = enforceWeaponEvidence(out.weapon, fleetIndex, fleetSize, weaponWinRates);
+      if (better) {
+        const rebuilt = chooseFallbackLoadout({
+          availableWeapons: [better],
+          modifier: req.context.roundModifier,
+          budget: c.statBudget,
+          min: c.statMin,
+          max: c.statMax,
+          lobbyWeapons: req.context.lobbyWeapons,
+          fleetIndex: fleetIndex ?? undefined,
+        });
+        log.info({ from: out.weapon, to: better }, "draft overridden by fleet weapon evidence");
+        plan = {
+          ...rebuilt,
+          reasoning: `evidence override: ${out.weapon} is a proven loser in our history, ${better} is a proven winner`,
+          source: "loadout-agent+evidence",
+        };
+      } else {
+        plan = {
+          weapon: out.weapon,
+          stats: normalizeStats(out.stats, c.statBudget, c.statMin, c.statMax),
+          fallback_behavior: fb,
+          reasoning: out.reasoning,
+          source: "loadout-agent",
+        };
+      }
     } else {
       plan = { ...req.fallback, reasoning: "fallback (agent unavailable)", source: "fallback" };
     }
     await this.bus.publish(Channels.loadoutPlan, plan);
-    await this.bus.setKV(Keys.currentLoadoutPlan, plan);
     log.info({ weapon: plan.weapon, source: plan.source }, "loadout plan published");
   }
 
@@ -364,9 +405,29 @@ export class Orchestrator {
 
     // Run the two post-round agents in parallel: the Analyst updates strategic
     // insights; the Tuner rewrites the engine's live behaviour policy.
-    await Promise.all([this.runAnalyst(outcome), this.runTuner(outcome)]);
+    await Promise.all([this.runAnalyst(outcome), this.runTuner()]);
     // And once more with the fresh insights included.
     this.persistMemory();
+  }
+
+  /** Merge per-weapon win/played evidence across every fleet member's disk memory. */
+  private fleetWeaponWinRates(): Partial<Record<Weapon, { wins: number; played: number }>> {
+    const merged: Partial<Record<Weapon, { wins: number; played: number }>> = {};
+    const add = (w: Weapon | null, won: boolean) => {
+      if (!w) return;
+      const e = merged[w] ?? { wins: 0, played: 0 };
+      e.played += 1;
+      if (won) e.wins += 1;
+      merged[w] = e;
+    };
+    // Siblings' snapshots include our own persisted rounds, so disk is the
+    // single source; fall back to in-memory history when disk is empty.
+    const fleet = this.memoryStore.loadFleet();
+    if (fleet.length === 0) return this.roundHistory.summary().weaponWinRates;
+    for (const snap of fleet) {
+      for (const r of snap.rounds) add(r.ourWeapon, r.won);
+    }
+    return merged;
   }
 
   private persistMemory(): void {
@@ -412,7 +473,7 @@ export class Orchestrator {
    * based on how the fight is going, then pushes it to the Engine over the bus —
    * the bot re-tunes itself mid-session with no restart.
    */
-  private async runTuner(outcome: RoundOutcome): Promise<void> {
+  private async runTuner(): Promise<void> {
     if (this.tunerBusy) return;
     this.tunerBusy = true;
     try {

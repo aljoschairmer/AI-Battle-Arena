@@ -79,18 +79,6 @@ export function dpsInto(
   return damagePerHit(weaponBaseDamage, attackStat, targetDefenseStat) / cooldownSeconds;
 }
 
-/** Seconds to kill a target build: its effective HP / our DPS into it. */
-export function timeToKill(
-  weaponBaseDamage: number,
-  cooldownSeconds: number,
-  attackerStats: StatBlock,
-  targetStats: StatBlock,
-): number {
-  const d = dpsInto(weaponBaseDamage, cooldownSeconds, attackerStats.attack, targetStats.defense);
-  if (d <= 0) return Infinity;
-  return deriveStats(targetStats).effectiveHp / d;
-}
-
 /**
  * Fight power = effective_hp × dmg-per-hit into a neutral opponent. Proportional
  * to (survival time × damage output), i.e. how many neutral opponents this build

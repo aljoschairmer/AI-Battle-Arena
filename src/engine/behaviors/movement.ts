@@ -7,7 +7,7 @@ import {
   toUnitStep,
 } from "../../shared/geometry";
 import { profileFor } from "../weapons";
-import { type DecisionContext, isEndgame, move, moveTo, sprintTo } from "./context";
+import { type DecisionContext, isEndgame, move, moveTo } from "./context";
 
 /**
  * Positioning relative to a target. Melee bots close in; ranged bots hold near
@@ -160,7 +160,7 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   // hunt_bounty with a live beacon: its position is global and fog-exempt —
   // walk it down directly instead of patrolling and hoping.
   if (directive.objective === "hunt_bounty" && ctx.policy.huntBountyBeacon && gs.bountyBeacon) {
-    return sprintTo(tick, gs.bountyBeacon.position);
+    return moveTo(tick, gs.bountyBeacon.position);
   }
 
   // Endgame: with the zone this small, ground near the shrink-target center
@@ -206,7 +206,7 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
     gs.bountyBeacon &&
     gs.hpFraction() >= ctx.policy.idleHealBelowHpFraction
   ) {
-    return sprintTo(tick, gs.bountyBeacon.position);
+    return moveTo(tick, gs.bountyBeacon.position);
   }
 
   // Still nothing? Use the quiet phase to improve our position: capture a
@@ -391,8 +391,9 @@ function searchLastSeenEnemy(ctx: DecisionContext): ClientAction | null {
       gs.forgetLastSeen(target.bot_id);
       continue;
     }
-    const preferSprint = !gs.terrain || gs.isPassable(target.position[0], target.position[1]);
-    return preferSprint ? sprintTo(tick, target.position) : moveTo(tick, target.position);
+    // (sprintTo was removed as dead code — it was byte-identical to moveTo;
+    // the protocol has no sprint action.)
+    return moveTo(tick, target.position);
   }
   return null;
 }

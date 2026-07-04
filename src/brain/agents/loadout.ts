@@ -51,6 +51,11 @@ export interface LoadoutAgentInput {
       deathsVsUs: number;
       roundsFaced: number;
     }[];
+    /** Our fleet position (0-based, null when flying solo) and fleet size. */
+    fleetIndex: number | null;
+    fleetSize: number;
+    /** Learned per-weapon results from OUR recent rounds (RoundHistory). */
+    weaponWinRates: Partial<Record<Weapon, { wins: number; played: number }>>;
   };
 }
 
@@ -91,6 +96,22 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       "  positioning. Do NOT stack defense; a flat 5/5/5/5 leaves ~9% fight power on the table. Avoid glass",
       "  cannons too (speed<4 or hp<4 dies to the shrinking zone and ganks) — aim hp 6-8, attack 6-8, defense 2-4.",
       "",
+      "FLEET DIVERSITY — BINDING when fleet_size > 1, and it OVERRIDES the decision priority list below:",
+      "our coalition drafts N bots from identical information, which converges on N copies of one weapon —",
+      "a mirrored fleet shares one set of weaknesses and gets swept by its counter. Your archetype is fixed",
+      "by fleet_index: index 0 = best overall pick (full freedom); index 1 = MUST pick from the ranged",
+      "archetype {bow, staff, grapple}; index 2 = MUST pick from the frontline/control archetype",
+      "{sword, shield, spear}. Index 1 and 2 must NEVER copy index 0's likely pick.",
+      "",
+      "EVIDENCE AUTHORITY — our_weapon_history outranks BOTH the archetype defaults and the tier list,",
+      "for EVERY slot including index 0. Compute win rate = wins/played for weapons with 10+ played:",
+      "- a weapon under 10% win rate over 10+ rounds is BANNED for your slot while any weapon shows 15%+",
+      "  over 10+ rounds (measured live: a 'top-tier' melee pick ran 2% over 99 rounds while the ranged slot",
+      "  ran 20-28% — tier lists describe other bots' games, history describes OURS)",
+      "- index 0 should take the highest-win-rate weapon outright when the evidence is this strong;",
+      "  index 1/2 take the best NON-banned weapon from their archetype, or the overall best if their whole",
+      "  set is banned. Never end up with two bots on the same weapon when alternatives exist.",
+      "",
       "Decision priority (apply top-down, stop at first strong signal):",
       "0. weapon_meta — LIVE balance telemetry: each weapon's tier (S>A>B>C) + meta_score + balance direction",
       "   (buffing/nerfing), plus recent_form (0-100, LAST-FEW-ROUNDS form — a hotter signal than lifetime",
@@ -104,12 +125,15 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       "   primaryWeapon, pick its counter from the matchup matrix (e.g. they run bow/staff -> daggers; they run",
       "   shield -> staff; they run daggers -> sword/spear). Weigh repeat killers over one-off sightings.",
       "3. learning_insights.recommended_weapon — proven best weapon for this meta. Use it UNLESS lobby counter-pick strongly disagrees.",
-      "4. round_modifier — hazard_storm/fast_zone: ranged + high speed; pickup_surge: high speed (daggers/grapple); double_bounty: high attack (bow/daggers).",
+      "4. round_modifier — hazard_storm/fast_zone: ranged + high speed; pickup_surge: high speed (daggers/grapple); double_bounty: SURVIVAL build (hp/speed over attack — measured 0 wins in 24 double_bounty rounds on aggressive builds; outlive the bloodbath).",
       "5. our_lifetime_stats — kd_ratio < 1.0: add 2 pts to hp+defense; bots_in_arena > 8: add 1 pt to hp (more chaos = more punishment).",
       "6. leaderboard_top — if top-3 ELO bots in lobby all use same weapon type, pick its counter.",
       "",
       "",
-      "fallback_behavior steers the bot autonomously when it misses a tick — pick the one that fits the weapon/stats:",
+      "fallback_behavior steers the bot autonomously when it misses a tick. FLEET RULE (fleet_size > 1):",
+      "the server autopilot does NOT know your coalition — a hunter/aggressive autopilot attacks the nearest",
+      "bot, teammates included. Fleets MUST pick defensive, territorial, or opportunistic — never hunter or",
+      "aggressive. Solo bots pick the one that fits the weapon/stats:",
       "- aggressive: chase and trade (sword/grapple, high attack).",
       "- defensive: hold and survive (shield, high hp/defense).",
       "- opportunistic: poke and pick fights when favourable (staff, balanced).",
@@ -167,6 +191,9 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
           dangerous_opponents: ins.dangerousOpponents,
           suggested_posture: ins.suggestedPosture,
         } : null,
+        fleet_index: meta.fleetIndex,
+        fleet_size: meta.fleetSize,
+        our_weapon_history: Object.keys(meta.weaponWinRates).length > 0 ? meta.weaponWinRates : null,
         known_opponents: meta.opponentProfiles.length > 0 ? meta.opponentProfiles : null,
         leaderboard_top: meta.leaderboardTop.slice(0, 6),
         opponent_weapon_popularity: meta.weaponPopularity,

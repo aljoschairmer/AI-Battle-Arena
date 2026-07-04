@@ -18,8 +18,8 @@
  * with BRAIN_MEMORY_DIR (default logs/brain).
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { LearningInsights, OpponentProfile, RoundOutcome } from "./memory";
 import { child } from "./logger";
 
@@ -93,6 +93,35 @@ export class BrainMemoryStore {
     }, WRITE_DEBOUNCE_MS);
     // Don't hold the process open just to flush a snapshot.
     this.timer.unref?.();
+  }
+
+  /**
+   * Load EVERY bot's snapshot in this store's directory (memory*.json) —
+   * fleet-wide evidence for the Loadout draft. Per-bot memories are scoped,
+   * so a bot that always drafted weapon X never accumulates evidence about
+   * weapon Y in its own history; the proof that Y wins lives in a sibling's
+   * file (observed live: the lead slot kept drafting a 2%-win-rate weapon
+   * because the 20%-win-rate evidence sat in another bot's memory).
+   * Boot/draft-time only, best-effort.
+   */
+  loadFleet(): BrainMemorySnapshot[] {
+    if (!this.enabled) return [];
+    const out: BrainMemorySnapshot[] = [];
+    try {
+      const dir = dirname(this.path);
+      for (const f of readdirSync(dir)) {
+        if (!/^memory.*\.json$/.test(f)) continue;
+        try {
+          const raw = JSON.parse(readFileSync(join(dir, f), "utf8")) as BrainMemorySnapshot;
+          if (raw?.v === 1 && Array.isArray(raw.rounds)) out.push(raw);
+        } catch {
+          /* skip unreadable sibling */
+        }
+      }
+    } catch {
+      /* dir unreadable — behave like a lone bot */
+    }
+    return out;
   }
 
   /** Flush any pending snapshot immediately (shutdown path). */

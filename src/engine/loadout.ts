@@ -20,6 +20,24 @@ const WEAPON_FALLBACK: Record<Weapon, FallbackBehavior> = {
 };
 
 /**
+ * Fleet-safe autopilot map: the server runs fallback_behavior when we miss
+ * ticks (reconnects, arena restarts, frame gaps) and its autopilot knows
+ * nothing about the coalition — a "hunter" autopilot attacks the nearest bot,
+ * teammate included (two live teammate kills landed in the turbulent rounds
+ * right after an arena restart). Coalition fleets never hand the server a
+ * hunting behavior.
+ */
+const WEAPON_FALLBACK_FLEET: Record<Weapon, FallbackBehavior> = {
+  sword: "territorial",
+  daggers: "opportunistic",
+  shield: "defensive",
+  spear: "territorial",
+  bow: "territorial",
+  staff: "opportunistic",
+  grapple: "territorial",
+};
+
+/**
  * Deterministic loadout chooser used as the Brain-independent fallback. Picks a
  * strong default weapon, nudged by the round modifier, and a legal stat spread.
  * The Engine always has this ready so it can select a loadout inside the 10s
@@ -33,6 +51,13 @@ export function chooseFallbackLoadout(opts: {
   max?: number;
   /** Weapon counts seen in the pre-round lobby — drives the counter-pick. */
   lobbyWeapons?: Partial<Record<Weapon, number>>;
+  /**
+   * Position in our own fleet (0-based). N bots ranking identical inputs pick
+   * identical weapons (observed live: the whole fleet opening daggers every
+   * round); rotating each bot onto a different top-3 pick keeps the
+   * deterministic fallback fleet complementary. Omit for a lone bot.
+   */
+  fleetIndex?: number;
 }): LoadoutSelection {
   const available = opts.availableWeapons?.length
     ? opts.availableWeapons
@@ -43,11 +68,13 @@ export function chooseFallbackLoadout(opts: {
   // Rank by standalone strength (metaScore + modifier fit) blended with the
   // matchup edge against whatever weapons the lobby is fielding (Strategy-tab
   // matrix). With no lobby intel the counter term is 0 and this is pure meta.
-  const weapon = rankCounterPicks(
+  const ranked = rankCounterPicks(
     available,
     opts.lobbyWeapons ?? {},
     (w) => WEAPONS[w].metaScore + modifierBonus(w, mod),
-  )[0]!.weapon;
+  );
+  const slot = opts.fleetIndex !== undefined ? opts.fleetIndex % Math.min(3, ranked.length) : 0;
+  const weapon = ranked[slot]!.weapon;
 
   // Fight-power-optimal spread for the ACTUAL round budget/bounds (the arena can
   // vary them per round), honouring the weapon's mobility/durability floors.
@@ -67,7 +94,8 @@ export function chooseFallbackLoadout(opts: {
   return {
     weapon,
     stats,
-    fallback_behavior: WEAPON_FALLBACK[weapon] ?? "defensive",
+    fallback_behavior:
+      (opts.fleetIndex !== undefined ? WEAPON_FALLBACK_FLEET[weapon] : WEAPON_FALLBACK[weapon]) ?? "defensive",
   };
 }
 

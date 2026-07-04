@@ -21,7 +21,6 @@ import type {
   ClientAction,
   ConnectedMsg,
   GridVec,
-  NearbyBot,
   NearbyEntity,
   SelfState,
   StatBlock,

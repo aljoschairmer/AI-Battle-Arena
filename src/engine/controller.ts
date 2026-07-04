@@ -342,6 +342,11 @@ export class Controller {
     // counter misses rejected placements and desyncs across mid-round reconnects.
     if (gs.minesPlaced(this.minesPlacedThisRound) >= 3) return null;
     if (gs.tick - this.lastMineTick < this.policy.mineCooldownTicks) return null;
+    // Never seed a shared retreat corridor: an ally close behind us follows
+    // the same escape lines, and a mine placed <500ms before they cross it is
+    // invisible to them even with the coalition broadcast (reports are
+    // tick-batched). Mines while fleeing in a pack aren't worth a teammate.
+    if (this.policy.friendlySplashGuard && gs.allyNear(gs.position, 6)) return null;
 
     const me = gs.position;
     const retreatVector = maybeRetreatVector(retreatAction, me);

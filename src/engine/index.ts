@@ -44,6 +44,9 @@ export interface EngineOptions {
   botName?: string;
   botColor?: string;
   label?: string;
+  /** Position in our own fleet (0-based) and fleet size, for draft diversity. */
+  botIndex?: number;
+  fleetSize?: number;
   /** Global (unscoped) bus for bot-to-bot coalition comms; enables BOT_COOP. */
   coopBus?: Bus;
 }
@@ -53,6 +56,8 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   const botName = opts.botName ?? config.arena.botName;
   const botColor = opts.botColor ?? config.arena.botColor;
   const label = opts.label ?? "";
+  const fleetSize = opts.fleetSize ?? 1;
+  const fleetIndex = fleetSize > 1 ? (opts.botIndex ?? 0) : null;
   const log = child(label ? `engine:${label}` : "engine");
   // Per-bot REST client (bot/stats + config are key-scoped, so each bot needs
   // its own; public endpoints work regardless).
@@ -257,6 +262,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       min: gs.statMin,
       max: gs.statMax,
       lobbyWeapons: gs.lobbyWeapons,
+      fleetIndex: fleetIndex ?? undefined,
     });
 
     if (!publishToBrain) {
@@ -310,14 +316,6 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       ts: Date.now(),
       round,
       roundModifier: modifier,
-      roundModifierLabel: modifier,
-      botsInRound: 0,
-      leaderboardTop: [],
-      bounties: (bounties?.entries ?? []).map((b) => ({
-        name: b.name,
-        bounty: b.bounty ?? 0,
-        botId: b.bot_id ?? null,
-      })),
       ourStats: ourStats
         ? {
             elo: ourStats.elo,
@@ -337,6 +335,8 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
           }
         : null,
       arenaBotsConnected: arenaStatus?.bots_connected ?? null,
+      fleetIndex,
+      fleetSize,
       lobbyWeapons: { ...gs.lobbyWeapons },
       constraints: {
         statBudget: gs.statBudget,
@@ -408,6 +408,22 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         { botId: msg.bot_id, grid: msg.grid_size, weapons: msg.available_weapons?.length ?? 0 },
         "connected to arena",
       );
+      // Coalition hello: membership normally spreads via tick-driven reports,
+      // but ticks don't flow in the lobby — a freshly-started fleet fought the
+      // first ~500ms of round 1 with EMPTY friendly sets (teammates were valid
+      // targets). Announce ourselves the moment we know our bot_id.
+      if (coop && gs.selfId) {
+        coop.report({
+          ts: Date.now(),
+          botId: gs.selfId,
+          name: botName,
+          weapon: gs.self?.weapon ?? "sword",
+          pos: gs.position,
+          hp: gs.self?.hp ?? 0,
+          enemies: [],
+          mines: [],
+        });
+      }
       void configureBot();
       void requestLoadout("", -1);
     } catch (e) {
@@ -457,6 +473,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       gs.applyRoundStart(msg);
       controller.onRoundStart();
       resetRoundTracking();
+      telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       telemetryLog.roundStart(String(msg.round_number));
       log.info(
         { round: msg.round_number, modifier: msg.round_modifier, bots: msg.bots_in_round },
@@ -499,11 +516,14 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       // if disabled or peers are silent, the bot fights exactly as before.
       if (coop && gs.selfId) {
         gs.setFriendlies(coop.friendlyIds());
+        // Allies' mines are invisible to us server-side; their broadcast
+        // tiles become threat-field hazards so we route around them instead
+        // of dying to our own squad's area denial.
+        gs.setAllyMines(coop.friendlyMines());
         controller.setCoopFocus(coop.focus());
         controller.setCoopRole(coop.role());
         if (gs.tick % COOP_EVERY_TICKS === 0) {
           const seen = gs.enemies().slice(0, 8).map((e) => ({ id: e.bot_id, hp: e.hp, pos: e.position }));
-          const focusVote = seen.slice().sort((a, b) => a.hp - b.hp)[0]?.id ?? null;
           coop.report({
             ts: Date.now(),
             botId: gs.selfId,
@@ -512,12 +532,26 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
             pos: gs.position,
             hp: gs.self?.hp ?? 0,
             enemies: seen,
-            focusVote,
+            mines: gs.ownMinePositions(),
           });
         }
       }
 
-      const action = controller.decide(gs);
+      // Route this engine's per-tick telemetry to its own bot channel — three
+      // interleaved engines in one process otherwise write into whichever
+      // bot's file was opened last.
+      telemetryLog.setActiveBot(gs.selfId ?? "unknown");
+      let action = controller.decide(gs);
+      // Server-pathed moves (move_to) walk straight through invisible ally
+      // mines — the server's A* can't know them. When the straight path
+      // crosses a broadcast mine tile, reroute with a local threat-aware step
+      // (which DOES see them) and let next tick re-plan. This was the residual
+      // teammate-kill channel after every attack-side guard: our dominant
+      // action type simply never consulted the mine map.
+      if (action.action === "move_to" && gs.allyMineOnPath(action.target_position)) {
+        const step = gs.threatField().safestStep(gs.position, (c, r) => gs.isSafeStep(c, r), true);
+        if (step) action = { type: "action", tick: action.tick, action: "move", direction: step };
+      }
       socket.send(action);
 
       if (publishToBrain && gs.tick % SNAPSHOT_EVERY_TICKS === 0) {
@@ -555,7 +589,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         (e) => e.type === "bot" && e.bot_id === msg.killed_by,
       ) as { name?: string; weapon?: Weapon } | undefined;
       const killerName = msg.killer_name || killerEntity?.name || "";
-      const killerWeapon: Weapon = msg.weapon_used || killerEntity?.weapon || "sword";
+      // "" when neither the frame nor our last-seen entities know the weapon —
+      // an honest unknown. (A guessed default here sent the pass-3
+      // friendly-fire investigation chasing a phantom sword.)
+      const killerWeapon: Weapon | "" = msg.weapon_used || killerEntity?.weapon || "";
       log.info({ by: killerName || msg.killed_by, weapon: killerWeapon, respawn: msg.respawn }, "died");
       roundKilledBy.push({ botId: msg.killed_by, name: killerName, weapon: killerWeapon });
       if (msg.respawn) gs.isRespawning = true;
@@ -583,6 +620,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       const ticksSurvived = gs.tick - roundStartTick;
       const won = msg.round_winner === botName || msg.round_winner === gs.selfId;
       const hpAtDeath = roundKilledBy.length > 0 ? (gs.self?.hp ?? 0) : 0;
+      telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       telemetryLog.roundEnd(String(msg.round_number), won ? "win" : "loss");
 
       const outcome: RoundOutcome = {

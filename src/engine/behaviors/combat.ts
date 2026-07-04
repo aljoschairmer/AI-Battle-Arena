@@ -84,8 +84,31 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
         // Place the delayed AoE/burn field on the enemy cluster centroid (to catch
         // several bots) or — since the field is delayed — where this target is
         // heading rather than where it stands now (target leading).
-        const aoe = enemyCluster(ctx, 2) ?? gs.predictEnemyPos(target, ctx.policy.leadTicks);
+        let aoe = enemyCluster(ctx, 2) ?? gs.predictEnemyPos(target, ctx.policy.leadTicks);
+        // AoE is indiscriminate: never drop the burn field on a coalition ally.
+        if (ctx.policy.friendlySplashGuard && gs.allyNear(aoe, 1)) {
+          aoe = target.position;
+          if (gs.allyNear(aoe, 1)) {
+            const spacing = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+            return spacing ? move(tick, spacing) : null;
+          }
+        }
         return attackAt(tick, target.bot_id, aoe);
+      }
+
+      // Sword cleave clips every adjacent bot indiscriminately — never swing
+      // with a coalition ally in the arc (attacker-adjacent) or hugging the
+      // target. Four live teammate kills in the pass-3 prod fleet, ALL by the
+      // sword slots, forced this guard: targeting filters can't stop
+      // server-side splash. Step to spacing instead; the swing comes next
+      // tick from a clean angle.
+      if (
+        ctx.policy.friendlySplashGuard &&
+        self.weapon === "sword" &&
+        (gs.allyNear(me, 1.5) || gs.allyNear(target.position, 1))
+      ) {
+        const spacing = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+        return spacing ? move(tick, spacing) : null;
       }
 
       // Shield: bash disrupted targets for bonus damage
@@ -109,6 +132,20 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
             return null; // let positionForCombat take the final step
           }
         }
+      }
+
+      // Never shoot through a teammate: projectiles may hit the first bot in
+      // the path (one live teammate kill by a bow slot). Step for a clean lane
+      // instead; the shot comes next tick. Grapple's in-range attack is a
+      // slam that can scatter — an ally near the target blocks it too.
+      if (
+        ctx.policy.friendlySplashGuard &&
+        profile.ranged &&
+        !profile.aoe &&
+        (gs.allyInFireLane(target.position) || (self.weapon === "grapple" && gs.allyNear(target.position, 2)))
+      ) {
+        const spacing = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+        return spacing ? move(tick, spacing) : null;
       }
 
       return attack(tick, target.bot_id, charged);
@@ -154,17 +191,25 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
     if (gwAction) return gwAction;
   }
 
+  // A grapple yank drags the target's BODY along the line to us — an ally on
+  // that path gets slammed; the slam can also scatter beyond the line, so an
+  // ally simply NEAR the target blocks the pull too (grapple slots kept
+  // producing teammate kills after the lane-only guard).
+  const pullLaneClear =
+    !ctx.policy.friendlySplashGuard ||
+    (!gs.allyInFireLane(target.position) && !gs.allyNear(target.position, 2));
+
   // Grapple weapon: use position-grapple to anchor self to walls when kiting ranged
   if (self.weapon === "grapple" && self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
     // Primary: pull target toward us
-    if (d <= 12 && target.has_los) {
+    if (d <= 12 && target.has_los && pullLaneClear) {
       return grappleTarget(tick, target.bot_id);
     }
   }
 
   // Universal grapple-to-target for melee weapons: close the gap (LLM-tunable threshold).
   if (!profile.ranged && self.grapple_charges > 0 && self.grapple_cooldown <= 0) {
-    if (d > range + ctx.policy.grappleCloseMinGap && d <= 12 && target.has_los) {
+    if (d > range + ctx.policy.grappleCloseMinGap && d <= 12 && target.has_los && pullLaneClear) {
       return grappleTarget(tick, target.bot_id);
     }
   }

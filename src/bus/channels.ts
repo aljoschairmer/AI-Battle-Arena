@@ -9,8 +9,10 @@
  *   Brain  --directive-->       Engine  (strategy guidance)
  *   Brain  --loadout_plan-->    Engine  (chosen weapon + stats)
  *
- * KV holds the "last value" of directive/loadout/insights so a freshly
- * (re)started peer can pick up current state immediately.
+ * KV holds the "last value" of directive/policy/insights so a freshly
+ * (re)started peer can pick up current state immediately. (Loadout plans are
+ * NOT mirrored: they're valid for one selection window only — the engine
+ * re-requests on every connect, so a stale plan must never be re-readable.)
  */
 export const Channels = {
   snapshot: "arena:snapshot",
@@ -31,7 +33,6 @@ export const Channels = {
 
 export const Keys = {
   currentDirective: "arena:kv:directive",
-  currentLoadoutPlan: "arena:kv:loadout_plan",
   learningInsights: "arena:kv:insights",
   currentPolicy: "arena:kv:policy",
   currentCoopDirective: "arena:kv:coop_directive",

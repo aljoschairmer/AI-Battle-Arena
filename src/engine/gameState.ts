@@ -90,6 +90,11 @@ export class GameState {
   private bountyIds = new Set<string>();
   private bountyNames = new Set<string>();
 
+  /** Where WE planted mines (believed, from issued actions; capped at 3). */
+  private ownMines: { pos: GridVec; ts: number }[] = [];
+  /** Coalition allies' broadcast mine tiles — treated as hazards to route around. */
+  private allyMines: GridVec[] = [];
+
   /** True while we are in the post-death wait before a respawn. */
   isRespawning = false;
 
@@ -203,6 +208,10 @@ export class GameState {
     this.bountyBeacon = null;
     this.lastSeenEnemies = {};
     this.enemyVel = {};
+    // Mines don't survive round transitions (everyone respawns on a fresh
+    // field); stale beliefs would phantom-block tiles all next round.
+    this.ownMines = [];
+    this.allyMines = [];
     this.threatCache = null;
     this.pendingDodge = null;
     this.lastTargetId = null;
@@ -277,6 +286,12 @@ export class GameState {
   noteIssuedAction(a: ClientAction): void {
     if (a.action === "shove") {
       this.lastShoveTick = a.tick;
+    } else if (a.action === "place_mine") {
+      // Believed own-mine positions, broadcast to coalition allies so they
+      // can route around them (the server hides mines from non-owners, allies
+      // included). Server cap is 3 live mines per bot; oldest belief drops.
+      this.ownMines.push({ pos: [...this.position] as GridVec, ts: Date.now() });
+      if (this.ownMines.length > 3) this.ownMines.shift();
     } else if (a.action === "use_gravity_well") {
       this.gravityWellCharges = Math.max(0, this.gravityWellCharges - 1);
     } else if (a.action === "use_item") {
@@ -426,7 +441,7 @@ export class GameState {
       this.lastSeenEnemies[enemy.bot_id] = { position: enemy.position, tick: now };
     }
     const stale = Object.entries(this.lastSeenEnemies).filter(
-      ([id, info]) => now - info.tick > 30,
+      ([, info]) => now - info.tick > 30,
     );
     for (const [id] of stale) delete this.lastSeenEnemies[id];
   }
@@ -460,40 +475,59 @@ export class GameState {
   }
 
   /**
-   * Hazards we should not stand on: burn fields, void, mines, gravity wells,
-   * and — the big one — pulsing hazard-zone RECTANGLES. The live wire type is
+   * Hazards we should not stand on RIGHT NOW: burn fields, void, mines,
+   * gravity wells, and pulsing hazard-zone RECTANGLES. The live wire type is
    * "hazard_zone" with a width×height rect from a top-left `position` (pass-4
    * API audit; the engine previously only matched "hazard", which the server
    * never sends, so it walked through active zones at 3 HP/tick).
    *
-   * Zone pulse awareness: a zone's tiles are dangerous when it's `active` OR
-   * about to flip back on (tick_counter near the end of its off phase — don't
-   * path into a rect that ignites under our feet). Zones from the map layout
-   * that we can't see live (outside fog) count as always-dangerous: their
-   * tick_counter drifts from the static snapshot, so assuming hot is the only
-   * safe read, and the rects are small enough that avoiding them costs little.
+   * Pulse awareness: a zone's tiles are dangerous when it's `active` OR about
+   * to flip back on (hazardZoneHot); off-phase zones and `active: false`
+   * point-hazards are excluded here (crossable this instant) and surfaced via
+   * dormantHazardTiles() instead, so routing can cross a dormant pulse zone
+   * while the threat field still discourages lingering on it. Zones from the
+   * map layout that we can't see live (outside fog) count as always-dangerous:
+   * their tick_counter drifts from the static snapshot, so assuming hot is the
+   * only safe read, and the rects are small enough that avoiding costs little.
    */
   hazardTiles(): GridVec[] {
     const out: GridVec[] = [];
     const liveZoneIds = new Set<string>();
     for (const e of this.entities) {
-      if (e.type === "burn_field") {
-        out.push(e.position);
+      if (e.type === "burn_field" || e.type === "hazard") {
+        // Pulsing point-hazards advertise active:false in their off-phase.
+        if ((e as { active?: boolean }).active !== false) out.push(e.position);
       } else if (e.type === "hazard_zone") {
         liveZoneIds.add(e.id);
         if (hazardZoneHot(e)) pushZoneTiles(out, e);
-      } else if (
-        e.type === "hazard" ||
-        e.type === "void" ||
-        e.type === "mine" ||
-        e.type === "gravity_well"
-      ) {
+      } else if (e.type === "void" || e.type === "mine" || e.type === "gravity_well") {
+        // No off-phase for these: void is void, mines don't pulse.
         out.push((e as { position: GridVec }).position);
       }
     }
     // Map-known zones with no live entity this tick (out of fog): assume hot.
     for (const z of this.mapHazardZones) {
       if (!liveZoneIds.has(z.id)) pushZoneTiles(out, z);
+    }
+    // Coalition allies' broadcast mines are as lethal as our own visible
+    // hazards but the server never shows them to us. Folding them in here
+    // hard-blocks isSafeStep near them and triggers the step-off-hazard rung
+    // — the threat-field +50 alone only DISCOURAGED the tile, and safestStep
+    // still picked it when every alternative scored worse (a third coalition
+    // kill landed after mine broadcasting went live).
+    for (const m of this.allyMines) out.push(m);
+    return out;
+  }
+
+  /** Pulsing hazards currently in their off-phase — crossable but not campable. */
+  dormantHazardTiles(): GridVec[] {
+    const out: GridVec[] = [];
+    for (const e of this.entities) {
+      if ((e.type === "burn_field" || e.type === "hazard") && (e as { active?: boolean }).active === false) {
+        out.push(e.position);
+      } else if (e.type === "hazard_zone" && !hazardZoneHot(e)) {
+        pushZoneTiles(out, e);
+      }
     }
     return out;
   }
@@ -686,6 +720,96 @@ export class GameState {
     );
   }
 
+  /**
+   * Believed positions of our own live mines (for the coalition broadcast).
+   * No age expiry: the spec gives mines no lifetime, so the safe assumption
+   * is they persist until the round resets (which clears this list) — a 90s
+   * TTL was silently dropping broadcast protection while the mine still sat
+   * armed on the field.
+   */
+  ownMinePositions(): GridVec[] {
+    return this.ownMines.map((m) => m.pos);
+  }
+
+  /** Replace the coalition allies' broadcast mine tiles. */
+  setAllyMines(tiles: GridVec[]): void {
+    this.allyMines = tiles;
+    // The threat field bakes these in — never serve a cached field built
+    // against the old tile set (ordering vs applyTick must not matter).
+    this.threatCache = null;
+  }
+
+  // (allyMineTiles() was removed: ally mines ride hazardTiles() directly since
+  // the hard-block change, which left it with no production consumers.)
+
+  /** Positions of coalition allies currently inside our fog. */
+  allyTiles(): GridVec[] {
+    const out: GridVec[] = [];
+    for (const e of this.entities) {
+      if (e.type !== "bot") continue;
+      const b = e as NearbyBot;
+      if (b.is_alive && this.friendlies.has(b.bot_id)) out.push(b.position);
+    }
+    return out;
+  }
+
+  /**
+   * Is a coalition ally standing in the fire lane between us and `target`
+   * (within ~0.8 tiles of the segment, strictly between the endpoints)?
+   * Projectiles may hit the first bot in the path — never shoot through a
+   * teammate.
+   */
+  allyInFireLane(target: GridVec): boolean {
+    const [ax, ay] = this.position;
+    const [bx, by] = target;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return false;
+    for (const t of this.allyTiles()) {
+      const u = ((t[0] - ax) * dx + (t[1] - ay) * dy) / len2;
+      if (u <= 0.05 || u >= 0.95) continue; // behind us or at/past the target
+      const px = ax + u * dx;
+      const py = ay + u * dy;
+      const distSq = (t[0] - px) ** 2 + (t[1] - py) ** 2;
+      if (distSq <= 0.8 * 0.8) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Does the straight segment from us to `target` pass within 1 tile of a
+   * coalition ally's broadcast mine? Server-side pathfinding (move_to) knows
+   * nothing about invisible ally mines, so the engine must reroute locally.
+   * Straight-line approximation of the server's A* — imperfect, but paths are
+   * near-straight in open ground and the reroute re-evaluates every tick.
+   */
+  allyMineOnPath(target: GridVec): boolean {
+    const [ax, ay] = this.position;
+    const dx = target[0] - ax;
+    const dy = target[1] - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return false;
+    for (const m of this.allyMines) {
+      const u = Math.max(0, Math.min(1, ((m[0] - ax) * dx + (m[1] - ay) * dy) / len2));
+      const px = ax + u * dx;
+      const py = ay + u * dy;
+      if ((m[0] - px) ** 2 + (m[1] - py) ** 2 <= 1.2 * 1.2) return true;
+    }
+    return false;
+  }
+
+  /** Is a coalition ally within `r` (chebyshev) of the given tile? Fog-local. */
+  allyNear(pos: GridVec, r: number): boolean {
+    for (const e of this.entities) {
+      if (e.type !== "bot") continue;
+      const b = e as NearbyBot;
+      if (!b.is_alive || !this.friendlies.has(b.bot_id)) continue;
+      if (Math.max(Math.abs(b.position[0] - pos[0]), Math.abs(b.position[1] - pos[1])) <= r) return true;
+    }
+    return false;
+  }
+
   /** Replace the known bounty board (out-of-band REST refresh). */
   setBounties(entries: { botId?: string | null; name?: string | null }[]): void {
     this.bountyIds.clear();
@@ -713,11 +837,6 @@ export class GameState {
       if (n > bestCount) { bestCount = n; best = w; }
     }
     return best;
-  }
-
-  /** Whether a terrain cell is a teleport pad ('T') */
-  isTeleportPad(col: number, row: number): boolean {
-    return this.terrain?.[row]?.[col] === "T";
   }
 
   /** Whether a terrain cell is a capture pad ('C') */

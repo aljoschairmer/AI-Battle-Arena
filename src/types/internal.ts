@@ -204,6 +204,22 @@ export interface EnginePolicy {
    */
   shoveInterruptCharged: boolean;
   /**
+   * When caught outside the safe zone with a grapple charge ready, anchor-pull
+   * toward the zone instead of walking (12-tile yank vs 1-tile steps at
+   * 3 HP/tick of zone damage). Verified absent before pass 3's deep dive: the
+   * only route back in was walking.
+   */
+  grappleZoneEscape: boolean;
+  /** Minimum tiles outside the zone edge before spending a grapple on escape. */
+  grappleZoneEscapeMinDist: number;
+  /**
+   * Never land indiscriminate damage on coalition allies: sword refuses to
+   * cleave with an ally in the arc, staff never drops its AoE on an ally's
+   * tile. Forced by four live teammate kills (all sword) in the pass-3 fleet —
+   * targeting filters can't stop server-side splash.
+   */
+  friendlySplashGuard: boolean;
+  /**
    * Max CONSECUTIVE ticks the dagger in-range flank deferral may hold before
    * committing to a head-on attack. 0 = never defer (attack head-on always).
    * Bounds the pass-2 audit's confirmed orbit: an unterminated defer loop let
@@ -286,6 +302,9 @@ export const DEFAULT_POLICY: EnginePolicy = {
   endgameTradeCaution: 0.3,
   endgameCenterHoldFraction: 0.4,
   shoveInterruptCharged: true,
+  grappleZoneEscape: true,
+  grappleZoneEscapeMinDist: 4,
+  friendlySplashGuard: true,
   flankMaxDeferTicks: 6,
   retreatFireWhileKiting: true,
   idleHealBelowHpFraction: 0.75,
@@ -347,6 +366,9 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     endgameTradeCaution: clampNum(patch.endgameTradeCaution, 0, 0.6, base.endgameTradeCaution),
     endgameCenterHoldFraction: clampNum(patch.endgameCenterHoldFraction, 0.1, 0.9, base.endgameCenterHoldFraction),
     shoveInterruptCharged: asBool(patch.shoveInterruptCharged, base.shoveInterruptCharged),
+    grappleZoneEscape: asBool(patch.grappleZoneEscape, base.grappleZoneEscape),
+    grappleZoneEscapeMinDist: clampNum(patch.grappleZoneEscapeMinDist, 2, 12, base.grappleZoneEscapeMinDist),
+    friendlySplashGuard: asBool(patch.friendlySplashGuard, base.friendlySplashGuard),
     flankMaxDeferTicks: clampNum(patch.flankMaxDeferTicks, 0, 30, base.flankMaxDeferTicks),
     retreatFireWhileKiting: asBool(patch.retreatFireWhileKiting, base.retreatFireWhileKiting),
     idleHealBelowHpFraction: clampNum(patch.idleHealBelowHpFraction, 0, 1, base.idleHealBelowHpFraction),
@@ -453,8 +475,16 @@ export interface CoopMessage {
   hp: number;
   /** Enemies we currently see (never includes friendlies). */
   enemies: { id: string; hp: number; pos: GridVec }[];
-  /** Our vote for the focus-fire target (lowest-HP enemy we see), or null. */
-  focusVote: string | null;
+  // (focusVote was removed as dead: Coalition.focus() recomputes lowest-HP
+  // from the pooled enemies and the Coordinator never read the votes.)
+  /**
+   * Tiles where WE have live mines planted. The server hides mines from
+   * everyone but their owner — including coalition allies — so without this
+   * broadcast teammates walk blind into each other's minefields (observed
+   * live as two coalition kills in the pass-3 prod run). Optional for
+   * backward compatibility with older peers.
+   */
+  mines?: GridVec[];
 }
 
 /**
@@ -599,12 +629,10 @@ export interface RoundContext {
   ts: number;
   round: number;
   roundModifier: string;
-  roundModifierLabel: string;
-  botsInRound: number;
-  /** Snapshot of the public leaderboard top entries (best-effort). */
-  leaderboardTop: { name: string; elo: number; kills: number }[];
-  /** Current bounty board (best-effort). botId when the API provides it. */
-  bounties: { name: string; bounty: number; botId?: string | null }[];
+  // (roundModifierLabel/botsInRound/leaderboardTop/bounties were removed as
+  // dead weight: the engine populated them but no brain code ever read them —
+  // the orchestrator fetches its own leaderboard/bounties, and the engine's
+  // bounty fetch feeds GameState targeting directly.)
   /** Our own lifetime stats (best-effort). */
   ourStats: {
     elo: number;
@@ -622,6 +650,15 @@ export interface RoundContext {
   } | null;
   /** How many bots are connected in the arena right now (best-effort). */
   arenaBotsConnected: number | null;
+  /**
+   * This bot's position in our own coalition fleet (0-based) and the fleet
+   * size — null/1 for a lone bot. Drafting inputs: N bots drafting from
+   * identical information converge on identical weapons (observed live: the
+   * whole fleet opening daggers every round), so the Loadout agent uses the
+   * index to assign complementary archetypes.
+   */
+  fleetIndex: number | null;
+  fleetSize: number;
   /** Opponent weapons seen in the pre-round lobby (best-effort, may be empty). */
   lobbyWeapons: Partial<Record<Weapon, number>>;
   /** Constraints from the `connected` handshake. */
