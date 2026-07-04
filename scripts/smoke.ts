@@ -1866,6 +1866,25 @@ async function run(): Promise<void> {
     );
   }
 
+  console.log("\nally repulsion: the pack spaces itself so splash can't form");
+  {
+    const gsR = freshGameState();
+    gsR.applyTick(tickFrom(self(), [enemy({ bot_id: "ally", position: [52, 50] })]));
+    gsR.setFriendlies(new Set(["ally"]));
+    const nearAlly = gsR.threatField().danger(52, 50);
+    const besideAlly = gsR.threatField().danger(53, 50);
+    const clear = gsR.threatField().danger(46, 50);
+    check("tiles near an ally carry repulsion cost", nearAlly > clear && besideAlly > clear, { nearAlly, besideAlly, clear });
+    check("repulsion is mild, not a hazard wall", nearAlly - clear <= 20, nearAlly - clear);
+    // Repulsion is local: beyond 2 tiles of the ally there is no cost at all
+    // (an ally radiates no weapon-coverage danger — it's excluded from
+    // enemies() — so distant tiles must read clean).
+    check("repulsion stops beyond 2 tiles of the ally", gsR.threatField().danger(49, 50) === clear, {
+      at3: gsR.threatField().danger(49, 50),
+      clear,
+    });
+  }
+
   console.log("\nbrain memory persistence (disk survives restart + KV expiry)");
   {
     const dir = mkdtempSync(join(tmpdir(), "brain-memory-"));

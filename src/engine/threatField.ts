@@ -39,6 +39,7 @@ export class ThreatField {
     const enemies = gs.enemies();
     const hazards = gs.hazardTiles();
     const dormant = gs.dormantHazardTiles();
+    const allyTiles = gs.allyTiles();
     // Residual cost of an off-phase pulse hazard. A module literal like its
     // +50/+60 siblings above: the field builds inside GameState with no
     // EnginePolicy access, and the whole weight set tunes together or not at all.
@@ -73,6 +74,20 @@ export class ThreatField {
 
         // (Coalition allies' broadcast mines ride hazardTiles() itself now —
         // they're covered by the hazards loop above, same as visible mines.)
+
+        // Ally repulsion: a mild cost near coalition allies keeps the pack
+        // spaced so splash interactions can't form at all. The decision-time
+        // splash guard can't stop simultaneous-movement races (two teammate
+        // kills landed within 5 minutes of it deploying: both bots stepped
+        // into cleave range in the same tick the swing resolved) — spacing
+        // fixes the CLASS: cleave arcs, mine walk-ins, and AoE overlap all
+        // need packed allies to happen. Mild by design (~1/3 of a hazard):
+        // focus-fire still converges, it just approaches from spread angles.
+        for (const at of allyTiles) {
+          const dAlly = chebyshev(cell, at);
+          if (dAlly <= 1) danger += 15;
+          else if (dAlly === 2) danger += 5;
+        }
 
         // Dormant (off-phase) pulse hazards: crossable right now, but they
         // WILL re-arm — a residual cost discourages lingering/camping on them

@@ -530,6 +530,17 @@ export class GameState {
     return this.allyMines;
   }
 
+  /** Positions of coalition allies currently inside our fog. */
+  allyTiles(): GridVec[] {
+    const out: GridVec[] = [];
+    for (const e of this.entities) {
+      if (e.type !== "bot") continue;
+      const b = e as NearbyBot;
+      if (b.is_alive && this.friendlies.has(b.bot_id)) out.push(b.position);
+    }
+    return out;
+  }
+
   /** Is a coalition ally within `r` (chebyshev) of the given tile? Fog-local. */
   allyNear(pos: GridVec, r: number): boolean {
     for (const e of this.entities) {
