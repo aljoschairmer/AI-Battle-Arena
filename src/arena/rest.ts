@@ -4,7 +4,6 @@ import type {
   ArenaMapResponse,
   ArenaStatus,
   BotConfig,
-  BotLiveState,
   BotStats,
   BountyResponse,
   GenerateKeyResponse,
@@ -61,10 +60,6 @@ export class ArenaRest {
     return this.request<GenerateKeyResponse>("/api/v1/keys/generate", { method: "POST", body: {} });
   }
 
-  getHealth(): Promise<{ status: string; bots_online: number }> {
-    return this.request("/api/v1/health");
-  }
-
   getStatus(): Promise<ArenaStatus> {
     return this.request<ArenaStatus>("/api/v1/arena/status");
   }
@@ -105,10 +100,6 @@ export class ArenaRest {
 
   getBotStats(): Promise<BotStats> {
     return this.request<BotStats>("/api/v1/bot/stats", { auth: true });
-  }
-
-  getBotLive(): Promise<BotLiveState> {
-    return this.request<BotLiveState>("/api/v1/bot/live", { auth: true });
   }
 
   /** Best-effort: returns null on any failure so callers never crash on telemetry. */

@@ -147,9 +147,6 @@ export function assertConfigForRole(): void {
         "(multiple bots in parallel). Generate keys with `npm run keygen`.",
     );
   }
-  if (role === "all" && bus === "redis") {
-    // Allowed, but unusual — warn-worthy. Both workers will share one Redis.
-  }
   if (role !== "all" && bus === "memory") {
     throw new Error(
       `BUS=memory only works with ROLE=all (engine and brain in one process). ` +

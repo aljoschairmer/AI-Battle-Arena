@@ -298,14 +298,6 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       ts: Date.now(),
       round,
       roundModifier: modifier,
-      roundModifierLabel: modifier,
-      botsInRound: 0,
-      leaderboardTop: [],
-      bounties: (bounties?.entries ?? []).map((b) => ({
-        name: b.name,
-        bounty: b.bounty ?? 0,
-        botId: b.bot_id ?? null,
-      })),
       ourStats: ourStats
         ? {
             elo: ourStats.elo,
@@ -384,7 +376,6 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
           pos: gs.position,
           hp: gs.self?.hp ?? 0,
           enemies: [],
-          focusVote: null,
           mines: [],
         });
       }
@@ -480,7 +471,6 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         controller.setCoopRole(coop.role());
         if (gs.tick % COOP_EVERY_TICKS === 0) {
           const seen = gs.enemies().slice(0, 8).map((e) => ({ id: e.bot_id, hp: e.hp, pos: e.position }));
-          const focusVote = seen.slice().sort((a, b) => a.hp - b.hp)[0]?.id ?? null;
           coop.report({
             ts: Date.now(),
             botId: gs.selfId,
@@ -489,7 +479,6 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
             pos: gs.position,
             hp: gs.self?.hp ?? 0,
             enemies: seen,
-            focusVote,
             mines: gs.ownMinePositions(),
           });
         }

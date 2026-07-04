@@ -1349,10 +1349,10 @@ async function run(): Promise<void> {
     await coopC.start();
 
     const pos = [0, 0] as [number, number];
-    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [{ id: "e1", hp: 80, pos }, { id: "e2", hp: 30, pos }], focusVote: "e2" });
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [{ id: "e1", hp: 80, pos }, { id: "e2", hp: 30, pos }] });
     // C mistakenly reports ally "A" as an enemy at 1 HP — the coalition must NOT
     // focus-fire it (guards against a friendly-classification race).
-    coopC.report({ ts: Date.now(), botId: "C", name: "C", weapon: "bow", pos, hp: 100, enemies: [{ id: "A", hp: 1, pos }, { id: "e9", hp: 40, pos }], focusVote: "A" });
+    coopC.report({ ts: Date.now(), botId: "C", name: "C", weapon: "bow", pos, hp: 100, enemies: [{ id: "A", hp: 1, pos }, { id: "e9", hp: 40, pos }] });
     await new Promise((r) => setTimeout(r, 10)); // flush pub/sub
 
     check("B learns allies A and C (friendlyIds)", coopB.friendlyIds().has("A") && coopB.friendlyIds().has("C"), [...coopB.friendlyIds()]);
@@ -1394,14 +1394,14 @@ async function run(): Promise<void> {
     // non-owners, so coalition partners walked blind into each other's mines
     // (two live coalition kills). Allies broadcast believed mine tiles; the
     // threat field treats them as hazards.
-    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [], focusVote: null, mines: [[60, 60], [61, 60]] });
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [], mines: [[60, 60], [61, 60]] });
     await new Promise((r) => setTimeout(r, 10));
     check(
       "ally mine tiles reach the coalition (B sees A's mines)",
       coopB.friendlyMines().some(([x, y]) => x === 60 && y === 60) && coopB.friendlyMines().length === 2,
       coopB.friendlyMines(),
     );
-    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [], focusVote: null, mines: [] });
+    coopA.report({ ts: Date.now(), botId: "A", name: "A", weapon: "sword", pos, hp: 100, enemies: [], mines: [] });
     await new Promise((r) => setTimeout(r, 10));
     check("an ally's empty mine list clears its previous tiles", coopB.friendlyMines().length === 0, coopB.friendlyMines());
 
@@ -1441,10 +1441,6 @@ async function run(): Promise<void> {
         ts: Date.now(),
         round: 3,
         roundModifier: "",
-        roundModifierLabel: "",
-        botsInRound: 0,
-        leaderboardTop: [],
-        bounties: [],
         ourStats: null,
         arenaBotsConnected: 6,
         fleetIndex: 1,

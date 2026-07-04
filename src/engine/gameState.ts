@@ -627,11 +627,6 @@ export class GameState {
     return best;
   }
 
-  /** Whether a terrain cell is a teleport pad ('T') */
-  isTeleportPad(col: number, row: number): boolean {
-    return this.terrain?.[row]?.[col] === "T";
-  }
-
   /** Whether a terrain cell is a capture pad ('C') */
   isCapturePad(col: number, row: number): boolean {
     return this.terrain?.[row]?.[col] === "C";

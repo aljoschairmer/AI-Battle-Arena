@@ -167,11 +167,9 @@ export class Coalition {
     return d.roles[this.selfId()] ?? null;
   }
 
-  /** True when the Coordinator has called a squad-wide regroup/fallback. */
-  shouldRegroup(): boolean {
-    const d = this.coopDirective;
-    return Date.now() - d.ts <= DIRECTIVE_STALE_MS && d.regroup;
-  }
+  // (shouldRegroup() was removed as dead code — no behavior ever consumed the
+  // Coordinator's regroup call. CoopDirective.regroup stays on the wire; wire
+  // a consumer before resurrecting the accessor.)
 
   stop(): void {
     this.unsub?.();

@@ -7,7 +7,7 @@ import {
   toUnitStep,
 } from "../../shared/geometry";
 import { profileFor } from "../weapons";
-import { type DecisionContext, isEndgame, move, moveTo, sprintTo } from "./context";
+import { type DecisionContext, isEndgame, move, moveTo } from "./context";
 
 /**
  * Positioning relative to a target. Melee bots close in; ranged bots hold near
@@ -293,8 +293,7 @@ function searchLastSeenEnemy(ctx: DecisionContext): ClientAction | null {
   if (lastSeen.length === 0) return null;
 
   const target = lastSeen[0]!;
-  const preferSprint = !gs.terrain || gs.isPassable(target.position[0], target.position[1]);
-  return preferSprint ? sprintTo(tick, target.position) : moveTo(tick, target.position);
+  return moveTo(tick, target.position);
 }
 
 // --- helpers ---------------------------------------------------------------

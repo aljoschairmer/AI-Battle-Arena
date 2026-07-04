@@ -272,13 +272,9 @@ export class Orchestrator {
     // Cache our latest lifetime stats.
     if (req.context.ourStats) this.ourStats = req.context.ourStats;
 
-    // Sync leaderboard ELOs into the opponent registry.
-    void this.refreshMeta().then(() => {
-      for (const e of this.meta.leaderboardTop as (LeaderboardEntry & { bot_id?: string })[]) {
-        if (e.bot_id) this.opponents.upsertFromLeaderboard(e as { bot_id: string; name: string; elo: number });
-      }
-    });
-
+    // refreshMeta itself syncs leaderboard ELOs into the opponent registry —
+    // a previous duplicate fire-and-forget copy of that sync raced this await
+    // into double parallel fetches on cold paths.
     await this.refreshMeta();
     const fleetIndex = req.context.fleetIndex ?? null;
     const fleetSize = req.context.fleetSize ?? 1;
@@ -351,7 +347,6 @@ export class Orchestrator {
       plan = { ...req.fallback, reasoning: "fallback (agent unavailable)", source: "fallback" };
     }
     await this.bus.publish(Channels.loadoutPlan, plan);
-    await this.bus.setKV(Keys.currentLoadoutPlan, plan);
     log.info({ weapon: plan.weapon, source: plan.source }, "loadout plan published");
   }
 

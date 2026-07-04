@@ -41,8 +41,4 @@ export class TokenBucket {
     return false;
   }
 
-  get available(): number {
-    this.refill();
-    return this.tokens;
-  }
 }

@@ -458,8 +458,8 @@ export interface CoopMessage {
   hp: number;
   /** Enemies we currently see (never includes friendlies). */
   enemies: { id: string; hp: number; pos: GridVec }[];
-  /** Our vote for the focus-fire target (lowest-HP enemy we see), or null. */
-  focusVote: string | null;
+  // (focusVote was removed as dead: Coalition.focus() recomputes lowest-HP
+  // from the pooled enemies and the Coordinator never read the votes.)
   /**
    * Tiles where WE have live mines planted. The server hides mines from
    * everyone but their owner — including coalition allies — so without this
@@ -594,12 +594,10 @@ export interface RoundContext {
   ts: number;
   round: number;
   roundModifier: string;
-  roundModifierLabel: string;
-  botsInRound: number;
-  /** Snapshot of the public leaderboard top entries (best-effort). */
-  leaderboardTop: { name: string; elo: number; kills: number }[];
-  /** Current bounty board (best-effort). botId when the API provides it. */
-  bounties: { name: string; bounty: number; botId?: string | null }[];
+  // (roundModifierLabel/botsInRound/leaderboardTop/bounties were removed as
+  // dead weight: the engine populated them but no brain code ever read them —
+  // the orchestrator fetches its own leaderboard/bounties, and the engine's
+  // bounty fetch feeds GameState targeting directly.)
   /** Our own lifetime stats (best-effort). */
   ourStats: {
     elo: number;
