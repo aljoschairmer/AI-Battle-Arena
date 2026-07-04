@@ -2244,6 +2244,23 @@ async function run(): Promise<void> {
     const off = await restoreKnowledge(new MemoryBus(), { dir: dumpDir, brainDir: mkdtempSync(join(tmpdir(), "brain-off-")) });
     delete process.env.KNOWLEDGE_RESTORE;
     check("KNOWLEDGE_RESTORE=0 disables the restore", off.kvSeeded.length === 0 && off.memorySeeded.length === 0, off);
+
+    // MERGE semantics: a dump while the KV is empty (TTL'd out during an LLM
+    // outage — the live incident that emptied kv.json) must NOT clobber the
+    // previously dumped learning; a live value still overwrites its entry.
+    const emptyBus = new MemoryBus();
+    const d2 = await dumpKnowledge(emptyBus, ["", "bot0:"], paths);
+    const keptKv = JSON.parse(readFileSync(join(dumpDir, "kv.json"), "utf8")) as Record<string, { aggression?: number }>;
+    check(
+      "empty-KV dump keeps previous entries (no {} clobber)",
+      d2.kvLive.length === 0 && keptKv["bot0:arena:kv:policy"]?.aggression === 0.9,
+      { live: d2.kvLive, kept: Object.keys(keptKv) },
+    );
+    const fresherBus = new MemoryBus();
+    await fresherBus.setKV("bot0:arena:kv:policy", mergePolicy(learned, { aggression: 0.4 }));
+    await dumpKnowledge(fresherBus, ["", "bot0:"], paths);
+    const overKv = JSON.parse(readFileSync(join(dumpDir, "kv.json"), "utf8")) as Record<string, { aggression?: number }>;
+    check("live value still overwrites its dump entry", overKv["bot0:arena:kv:policy"]?.aggression === 0.4, overKv["bot0:arena:kv:policy"]?.aggression);
   }
 
   console.log("\nLLM circuit breaker (provider-outage storm protection)");
