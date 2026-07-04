@@ -71,13 +71,8 @@ export class ThreatField {
           if (chebyshev(cell, hz) <= 1) danger += 50;
         }
 
-        // Coalition allies' broadcast mines: the server hides mines from
-        // non-owners (allies included), so they never appear in `hazards` —
-        // without this teammates walk blind into each other's minefields
-        // (observed live as two coalition kills in the pass-3 prod run).
-        for (const am of gs.allyMineTiles()) {
-          if (chebyshev(cell, am) <= 1) danger += 50;
-        }
+        // (Coalition allies' broadcast mines ride hazardTiles() itself now —
+        // they're covered by the hazards loop above, same as visible mines.)
 
         // Dormant (off-phase) pulse hazards: crossable right now, but they
         // WILL re-arm — a residual cost discourages lingering/camping on them

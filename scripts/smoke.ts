@@ -1418,6 +1418,7 @@ async function run(): Promise<void> {
     gsT.setAllyMines([[60, 60] as [number, number]]);
     const mined = gsT.threatField().danger(60, 60);
     check("ally mine tile reads as a hazard in the threat field", mined >= calm + 50, { calm, mined });
+    check("ally mine tile hard-blocks safe stepping (not just discouraged)", !gsT.isSafeStep(60, 60) && !gsT.isSafeStep(61, 60));
     gsT.applyRoundStart({ type: "round_start", round_number: 99, round_modifier: "", bots_in_round: 4 } as RoundStartMsg);
     check("round transition clears ally-mine beliefs", gsT.threatField().danger(60, 60) < mined, gsT.allyMineTiles());
 

@@ -371,6 +371,23 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
         { botId: msg.bot_id, grid: msg.grid_size, weapons: msg.available_weapons?.length ?? 0 },
         "connected to arena",
       );
+      // Coalition hello: membership normally spreads via tick-driven reports,
+      // but ticks don't flow in the lobby — a freshly-started fleet fought the
+      // first ~500ms of round 1 with EMPTY friendly sets (teammates were valid
+      // targets). Announce ourselves the moment we know our bot_id.
+      if (coop && gs.selfId) {
+        coop.report({
+          ts: Date.now(),
+          botId: gs.selfId,
+          name: botName,
+          weapon: gs.self?.weapon ?? "sword",
+          pos: gs.position,
+          hp: gs.self?.hp ?? 0,
+          enemies: [],
+          focusVote: null,
+          mines: [],
+        });
+      }
       void configureBot();
       void requestLoadout("", -1);
     } catch (e) {

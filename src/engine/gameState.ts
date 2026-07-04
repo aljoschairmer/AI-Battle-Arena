@@ -361,6 +361,13 @@ export class GameState {
         out.push((e as { position: GridVec }).position);
       }
     }
+    // Coalition allies' broadcast mines are as lethal as our own visible
+    // hazards but the server never shows them to us. Folding them in here
+    // hard-blocks isSafeStep near them and triggers the step-off-hazard rung
+    // — the threat-field +50 alone only DISCOURAGED the tile, and safestStep
+    // still picked it when every alternative scored worse (a third coalition
+    // kill landed after mine broadcasting went live).
+    for (const m of this.allyMines) out.push(m);
     return out;
   }
 
