@@ -134,6 +134,14 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
         }
       }
 
+      // Never shoot through a teammate: projectiles may hit the first bot in
+      // the path (one live teammate kill by a bow slot). Step for a clean lane
+      // instead; the shot comes next tick.
+      if (ctx.policy.friendlySplashGuard && profile.ranged && !profile.aoe && gs.allyInFireLane(target.position)) {
+        const spacing = gs.threatField().safestStep(me, (c, r) => gs.isSafeStep(c, r), true);
+        return spacing ? move(tick, spacing) : null;
+      }
+
       return attack(tick, target.bot_id, charged);
     }
 

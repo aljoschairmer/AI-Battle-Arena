@@ -541,6 +541,30 @@ export class GameState {
     return out;
   }
 
+  /**
+   * Is a coalition ally standing in the fire lane between us and `target`
+   * (within ~0.8 tiles of the segment, strictly between the endpoints)?
+   * Projectiles may hit the first bot in the path — never shoot through a
+   * teammate.
+   */
+  allyInFireLane(target: GridVec): boolean {
+    const [ax, ay] = this.position;
+    const [bx, by] = target;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) return false;
+    for (const t of this.allyTiles()) {
+      const u = ((t[0] - ax) * dx + (t[1] - ay) * dy) / len2;
+      if (u <= 0.05 || u >= 0.95) continue; // behind us or at/past the target
+      const px = ax + u * dx;
+      const py = ay + u * dy;
+      const distSq = (t[0] - px) ** 2 + (t[1] - py) ** 2;
+      if (distSq <= 0.8 * 0.8) return true;
+    }
+    return false;
+  }
+
   /** Is a coalition ally within `r` (chebyshev) of the given tile? Fog-local. */
   allyNear(pos: GridVec, r: number): boolean {
     for (const e of this.entities) {

@@ -351,10 +351,16 @@ export function retreatAndHeal(ctx: DecisionContext): ClientAction | null {
     const dThreat = dist(me, threat.position);
     if (profile.ranged && threat.has_los && !threat.is_dodging && dThreat <= range + 0.5 && dThreat > 1.6) {
       if (self.weapon === "staff") {
-        return attackAt(tick, threat.bot_id, gs.predictEnemyPos(threat, ctx.policy.leadTicks));
+        const aoe = gs.predictEnemyPos(threat, ctx.policy.leadTicks);
+        // AoE / fire-lane discipline also applies while kiting.
+        if (!ctx.policy.friendlySplashGuard || !gs.allyNear(aoe, 1)) {
+          return attackAt(tick, threat.bot_id, aoe);
+        }
+      } else if (!ctx.policy.friendlySplashGuard || !gs.allyInFireLane(threat.position)) {
+        const charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
+        return attack(tick, threat.bot_id, charged);
       }
-      const charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
-      return attack(tick, threat.bot_id, charged);
+      // Ally in the lane/blast — keep kiting; the shot waits for a clean angle.
     }
   }
 

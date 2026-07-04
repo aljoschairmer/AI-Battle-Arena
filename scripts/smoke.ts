@@ -1866,6 +1866,52 @@ async function run(): Promise<void> {
     );
   }
 
+  console.log("\nfire-lane + retreat-mine discipline (coalition)");
+  {
+    const ctxOf = (g: GameState, policy = DEFAULT_POLICY) => ({ gs: g, directive: DEFAULT_DIRECTIVE, policy, tick: g.tick });
+
+    // Bow bot, target at 6 tiles, ally standing ON the line at 3 tiles -> no shot.
+    const gsL = freshGameState();
+    gsL.setConfirmedAttackRange(8); // freshGameState pins melee range 1
+    gsL.applyTick(
+      tickFrom(self({ weapon: "bow" }), [
+        enemy({ bot_id: "foe", position: [56, 50], attack_range: 8 }),
+        enemy({ bot_id: "ally", position: [53, 50] }),
+      ]),
+    );
+    gsL.setFriendlies(new Set(["ally"]));
+    const foeL = gsL.enemies().find((e) => e.bot_id === "foe")!;
+    const aL = combatBehavior(ctxOf(gsL), foeL);
+    check("bow never shoots through an ally in the fire lane", aL?.action !== "attack", aL);
+
+    // Ally clearly off the line -> shot goes out unchanged.
+    const gsClear = freshGameState();
+    gsClear.setConfirmedAttackRange(8);
+    gsClear.applyTick(
+      tickFrom(self({ weapon: "bow" }), [
+        enemy({ bot_id: "foe", position: [56, 50], attack_range: 8 }),
+        enemy({ bot_id: "ally", position: [53, 46] }),
+      ]),
+    );
+    gsClear.setFriendlies(new Set(["ally"]));
+    const aClear = combatBehavior(ctxOf(gsClear), gsClear.enemies().find((e) => e.bot_id === "foe")!);
+    check("bow with a clear lane fires as before", aClear?.action === "attack", aClear);
+
+    // Retreat mine suppressed when an ally trails within 6 tiles.
+    const ctlM = new Controller();
+    ctlM.onRoundStart();
+    const gsMine = freshGameState();
+    gsMine.applyTick(
+      tickFrom(self({ hp: 20, max_hp: 160 }), [
+        enemy({ bot_id: "chaser", position: [48, 50] }),
+        enemy({ bot_id: "ally", position: [52, 50] }),
+      ]),
+    );
+    gsMine.setFriendlies(new Set(["ally"]));
+    const aMine = ctlM.decide(gsMine);
+    check("no mine seeded in a shared retreat corridor (ally within 6)", aMine.action !== "place_mine", aMine);
+  }
+
   console.log("\nally repulsion: the pack spaces itself so splash can't form");
   {
     const gsR = freshGameState();
