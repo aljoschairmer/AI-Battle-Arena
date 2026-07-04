@@ -20,6 +20,24 @@ const WEAPON_FALLBACK: Record<Weapon, FallbackBehavior> = {
 };
 
 /**
+ * Fleet-safe autopilot map: the server runs fallback_behavior when we miss
+ * ticks (reconnects, arena restarts, frame gaps) and its autopilot knows
+ * nothing about the coalition — a "hunter" autopilot attacks the nearest bot,
+ * teammate included (two live teammate kills landed in the turbulent rounds
+ * right after an arena restart). Coalition fleets never hand the server a
+ * hunting behavior.
+ */
+const WEAPON_FALLBACK_FLEET: Record<Weapon, FallbackBehavior> = {
+  sword: "territorial",
+  daggers: "opportunistic",
+  shield: "defensive",
+  spear: "territorial",
+  bow: "territorial",
+  staff: "opportunistic",
+  grapple: "territorial",
+};
+
+/**
  * Deterministic loadout chooser used as the Brain-independent fallback. Picks a
  * strong default weapon, nudged by the round modifier, and a legal stat spread.
  * The Engine always has this ready so it can select a loadout inside the 10s
@@ -76,7 +94,8 @@ export function chooseFallbackLoadout(opts: {
   return {
     weapon,
     stats,
-    fallback_behavior: WEAPON_FALLBACK[weapon] ?? "defensive",
+    fallback_behavior:
+      (opts.fleetIndex !== undefined ? WEAPON_FALLBACK_FLEET[weapon] : WEAPON_FALLBACK[weapon]) ?? "defensive",
   };
 }
 

@@ -299,10 +299,21 @@ export class Orchestrator {
     let plan: LoadoutPlan;
     const c = req.context.constraints;
     if (out) {
+      // Fleet safety net (deterministic, prompt-independent): the server
+      // autopilot runs fallback_behavior when we miss ticks and doesn't know
+      // the coalition — hunting behaviors attack the nearest bot, teammates
+      // included. Downgrade them for fleets even if the LLM ignored the rule.
+      const fleet = (req.context.fleetSize ?? 1) > 1;
+      const fb =
+        fleet && out.fallback_behavior === "hunter"
+          ? "opportunistic"
+          : fleet && out.fallback_behavior === "aggressive"
+            ? "territorial"
+            : out.fallback_behavior;
       plan = {
         weapon: out.weapon,
         stats: normalizeStats(out.stats, c.statBudget, c.statMin, c.statMax),
-        fallback_behavior: out.fallback_behavior,
+        fallback_behavior: fb,
         reasoning: out.reasoning,
         source: "loadout-agent",
       };

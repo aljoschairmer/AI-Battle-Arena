@@ -1515,6 +1515,18 @@ async function run(): Promise<void> {
       chooseFallbackLoadout({}).weapon === picks[0],
       { solo: chooseFallbackLoadout({}).weapon, picks },
     );
+    // Server autopilot fleet rule: fleets never hand the server a hunting
+    // fallback (autopilot attacks the nearest bot, teammates included).
+    const fleetFallbacks = [0, 1, 2].map((i) => chooseFallbackLoadout({ fleetIndex: i }).fallback_behavior);
+    check(
+      "fleet fallback behaviors are never hunter/aggressive",
+      fleetFallbacks.every((f) => f !== "hunter" && f !== "aggressive"),
+      fleetFallbacks,
+    );
+    check(
+      "loadout system prompt carries the autopilot fleet rule",
+      (agent as unknown as { systemPrompt(): string }).systemPrompt().includes("never hunter"),
+    );
   }
 
   console.log("\nbounty-aware targeting (win-rate pass)");
