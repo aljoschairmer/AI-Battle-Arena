@@ -14,7 +14,7 @@ import { retreatAndHeal, survivalBehavior, tacticalDisengage } from "../src/engi
 import { combatBehavior } from "../src/engine/behaviors/combat";
 import { flankingPosition, grabPickup } from "../src/engine/behaviors/movement";
 import { selectTarget } from "../src/engine/behaviors/targeting";
-import { Coalition, onlyFleetRemains } from "../src/engine/coop";
+import { Coalition, onlyFleetRemains, onlyFleetRemainsByCount } from "../src/engine/coop";
 import { Channels } from "../src/bus";
 import { MemoryBus } from "../src/bus/memory";
 import { scoped } from "../src/bus";
@@ -39,9 +39,10 @@ import { StrategistAgent } from "../src/brain/agents/strategist";
 import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../src/brain/draftEvidence";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
+import { dumpKnowledge, restoreKnowledge } from "../src/shared/knowledge";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
 import { TacticianAgent } from "../src/brain/agents/tactician";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isServerMessageType } from "../src/arena/ws";
@@ -2185,6 +2186,65 @@ async function run(): Promise<void> {
     check("round_start clears spectator intel", gsR.hazardTiles().length === 0, gsR.hazardTiles());
   }
 
+  console.log("\nknowledge dump & restore (repo-persisted learning)");
+  {
+    const dumpDir = mkdtempSync(join(tmpdir(), "knowledge-"));
+    const brainDir = mkdtempSync(join(tmpdir(), "brain-live-"));
+    const paths = { dir: dumpDir, brainDir };
+
+    // Seed a "live" system: a learned policy in KV + one brain memory file.
+    const busK = new MemoryBus();
+    const learned = mergePolicy(DEFAULT_POLICY, { aggression: 0.9, reasoning: "learned it the hard way" });
+    await busK.setKV("bot0:arena:kv:policy", learned);
+    writeFileSync(
+      join(brainDir, "memory-bot0.json"),
+      JSON.stringify({ v: 1, savedAt: 1, rounds: [], profiles: [], insights: null }),
+    );
+
+    const dumped = await dumpKnowledge(busK, ["", "bot0:"], paths);
+    check(
+      "dump captures learned KV + memory files",
+      dumped.kvKeys.includes("bot0:arena:kv:policy") && dumped.memoryFiles.includes("memory-bot0.json"),
+      dumped,
+    );
+
+    // Fresh process, empty bus + empty brain dir -> restore seeds both.
+    const busFresh = new MemoryBus();
+    const brainFresh = mkdtempSync(join(tmpdir(), "brain-fresh-"));
+    const restored = await restoreKnowledge(busFresh, { dir: dumpDir, brainDir: brainFresh });
+    const seededPolicy = await busFresh.getKV<EnginePolicy>("bot0:arena:kv:policy");
+    check(
+      "restore seeds an empty system from the dump",
+      restored.kvSeeded.includes("bot0:arena:kv:policy") &&
+        restored.memorySeeded.includes("memory-bot0.json") &&
+        seededPolicy?.aggression === 0.9,
+      restored,
+    );
+
+    // Live state wins: a policy already on the bus is NOT clobbered.
+    const busLive = new MemoryBus();
+    const fresher = mergePolicy(learned, { aggression: 0.2 });
+    await busLive.setKV("bot0:arena:kv:policy", fresher);
+    await restoreKnowledge(busLive, { dir: dumpDir, brainDir: mkdtempSync(join(tmpdir(), "brain-live2-")) });
+    const kept = await busLive.getKV<EnginePolicy>("bot0:arena:kv:policy");
+    check("restore never clobbers live KV state", kept?.aggression === 0.2, kept?.aggression);
+
+    // Local learning wins: an existing memory file is not overwritten.
+    writeFileSync(
+      join(brainFresh, "memory-bot0.json"),
+      JSON.stringify({ v: 1, savedAt: 999, rounds: [], profiles: [], insights: null }),
+    );
+    await restoreKnowledge(busFresh, { dir: dumpDir, brainDir: brainFresh });
+    const keptFile = JSON.parse(readFileSync(join(brainFresh, "memory-bot0.json"), "utf8")) as { savedAt: number };
+    check("restore never overwrites existing memory files", keptFile.savedAt === 999, keptFile);
+
+    // KNOWLEDGE_RESTORE=0 disables the whole replay.
+    process.env.KNOWLEDGE_RESTORE = "0";
+    const off = await restoreKnowledge(new MemoryBus(), { dir: dumpDir, brainDir: mkdtempSync(join(tmpdir(), "brain-off-")) });
+    delete process.env.KNOWLEDGE_RESTORE;
+    check("KNOWLEDGE_RESTORE=0 disables the restore", off.kvSeeded.length === 0 && off.memorySeeded.length === 0, off);
+  }
+
   console.log("\ncoalition truce break (last fleet standing)");
   {
     const fleet = new Set(["mate1", "mate2"]);
@@ -2205,6 +2265,28 @@ async function run(): Promise<void> {
     const pick = selectTarget({ gs: gsT, directive: DEFAULT_DIRECTIVE, policy: DEFAULT_POLICY, tick: gsT.tick });
     check("selectTarget engages the ex-ally", pick?.bot_id === "mate1", pick);
     check("coopTruceBreak knob rides the clamp table", mergePolicy(DEFAULT_POLICY, { coopTruceBreak: false }).coopTruceBreak === false);
+
+    // Count-based fallback (spectator feed off): REST global alive count vs
+    // our own coop-derived alive count.
+    check("count fallback: global == ours -> truce over", onlyFleetRemainsByCount(3, 3));
+    check("count fallback: an enemy still alive -> truce holds", !onlyFleetRemainsByCount(4, 3));
+    check("count fallback: stale our-count (global < ours) -> truce holds", !onlyFleetRemainsByCount(2, 3));
+    check("count fallback: no count known -> truce holds", !onlyFleetRemainsByCount(null, 3));
+    check("count fallback: solo survivor -> nothing to break", !onlyFleetRemainsByCount(1, 1));
+
+    // aliveAllies counts only FRESH reports with hp > 0 (dead allies keep
+    // reporting hp 0 and must not count).
+    const busAA = new MemoryBus();
+    const coopAA = new Coalition(busAA, () => "self");
+    await coopAA.start();
+    const reportOf = (botId: string, hp: number) => ({
+      ts: Date.now(), botId, name: botId, weapon: "sword" as const, pos: [50, 50] as [number, number], hp, enemies: [], mines: [],
+    });
+    await busAA.publish(Channels.coop, reportOf("mateA", 80));
+    await busAA.publish(Channels.coop, reportOf("mateB", 0)); // dead, still reporting
+    await new Promise((r) => setTimeout(r, 20));
+    check("aliveAllies counts living allies only", coopAA.aliveAllies() === 1, coopAA.aliveAllies());
+    coopAA.stop();
   }
 
   console.log("\nthreat-weighted A* retreat (pathfinder)");

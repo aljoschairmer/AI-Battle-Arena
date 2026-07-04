@@ -20,6 +20,7 @@
     "keygen": "tsx scripts/generate-key.ts",
     "smoke": "tsx scripts/smoke.ts",
     "sim": "tsx scripts/simulate.ts",
+    "knowledge:dump": "tsx scripts/knowledge-dump.ts",
     "test": "tsx scripts/smoke.ts",
     "lint": "tsc --noEmit"
   },

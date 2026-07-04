@@ -23,7 +23,7 @@ import type {
 import { getSpectatorFeed } from "../arena/spectator";
 import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../brain/draftEvidence";
 import { Controller } from "./controller";
-import { Coalition, onlyFleetRemains } from "./coop";
+import { Coalition, onlyFleetRemains, onlyFleetRemainsByCount } from "./coop";
 import { GameState } from "./gameState";
 import { chooseFallbackLoadout } from "./loadout";
 import { buildSnapshot } from "./telemetry";
@@ -113,6 +113,12 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   // Coalition truce state (for transition logging only — the decision itself
   // is recomputed every tick from the live spectator frame).
   let coopTruceBroken = false;
+  // Fallback global-alive count for the truce check when the spectator feed
+  // is off/stale: REST /arena/status, polled ~every 3s during rounds (off
+  // the tick path), expiring after 10s so a dead poll can't freeze a stale
+  // count into the decision.
+  let globalAlive: { count: number; tick: number } | null = null;
+  let lastStatusPollTick = -1000;
 
   // --- Per-round telemetry accumulator (published to Brain at round_end) ---
   let roundStartTick = 0;
@@ -515,8 +521,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       gs.applyRoundStart(msg);
       controller.onRoundStart();
       resetRoundTracking();
-      // Fresh round, everyone respawns — the coalition truce is back on.
+      // Fresh round, everyone respawns — the coalition truce is back on, and
+      // last round's global alive count is meaningless now.
       coopTruceBroken = false;
+      globalAlive = null;
       telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       telemetryLog.roundStart(String(msg.round_number));
       log.info(
@@ -568,18 +576,38 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       // if disabled or peers are silent, the bot fights exactly as before.
       if (coop && gs.selfId) {
         const friendlyIds = coop.friendlyIds();
+        // Count-based fallback data for the truce check (only needed while
+        // the spectator feed is off/stale): poll the global alive count every
+        // ~3s, best-effort and off the tick path.
+        if (controller.getPolicy().coopTruceBreak && !intel && gs.tick - lastStatusPollTick >= 30) {
+          lastStatusPollTick = gs.tick;
+          const pollTick = gs.tick;
+          void rest.tryGetArenaStatus().then((s) => {
+            if (s && typeof s.bots_alive === "number") globalAlive = { count: s.bots_alive, tick: pollTick };
+          });
+        }
         // LAST FLEET STANDING: exactly one bot can win a round, so when the
         // spectator frame confirms every living bot out there is coalition,
         // the truce ends — the friendly set clears, and targeting, threat
         // field and splash guards all revert to normal free-for-all against
         // the ex-allies. Re-evaluated every tick: a stale feed or an enemy
         // respawn flips it back to peace (the conservative direction).
+        // Without the feed (ARENA_SPECTATOR=false — a whole A/B arm ran with
+        // the truce permanently stuck on), the REST alive count vs our coop
+        // alive count decides instead: global == ours ⇒ only we remain.
+        const selfAlive = gs.self?.is_alive === true && !gs.isRespawning ? 1 : 0;
+        const countFresh = globalAlive !== null && gs.tick - globalAlive.tick <= 100;
         const truceOver =
-          controller.getPolicy().coopTruceBreak && onlyFleetRemains(intel?.bots, friendlyIds);
+          controller.getPolicy().coopTruceBreak &&
+          (onlyFleetRemains(intel?.bots, friendlyIds) ||
+            (!intel && countFresh && onlyFleetRemainsByCount(globalAlive!.count, coop.aliveAllies() + selfAlive)));
         if (truceOver !== coopTruceBroken) {
           coopTruceBroken = truceOver;
           log.info(
-            { fleetBotsAlive: (intel?.bots.length ?? 0) + 1 },
+            {
+              source: intel ? "spectator" : "alive-count",
+              fleetBotsAlive: intel ? intel.bots.length + 1 : (globalAlive?.count ?? 0),
+            },
             truceOver
               ? "coalition truce ENDS — only our fleet remains, free-for-all"
               : "coalition truce restored",
