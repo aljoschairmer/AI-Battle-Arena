@@ -19,6 +19,7 @@
 services:
   redis:
     image: redis:7-alpine
+    container_name: redis
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "6379:6379"
@@ -35,6 +36,7 @@ services:
   # on the live database either way — no setup dialog.
   redis-dashboard:
     image: redis/redisinsight:latest
+    container_name: redis-dashboard
     restart: unless-stopped
     depends_on:
       redis:
@@ -48,14 +50,31 @@ services:
     volumes:
       # Persists the UI's own settings/history across container restarts.
       - redisinsight-data:/data
+    # Marks the container healthy only once the HTTP server actually accepts
+    # connections on 5540 — the init sidecar and the Cloudflare tunnel gate on
+    # this, so cloudflared no longer dials a not-yet-listening container
+    # ("connect: connection refused" in the tunnel logs). The image ships no
+    # curl/wget, but it's a Node app, so probe with node itself.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "require('http').get('http://127.0.0.1:5540/api/health/',
+          r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error',
+          () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   # One-shot: registers the `redis` service in RedisInsight over its REST API
   # (idempotent — skipped when the connection already exists), then exits.
   redis-dashboard-init:
     image: curlimages/curl:latest
+    container_name: redis-dashboard-init
     depends_on:
       redis-dashboard:
-        condition: service_started
+        condition: service_healthy
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -83,10 +102,14 @@ services:
   # changes on every restart; that's inherent to quick tunnels.
   redis-dashboard-tunnel:
     image: cloudflare/cloudflared:latest
+    container_name: redis-dashboard-tunnel
     restart: unless-stopped
+    # service_healthy (not service_started): cloudflared must not come up
+    # before RedisInsight listens on 5540, or every proxied request fails with
+    # "connect: connection refused" until the dashboard finishes booting.
     depends_on:
       redis-dashboard:
-        condition: service_started
+        condition: service_healthy
     # http2 = edge connection over TCP:7844 instead of QUIC (UDP:7844) —
     # survives UDP-blocking firewalls. Note: a bare `tunnel run` needs a NAMED
     # tunnel (Cloudflare account + token); this stays a token-less quick
@@ -103,6 +126,7 @@ services:
   # for its Loadout/Strategist prompts. Runs fine 24/7 with the fleet down.
   scout:
     build: .
+    container_name: scout
     restart: unless-stopped
     environment:
       ROLE: scout
@@ -120,6 +144,7 @@ services:
 
   engine:
     build: .
+    container_name: engine
     restart: unless-stopped
     depends_on:
       redis:
@@ -153,6 +178,7 @@ services:
 
   brain:
     build: .
+    container_name: brain
     restart: unless-stopped
     depends_on:
       redis:
