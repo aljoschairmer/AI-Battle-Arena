@@ -35,6 +35,14 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 
+# Pre-create every dir the app writes at runtime and hand them to the
+# unprivileged runtime user — /app is COPY'd in as root, so without this the
+# scout/brain/engine hit "EACCES: permission denied" on logs/ and
+# data/knowledge/ (bind mounts override these with host ownership; the
+# volume-init service in docker-compose.yml covers that side).
+RUN mkdir -p logs/brain logs/outcomes logs/telemetry data/knowledge/brain \
+ && chown -R node:node /app/logs /app/data
+
 # Run as the unprivileged user that the node image ships with.
 USER node
 

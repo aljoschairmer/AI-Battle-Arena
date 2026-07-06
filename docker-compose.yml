@@ -118,6 +118,25 @@ services:
     #   ["tunnel", "--no-autoupdate", "run", "--protocol", "http2", "--token", "${TUNNEL_TOKEN}"]
     command: ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", "http://redis-dashboard:5540"]
 
+  # One-shot root helper for the bind mounts: Docker auto-creates missing
+  # bind-mount source dirs (./logs/brain didn't exist — logs/ is gitignored)
+  # as ROOT, but the app containers run as the unprivileged `node` user
+  # (uid 1000), which then fails every write with "EACCES: permission
+  # denied, open 'logs/brain/scout.json.tmp'". This pre-creates the host
+  # dirs and hands them to uid 1000 before anything that writes starts.
+  volume-init:
+    image: busybox:stable
+    container_name: volume-init
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - ./logs:/fix/logs
+      - ./data/knowledge:/fix/data/knowledge
+    command:
+      - sh
+      - -c
+      - mkdir -p /fix/logs/brain /fix/logs/outcomes && chown -R 1000:1000 /fix/logs /fix/data/knowledge
+
   # Passive opponent scout: watches the PUBLIC spectator WebSocket (no API
   # key, no account, no LLM cost) and learns every arena bot's playstyle —
   # draft tendencies, win rates, aggression, preferred range, mine habits —
@@ -128,6 +147,9 @@ services:
     build: .
     container_name: scout
     restart: unless-stopped
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     environment:
       ROLE: scout
       ARENA_WS_URL: ${ARENA_WS_URL:-wss://arena.angel-serv.com/ws/bot}
@@ -141,6 +163,10 @@ services:
       # Shared with host-run fleets AND the knowledge dump — the whole point
       # is that the scout's learning outlives its container.
       - ./logs/brain:/app/logs/brain
+      # The shutdown knowledge dump writes here; without the mount it targets
+      # the container FS ("EACCES: permission denied, mkdir
+      # 'data/knowledge/brain'") and would be lost with the container anyway.
+      - ./data/knowledge:/app/data/knowledge
 
   engine:
     build: .
