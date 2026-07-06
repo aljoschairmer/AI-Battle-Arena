@@ -1,13 +1,13 @@
 {
   "bot0:arena:kv:policy": {
-    "version": 105,
-    "ts": 1783375633283,
-    "dodgeEagerness": 1,
-    "kiteRangeBias": 3,
+    "version": 110,
+    "ts": 1783377071628,
+    "dodgeEagerness": 0.4,
+    "kiteRangeBias": -1,
     "grappleCloseMinGap": 1.5,
     "targetLowHpWeight": 60,
     "targetCloseWeight": 2,
-    "targetThreatAversion": 120,
+    "targetThreatAversion": 80,
     "targetSwitchHysteresis": 30,
     "targetMatchupWeight": 12,
     "pickupDetourMax": 6,
@@ -41,49 +41,53 @@
     "pathfindDangerWeight": 2.2,
     "friendlySplashGuard": true,
     "flankMaxDeferTicks": 30,
-    "retreatFireWhileKiting": true,
+    "retreatFireWhileKiting": false,
     "idleHealBelowHpFraction": 0.85,
     "idleCapturePads": true,
     "aggression": 0.55,
     "posture": "aggressive",
-    "bowAlwaysCharge": true,
+    "bowAlwaysCharge": false,
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "healed: copied GhostProtocol's healthy combat profile (passivity-spiral reset)",
-    "source": "operator-heal"
+    "reasoning": "Bow has 0% win rate — we're being sniped from range. Raising kiteRangeBias from -3 to -1 allows controlled closing without overcommitting. Increase dodgeEagerness to 0.4 to better evade spear/staff bursts we can't avoid. Lower targetThreatAversion from 120 to 80 to stop over-prioritizing safety over",
+    "source": "tuner"
   },
   "bot0:arena:kv:insights": {
     "lessons": [
-      "Daggers have 0 wins in 18 consecutive rounds and 10 deaths in last 10 rounds — abandon immediately; statistically non-viable.",
-      "Sword users (Executioner, Reaper, Fortress, Valkyrie, GhostProtocol) caused 9 of last 10 deaths — avoid close combat; engage only from distance or behind cover.",
-      "Bow is the most frequent enemy weapon (338+ sightings in last 3 rounds) — assume all unseen enemies are bow users; prioritize high ground and erratic movement.",
-      "Grapple users (Scorpion) have 2 kills in last 3 rounds — maintain >15m distance and use terrain to block line-of-sight.",
-      "Pickup_surge and teleport_surge modifiers resulted in 0 kills and 4 deaths — avoid these modifiers; they disable dagger mobility and favor ranged weapons.",
-      "Spear users (Lancer, Valkyrie) have 17 kills vs us across 70+ rounds — treat as high-priority threats in open areas; flank or retreat when spotted."
+      "GhostProtocol (spear) killed us 4 times in last 10 rounds — retreat immediately on sight; spear outranges and outpaces bow projectiles.",
+      "Sword users (Juggernaut, Lancer, Warden, Deadeye, Executioner, etc.) account for 18/22 recent enemy kills — prioritize them as targets but never chase into tight cover or behind obstacles.",
+      "Spear has 66% win rate in last 3 rounds (2 wins, 1 loss) — it dominates sword users and is effective in open and mid-range engagements.",
+      "Bow has 0% win rate in last 6 rounds — consistently out-ranged by spear and staff; avoid open areas where enemies kite or snipe from distance.",
+      "Hazard_storm modifier reduces bow effectiveness — spear is more reliable under storm conditions due to faster projectile speed and shorter engagement range.",
+      "Fortress (shield) and Lancer (spear) are high-threat opponents — avoid direct confrontations unless you have cover or flanking angles."
     ],
-    "recommendedWeapon": "bow",
-    "recommendedWeaponReason": "Bow has the highest win rate (3/12) among all weapons and is the most common enemy weapon, indicating it's the meta for countering dominant sword and spear users.",
+    "recommendedWeapon": "spear",
+    "recommendedWeaponReason": "Spear has a 66% win rate in last 3 rounds and consistently defeats sword users, while bow has 0% win rate in last 6 rounds.",
     "dangerousOpponents": [
-      "Executioner",
-      "Lancer",
-      "Valkyrie",
-      "Scorpion",
-      "Archmage"
+      "GhostProtocol",
+      "Fortress",
+      "Lancer"
     ],
-    "weakOpponents": [],
+    "weakOpponents": [
+      "HexMind",
+      "Executioner",
+      "Deadeye",
+      "Warden",
+      "Reaper"
+    ],
     "suggestedPosture": "defensive",
-    "analysedThroughRound": 52
+    "analysedThroughRound": 80
   },
   "bot1:arena:kv:policy": {
-    "version": 104,
-    "ts": 1783375633286,
-    "dodgeEagerness": 1,
-    "kiteRangeBias": 0,
+    "version": 109,
+    "ts": 1783377071216,
+    "dodgeEagerness": 0.8,
+    "kiteRangeBias": 2,
     "grappleCloseMinGap": 1.5,
     "targetLowHpWeight": 85,
     "targetCloseWeight": 2,
-    "targetThreatAversion": 40,
+    "targetThreatAversion": 115,
     "targetSwitchHysteresis": 30,
     "targetMatchupWeight": 12,
     "pickupDetourMax": 6,
@@ -93,7 +97,7 @@
     "mineWhenChased": true,
     "mineChaseRange": 4,
     "mineCooldownTicks": 15,
-    "minTradeAdvantage": 0.3,
+    "minTradeAdvantage": 0.25,
     "disengageHpThreshold": 0.6,
     "retreatTradeSensitivity": 0.15,
     "disengageUseSeparation": true,
@@ -121,23 +125,23 @@
     "idleHealBelowHpFraction": 0.8,
     "idleCapturePads": true,
     "aggression": 0.55,
-    "posture": "aggressive",
+    "posture": "balanced",
     "bowAlwaysCharge": true,
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "healed: copied GhostProtocol's healthy combat profile (passivity-spiral reset)",
-    "source": "operator-heal"
+    "reasoning": "Dying frequently to grapple/sword burst damage — increase dodgeEagerness to 0.8 to avoid instant closes. TargetThreatAversion too low (100 → 115) to better avoid lethal melee threats. minTradeAdvantage raised from 0.2 to 0.25 to reduce risky engagements. KiteRangeBias increased to 2.0 to maintain sa",
+    "source": "tuner"
   },
   "bot2:arena:kv:policy": {
-    "version": 103,
-    "ts": 1783371220777,
+    "version": 108,
+    "ts": 1783377071914,
     "dodgeEagerness": 1,
-    "kiteRangeBias": 3,
+    "kiteRangeBias": 0,
     "grappleCloseMinGap": 1.5,
     "targetLowHpWeight": 60,
     "targetCloseWeight": 2,
-    "targetThreatAversion": 120,
+    "targetThreatAversion": 60,
     "targetSwitchHysteresis": 30,
     "targetMatchupWeight": 12,
     "pickupDetourMax": 6,
@@ -147,7 +151,7 @@
     "mineWhenChased": true,
     "mineChaseRange": 4,
     "mineCooldownTicks": 15,
-    "minTradeAdvantage": 0.3,
+    "minTradeAdvantage": 0.15,
     "disengageHpThreshold": 0.6,
     "retreatTradeSensitivity": 0.15,
     "disengageUseSeparation": true,
@@ -170,67 +174,67 @@
     "coopTruceBreak": true,
     "pathfindDangerWeight": 2.5,
     "friendlySplashGuard": true,
-    "flankMaxDeferTicks": 5,
+    "flankMaxDeferTicks": 0,
     "retreatFireWhileKiting": true,
     "idleHealBelowHpFraction": 0.6,
     "idleCapturePads": true,
-    "aggression": 0.55,
+    "aggression": 0.7,
     "posture": "aggressive",
     "bowAlwaysCharge": true,
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Daggers are killing us in close quarters due to excessive flank defer (15 → 5 forces faster head-on engagement). KiteRangeBias increased from 3 to 4 to maintain safer distance against dagger burst. TargetThreatAversion raised to 120 (was incomplete in input) to better avoid high-threat sword/dagger ",
+    "reasoning": "We're dying to bow and sword users in open fields due to passive posture and excessive kiteRangeBias. Lowering kiteRangeBias to 0 forces aggressive closes on ranged threats. Raising aggression from 0.55→0.7 and switching posture to aggressive counters the enemy's kiting dominance. Lowering targetThr",
     "source": "tuner"
   },
   "bot1:arena:kv:insights": {
     "lessons": [
-      "Shield wins only 1/10 recent rounds (round 50 was the exception) — avoid it unless cornering sword users in tight spaces.",
-      "Bow users (GhostProtocol, NeuralReaper, Ranger) caused 13+ kills total and dominated round 44 with 763 sightings — retreat or eliminate them immediately on sight.",
-      "Grapple users (Scorpion) killed us 3 times in last 5 rounds — never engage in open ground; force them into corners or use cover.",
-      "Sword users (Valkyrie, Executioner, Juggernaut, Fortress, Warden) caused 9 of last 10 deaths — they outdamage shield in open areas; only fight if they miss or you have cover.",
-      "Under double_bounty and pickup_surge modifiers, shield lost all 5 rounds with 40% lower survival time — switch to bow or daggers for these modes.",
-      "Shredder killed us with daggers in round 49 — avoid narrow corridors when daggers users are active; they bypass shield in close range."
+      "Bow wins only occur when sword users cluster (rounds 69, 72) — prioritize engaging groups in open areas, but retreat if isolated or targeted by grapple/bow users.",
+      "Scorpion (grapple) killed us in 3 of last 4 rounds (70, 72, 73) — grapple users bypass cover; avoid open ground and never chase them.",
+      "Sword users caused 7 of last 10 deaths (Warden, Ranger, GhostProtocol, Juggernaut) — they dominate within 10m; only engage if they are >15m away with elevation or cover.",
+      "Shield users (Juggernaut, Fortress) have low kill rate vs us but high survival — target them when stationary or near walls, as arrows penetrate shield edges at range.",
+      "Spear users appear in 70% of recent rounds with high frequency — they outrange and outdamage bow in open ground; never engage without cover or elevation.",
+      "Switching to sword (rounds 76–80) resulted in 0 kills in 4 rounds and 5 deaths — bow remains superior despite losses to grapple and bow users."
     ],
     "recommendedWeapon": "bow",
-    "recommendedWeaponReason": "Bow has highest enemy sighting volume (763 in round 44) and is the only weapon with proven kill potential against high-threat targets like GhostProtocol and NeuralReaper, while shield has 1/18 win rate.",
+    "recommendedWeaponReason": "Bow has the highest win rate (3/23) and highest kill efficiency in our history, while sword has 0 wins in 5 rounds and consistently dies to close-range opponents.",
     "dangerousOpponents": [
-      "GhostProtocol",
-      "NeuralReaper",
-      "Reaper",
-      "Valkyrie",
-      "Scorpion"
-    ],
-    "weakOpponents": [
+      "Scorpion",
+      "Ranger",
       "Warden",
-      "Fortress"
-    ],
-    "suggestedPosture": "defensive",
-    "analysedThroughRound": 52
-  },
-  "bot2:arena:kv:insights": {
-    "lessons": [
-      "Bow wins 6/10 recent rounds but dies to daggers users (Shredder, NeuralReaper) in 3/5 losses — avoid enclosed areas and maintain >30m distance.",
-      "NeuralReaper (daggers) killed us in 3 of last 5 rounds (43, 46, 49) — retreat immediately on sight; they exploit bow's slow reload in close quarters.",
-      "Deadeye (bow) killed us in round 48 — if bow count exceeds 80 in zone or Deadeye is within 40m, disengage or reposition behind cover.",
-      "Sword users (Juggernaut, HexMind, Fortress, Reaper, Valkyrie, Executioner) caused 19/20 deaths — prioritize them first from range; they lack mobility to close distance.",
-      "Pickup_surge and double_bounty modifiers increase enemy distraction — aggressively hunt sword users during these rounds; they are vulnerable while collecting pickups.",
-      "Shield users (Fortress, HexMind) have high sightings but zero kills against us — ignore unless cornered; they are non-threats at range with bow."
-    ],
-    "recommendedWeapon": null,
-    "recommendedWeaponReason": "Bow has 5 wins in 19 rounds with high kill efficiency against sword users, and no better-performing weapon has sufficient data to justify a switch.",
-    "dangerousOpponents": [
-      "NeuralReaper",
-      "Shredder",
-      "Deadeye",
-      "Executioner",
-      "Scorpion"
+      "GhostProtocol",
+      "Viper"
     ],
     "weakOpponents": [
       "Fortress",
+      "Juggernaut"
+    ],
+    "suggestedPosture": "defensive",
+    "analysedThroughRound": 80
+  },
+  "bot2:arena:kv:insights": {
+    "lessons": [
+      "Bow is our most effective weapon when used aggressively — round 80 (hazard_storm) yielded 7 kills with 0 deaths; prioritize bow in storm modifiers or when sword users are clustered.",
+      "Spear has 0 wins in last 6 rounds despite kills — it dies instantly to sword users in open areas; avoid spear unless ambushing in tight spaces or against other spears.",
+      "NeuralReaper killed us 5 times in last 6 rounds (3x with bow, 2x with spear) — eliminate NeuralReaper on sight; they are our top lethal threat and exploit our positioning errors.",
+      "Executioner (sword) and Viper (daggers) killed us back-to-back in rounds 73 and 78 — retreat immediately when these bots are sighted; they close range faster than we can react.",
+      "Sword users dominate recent enemy weapon sightings (70%+ in last 5 rounds) — avoid open-field engagements; use cover, terrain, and bow’s range to pick them off before they close.",
+      "Hazard_storm boosts bow effectiveness (7 kills in round 80) — actively seek hazard_storm modifiers to maximize bow dominance and minimize melee exposure."
+    ],
+    "recommendedWeapon": "bow",
+    "recommendedWeaponReason": "Bow achieved our only win (7-0) in round 80 under hazard_storm and has the highest kill-to-death ratio in recent rounds compared to spear or shield.",
+    "dangerousOpponents": [
+      "NeuralReaper",
+      "Executioner",
+      "Viper",
+      "Hook"
+    ],
+    "weakOpponents": [
+      "Scorpion",
+      "Deadeye",
       "HexMind"
     ],
     "suggestedPosture": "aggressive",
-    "analysedThroughRound": 52
+    "analysedThroughRound": 80
   }
 }
