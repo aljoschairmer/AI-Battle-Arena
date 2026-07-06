@@ -97,7 +97,13 @@ export class Orchestrator {
   private ourStats: OurStats | null = null;
 
   // Self-improvement state
-  private readonly roundHistory = new RoundHistory(30);
+  // 200, not 30: weapon evidence (fleetWeaponWinRates / enforceWeaponEvidence)
+  // is computed over this window. At 30 rounds/bot the deep history slid out
+  // and proven losers crept back into the draft — measured live TWICE:
+  // daggers (3% over 200+ rounds) re-drafted once its recent 20 rounds
+  // happened to sit at the 10% ban threshold, shield drafted as "unproven".
+  // Prompts still slice the last few rounds; only the evidence pool widens.
+  private readonly roundHistory = new RoundHistory(200);
   private readonly opponents = new OpponentRegistry();
   private insights: LearningInsights = { ...DEFAULT_INSIGHTS };
   // Disk persistence for the above — the KV mirror expires in ~300s, so

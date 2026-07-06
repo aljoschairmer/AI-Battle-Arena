@@ -392,7 +392,13 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
       typeof patch.mineWhenChased === "boolean" ? patch.mineWhenChased : base.mineWhenChased,
     mineChaseRange: clampNum(patch.mineChaseRange, 1, 10, base.mineChaseRange),
     mineCooldownTicks: clampNum(patch.mineCooldownTicks, 5, 100, base.mineCooldownTicks),
-    minTradeAdvantage: clampNum(patch.minTradeAdvantage, -1, 1, base.minTradeAdvantage),
+    // Upper clamp 0.4, not 1: measured live, per-bot Tuners drove two of the
+    // three fleet bots into minTrade 0.8/0.85 — "engage only on a nearly
+    // guaranteed win", i.e. total combat refusal (NeuralReaper lost to the
+    // arena's three WORST bots while at 0.8). A loss-spiral reinforces
+    // itself: lose → tune more cautious → fewer kills → lose. 0.4 still
+    // allows demanding a clearly favourable trade, never full passivity.
+    minTradeAdvantage: clampNum(patch.minTradeAdvantage, -1, 0.4, base.minTradeAdvantage),
     disengageHpThreshold: clampNum(patch.disengageHpThreshold, 0, 1, base.disengageHpThreshold),
     retreatTradeSensitivity: clampNum(patch.retreatTradeSensitivity, 0, 0.4, base.retreatTradeSensitivity),
     disengageUseSeparation: asBool(patch.disengageUseSeparation, base.disengageUseSeparation),

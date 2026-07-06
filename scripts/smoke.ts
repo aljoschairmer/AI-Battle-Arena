@@ -2178,6 +2178,11 @@ async function run(): Promise<void> {
       clamped,
     );
     check(
+      "minTradeAdvantage clamps at 0.4 (anti-passivity-spiral)",
+      mergePolicy(DEFAULT_POLICY, { minTradeAdvantage: 0.85 }).minTradeAdvantage === 0.4,
+      mergePolicy(DEFAULT_POLICY, { minTradeAdvantage: 0.85 }).minTradeAdvantage,
+    );
+    check(
       "PolicyPatchSchema accepts the new knobs",
       PolicyPatchSchema.safeParse({ spectatorIntel: false, spectatorHunterWeight: 0.5, pathfindDangerWeight: 2, reasoning: "x" }).success,
     );
