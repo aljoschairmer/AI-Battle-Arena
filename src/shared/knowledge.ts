@@ -22,6 +22,7 @@
  * long-running deployment is unaffected. Disable with KNOWLEDGE_RESTORE=0.
  */
 
+import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Bus } from "../bus";
@@ -58,7 +59,8 @@ function scopedKey(scope: string, key: string): string {
  * Returns a summary for logging/tests.
  */
 export async function dumpKnowledge(
-  bus: Bus,
+  /** null = no bus in this process (ROLE=scout) — file copies only, no KV. */
+  bus: Bus | null,
   scopes: string[],
   paths: KnowledgePaths = knowledgePaths(),
 ): Promise<{ kvKeys: string[]; kvLive: string[]; memoryFiles: string[] }> {
@@ -81,17 +83,19 @@ export async function dumpKnowledge(
     /* no previous dump / unreadable — start fresh */
   }
   const kvLive: string[] = [];
-  for (const scope of scopes) {
-    for (const key of LEARNED_KEYS) {
-      const full = scopedKey(scope, key);
-      try {
-        const value = await bus.getKV<unknown>(full);
-        if (value !== null) {
-          kv[full] = value;
-          kvLive.push(full);
+  if (bus) {
+    for (const scope of scopes) {
+      for (const key of LEARNED_KEYS) {
+        const full = scopedKey(scope, key);
+        try {
+          const value = await bus.getKV<unknown>(full);
+          if (value !== null) {
+            kv[full] = value;
+            kvLive.push(full);
+          }
+        } catch {
+          /* bus unreachable — keep the previous dump's entries */
         }
-      } catch {
-        /* bus unreachable — keep the previous dump's entries */
       }
     }
   }
@@ -112,6 +116,72 @@ export async function dumpKnowledge(
   }
 
   return { kvKeys: Object.keys(kv), kvLive, memoryFiles };
+}
+
+function git(args: string[], cwd: string): string {
+  return execFileSync("git", args, { encoding: "utf8", timeout: 20_000, cwd }).trim();
+}
+
+/**
+ * Auto-commit + push the knowledge dump when credentials allow it — so the
+ * learning reaches the repo WITHOUT a human in the loop.
+ *
+ * Gating: runs when GITHUB_TOKEN or GH_TOKEN is set (or when forced with
+ * KNOWLEDGE_AUTOPUSH=1, e.g. where the git remote already has ambient
+ * credentials); KNOWLEDGE_AUTOPUSH=0 disables it entirely. Push tries the
+ * remote's own credentials first and falls back to a token-authenticated
+ * GitHub URL (x-access-token) for https remotes. Everything is best-effort:
+ * a failure is logged and the dump simply stays local, exactly as before —
+ * and the token is scrubbed from any error detail so it can never leak into
+ * logs.
+ */
+export function maybeCommitAndPushKnowledge(
+  paths: KnowledgePaths = knowledgePaths(),
+  cwd: string = process.cwd(),
+): { pushed: boolean; detail: string } {
+  const flag = (process.env.KNOWLEDGE_AUTOPUSH ?? "").toLowerCase();
+  if (flag === "0" || flag === "false") return { pushed: false, detail: "KNOWLEDGE_AUTOPUSH=0" };
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+  const forced = flag === "1" || flag === "true";
+  if (!token && !forced) return { pushed: false, detail: "no GITHUB_TOKEN/GH_TOKEN — auto-push off" };
+
+  const scrub = (s: string): string => (token ? s.split(token).join("***") : s);
+  try {
+    if (git(["rev-parse", "--is-inside-work-tree"], cwd) !== "true") {
+      return { pushed: false, detail: "not inside a git work tree" };
+    }
+    if (!git(["status", "--porcelain", "--", paths.dir], cwd)) {
+      return { pushed: false, detail: "no knowledge changes to commit" };
+    }
+    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+    if (branch === "HEAD") return { pushed: false, detail: "detached HEAD — not pushing" };
+
+    git(["add", "--", paths.dir], cwd);
+    git(
+      [
+        "-c", "user.name=battle-arena-bot",
+        "-c", "user.email=battle-arena-bot@users.noreply.github.com",
+        "commit", "-m", "data: automatic knowledge dump (bot shutdown)",
+      ],
+      cwd,
+    );
+    try {
+      git(["push", "origin", `HEAD:${branch}`], cwd);
+    } catch (e) {
+      // Remote refused with its own credentials — retry via the token for
+      // GitHub https remotes (URL used ad hoc, never written to git config).
+      const url = git(["remote", "get-url", "origin"], cwd);
+      const m = url.match(/^https:\/\/(?:[^@]+@)?github\.com\/(.+?)(?:\.git)?$/);
+      if (!token || !m) throw e;
+      git(["push", `https://x-access-token:${token}@github.com/${m[1]}.git`, `HEAD:${branch}`], cwd);
+    }
+    log.info({ branch }, "knowledge dump auto-committed and pushed");
+    return { pushed: true, detail: `pushed to ${branch}` };
+  } catch (e) {
+    const detail = scrub((e as Error).message).slice(0, 200);
+    log.warn({ detail }, "knowledge auto-push failed — dump stays local");
+    return { pushed: false, detail };
+  }
 }
 
 /**
