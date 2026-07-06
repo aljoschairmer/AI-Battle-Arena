@@ -56,6 +56,13 @@ export interface LoadoutAgentInput {
     fleetSize: number;
     /** Learned per-weapon results from OUR recent rounds (RoundHistory). */
     weaponWinRates: Partial<Record<Weapon, { wins: number; played: number }>>;
+    /**
+     * Passive-scout intel (ROLE=scout container watching the public
+     * spectator feed): behavioural profiles of arena opponents learned from
+     * rounds we never played in — draft/playstyle tendencies known BEFORE
+     * we ever face them. Empty when no scout has run.
+     */
+    scoutedOpponents?: import("../../scout/aggregator").ScoutSummary[];
   };
 }
 
@@ -124,6 +131,10 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
       "   If the opponents who beat us repeatedly (killsVsUs > deathsVsUs, 2+ rounds faced) share a known",
       "   primaryWeapon, pick its counter from the matchup matrix (e.g. they run bow/staff -> daggers; they run",
       "   shield -> staff; they run daggers -> sword/spear). Weigh repeat killers over one-off sightings.",
+      "2b. scouted_opponents — passive spectator intel on arena bots (playstyle learned from rounds we did NOT",
+      "   play): primaryWeapon, winRate, kd, aggression (0-1), preferredRange (tiles; >5 = kiter, <2 = brawler),",
+      "   dodgeRate, minesPerRound. Counter the highest-winRate scouts likely in this lobby: kiters -> daggers/",
+      "   grapple to close, brawlers -> bow/spear to kite, heavy miners -> high speed. Same weight as rule 2.",
       "3. learning_insights.recommended_weapon — proven best weapon for this meta. Use it UNLESS lobby counter-pick strongly disagrees.",
       "4. round_modifier — hazard_storm/fast_zone: ranged + high speed; pickup_surge: high speed (daggers/grapple); double_bounty: SURVIVAL build (hp/speed over attack — measured 0 wins in 24 double_bounty rounds on aggressive builds; outlive the bloodbath).",
       "5. our_lifetime_stats — kd_ratio < 1.0: add 2 pts to hp+defense; bots_in_arena > 8: add 1 pt to hp (more chaos = more punishment).",
@@ -195,6 +206,7 @@ export class LoadoutAgent extends Agent<LoadoutAgentInput, LoadoutOutput> {
         fleet_size: meta.fleetSize,
         our_weapon_history: Object.keys(meta.weaponWinRates).length > 0 ? meta.weaponWinRates : null,
         known_opponents: meta.opponentProfiles.length > 0 ? meta.opponentProfiles : null,
+        scouted_opponents: meta.scoutedOpponents?.length ? meta.scoutedOpponents : null,
         leaderboard_top: meta.leaderboardTop.slice(0, 6),
         opponent_weapon_popularity: meta.weaponPopularity,
         deterministic_fallback: request.fallback,

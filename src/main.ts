@@ -1,4 +1,5 @@
-import { assertConfigForRole, config, configWarnings, llmEnabled, runsBrain, runsEngine } from "./config";
+import { assertConfigForRole, config, configWarnings, llmEnabled, runsBrain, runsEngine, runsScout } from "./config";
+import { startScout } from "./scout";
 import { getBus, scoped } from "./bus";
 import { startBrain, startCoopCoordinator, type BrainHandle } from "./brain";
 import { startEngine, type EngineHandle } from "./engine";
@@ -31,6 +32,20 @@ async function main(): Promise<void> {
   for (const w of configWarnings) logger.warn(w);
   // Route fetch through an outbound proxy if one is configured (no-op otherwise).
   installFetchProxy();
+
+  // Passive spectator scout: no keys, no bus, no LLM — just the public WS.
+  // Own early branch so a scout container never trips engine/brain plumbing.
+  if (runsScout) {
+    const scout = await startScout();
+    const stopScout = async (signal: string): Promise<void> => {
+      logger.info({ signal }, "scout shutting down");
+      await scout.stop();
+      process.exit(0);
+    };
+    process.on("SIGINT", () => void stopScout("SIGINT"));
+    process.on("SIGTERM", () => void stopScout("SIGTERM"));
+    return;
+  }
 
   const bus = getBus();
   const busHealthy = await bus.ping();
