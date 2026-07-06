@@ -62,7 +62,10 @@ export async function startScout(): Promise<ScoutHandle> {
       );
     }
   }, SAVE_EVERY_MS);
-  timer.unref?.();
+  // Deliberately NOT unref'd: in a ROLE=scout process this interval (plus the
+  // WS) IS the program — an unref'd timer let the process exit silently the
+  // moment the socket had nothing pending (observed live: scout died 9 min
+  // in, no error, mid-reconnect gap). Shutdown goes through SIGINT/SIGTERM.
 
   return {
     async stop() {
