@@ -2370,6 +2370,13 @@ async function run(): Promise<void> {
     const instant = Date.now() - t0 < 100;
     check("failures below threshold hit the provider", !/circuit open/.test(e1) && !/circuit open/.test(e2), { e1, e2 });
     check("circuit OPENS after threshold — calls fail instantly without API traffic", /circuit open/.test(e3) && instant, { e3, instant });
+
+    // Breaker is PER MODEL: model m's open circuit must not block model m2
+    // (live incident: the rate-limited free tactician silenced the healthy
+    // paid strategist through the then-shared breaker).
+    let e4 = "";
+    try { await or.chat({ ...req, model: "m2" }); } catch (e) { e4 = (e as Error).message; }
+    check("an open circuit on one model does not block another", !/circuit open/.test(e4), e4);
   }
 
   console.log("\ncoalition truce break (last fleet standing)");
