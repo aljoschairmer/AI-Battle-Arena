@@ -1,13 +1,13 @@
 {
   "bot0:arena:kv:policy": {
-    "version": 22,
-    "ts": 1783352498670,
-    "dodgeEagerness": 0.8,
-    "kiteRangeBias": 1.5,
+    "version": 74,
+    "ts": 1783364143047,
+    "dodgeEagerness": 0.95,
+    "kiteRangeBias": 2.5,
     "grappleCloseMinGap": 1.5,
     "targetLowHpWeight": 60,
     "targetCloseWeight": 2,
-    "targetThreatAversion": 110,
+    "targetThreatAversion": 100,
     "targetSwitchHysteresis": 30,
     "targetMatchupWeight": 12,
     "pickupDetourMax": 6,
@@ -17,7 +17,7 @@
     "mineWhenChased": true,
     "mineChaseRange": 4,
     "mineCooldownTicks": 15,
-    "minTradeAdvantage": 0.4,
+    "minTradeAdvantage": 0.85,
     "disengageHpThreshold": 0.6,
     "retreatTradeSensitivity": 0.15,
     "disengageUseSeparation": true,
@@ -42,50 +42,51 @@
     "friendlySplashGuard": true,
     "flankMaxDeferTicks": 0,
     "retreatFireWhileKiting": true,
-    "idleHealBelowHpFraction": 0.8,
+    "idleHealBelowHpFraction": 0.85,
     "idleCapturePads": true,
     "aggression": 0.62,
-    "posture": "defensive",
+    "posture": "balanced",
     "bowAlwaysCharge": true,
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Daggers are underperforming against spears/shields. Shifting to a ranged-focused kite strategy with higher trade requirements to avoid unfavorable melee engagements.",
+    "reasoning": "Lowering minTradeAdvantage to engage more frequently as we are currently too passive. Reducing kiteRangeBias and threatAversion slightly to prevent over-retreating, which allows opponents to dictate the pace and close gaps too easily.",
     "source": "tuner"
   },
   "bot0:arena:kv:insights": {
     "lessons": [
-      "Daggers are ineffective; 18 rounds played with 0 wins and a negative KD.",
-      "Spear users (Lancer, Valkyrie) are our primary killers; maintain maximum range.",
-      "Shield users (Fortress, Juggernaut) consistently win close-quarters trades.",
-      "Bow is the only weapon with a recorded win; prioritize range to mitigate spear reach.",
-      "Lancer is a hard counter; avoid all engagement with this bot.",
-      "Prioritize survival and kiting to leverage ranged weapons against melee-heavy opponents."
+      "GhostProtocol (bow) is our primary threat; avoid direct long-range duels.",
+      "Lancer (spear) consistently punishes us in melee; maintain maximum distance.",
+      "Sword-wielding bots are our most reliable targets; prioritize them when isolated.",
+      "Dagger users are closing gaps effectively; prioritize kiting and repositioning.",
+      "Prioritize mobility during hazard_storm rounds to avoid being pinned by spear or bow fire.",
+      "Our bow performance is stable against sword users but weak against mirror bow matchups."
     ],
     "recommendedWeapon": "bow",
-    "recommendedWeaponReason": "The bow is the only weapon in our history with a win rate above 0%, and it provides the necessary distance to counter the prevalent spear and shield users.",
+    "recommendedWeaponReason": "The bow remains our most consistent weapon for maintaining distance against melee-heavy opponents like sword and dagger users.",
     "dangerousOpponents": [
+      "GhostProtocol",
       "Lancer",
-      "Fortress",
-      "Valkyrie",
       "Hook"
     ],
     "weakOpponents": [
-      "GhostProtocol",
-      "Juggernaut"
+      "Executioner",
+      "Archmage",
+      "Shredder",
+      "Viper"
     ],
-    "suggestedPosture": "defensive",
-    "analysedThroughRound": 25
+    "suggestedPosture": "balanced",
+    "analysedThroughRound": 19
   },
   "bot1:arena:kv:policy": {
-    "version": 22,
-    "ts": 1783352498770,
-    "dodgeEagerness": 0.9,
+    "version": 73,
+    "ts": 1783364142837,
+    "dodgeEagerness": 0.95,
     "kiteRangeBias": 2.5,
     "grappleCloseMinGap": 1.5,
-    "targetLowHpWeight": 60,
+    "targetLowHpWeight": 85,
     "targetCloseWeight": 2,
-    "targetThreatAversion": 100,
+    "targetThreatAversion": 120,
     "targetSwitchHysteresis": 30,
     "targetMatchupWeight": 12,
     "pickupDetourMax": 6,
@@ -95,14 +96,14 @@
     "mineWhenChased": true,
     "mineChaseRange": 4,
     "mineCooldownTicks": 15,
-    "minTradeAdvantage": 0.2,
+    "minTradeAdvantage": 0.85,
     "disengageHpThreshold": 0.6,
     "retreatTradeSensitivity": 0.15,
     "disengageUseSeparation": true,
     "leadTicks": 3,
     "targetTradeWeight": 30,
     "targetBountyWeight": 25,
-    "targetDistractedBonus": 8,
+    "targetDistractedBonus": 15,
     "huntBountyBeacon": true,
     "gankRadius": 9,
     "gankApproachWeight": 0.5,
@@ -116,11 +117,11 @@
     "spectatorHunterWeight": 0.4,
     "spectatorHunterRadius": 14,
     "coopTruceBreak": true,
-    "pathfindDangerWeight": 1.5,
+    "pathfindDangerWeight": 2.8,
     "friendlySplashGuard": true,
-    "flankMaxDeferTicks": 6,
+    "flankMaxDeferTicks": 4,
     "retreatFireWhileKiting": true,
-    "idleHealBelowHpFraction": 0.75,
+    "idleHealBelowHpFraction": 0.8,
     "idleCapturePads": true,
     "aggression": 0.62,
     "posture": "balanced",
@@ -128,18 +129,18 @@
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Reducing kiteRangeBias slightly to improve accuracy while maintaining distance. Lowering minTradeAdvantage to engage more frequently, and reducing threat aversion to prevent over-passive behavior against melee threats.",
+    "reasoning": "Reducing kiteRangeBias slightly to maintain better pressure while keeping minTradeAdvantage high to avoid losing trades to melee gap-closers. Increasing targetThreatAversion to prioritize survival against high-threat melee bots.",
     "source": "tuner"
   },
   "bot2:arena:kv:policy": {
-    "version": 24,
-    "ts": 1783352498697,
-    "dodgeEagerness": 0.85,
+    "version": 75,
+    "ts": 1783364142802,
+    "dodgeEagerness": 0.75,
     "kiteRangeBias": 2.5,
     "grappleCloseMinGap": 1.5,
     "targetLowHpWeight": 60,
     "targetCloseWeight": 2,
-    "targetThreatAversion": 85,
+    "targetThreatAversion": 120,
     "targetSwitchHysteresis": 30,
     "targetMatchupWeight": 12,
     "pickupDetourMax": 6,
@@ -149,7 +150,7 @@
     "mineWhenChased": true,
     "mineChaseRange": 4,
     "mineCooldownTicks": 15,
-    "minTradeAdvantage": 0.75,
+    "minTradeAdvantage": 0.5,
     "disengageHpThreshold": 0.6,
     "retreatTradeSensitivity": 0.15,
     "disengageUseSeparation": true,
@@ -172,9 +173,9 @@
     "coopTruceBreak": true,
     "pathfindDangerWeight": 2.5,
     "friendlySplashGuard": true,
-    "flankMaxDeferTicks": 6,
+    "flankMaxDeferTicks": 3,
     "retreatFireWhileKiting": true,
-    "idleHealBelowHpFraction": 0.7,
+    "idleHealBelowHpFraction": 0.75,
     "idleCapturePads": true,
     "aggression": 0.62,
     "posture": "balanced",
@@ -182,55 +183,56 @@
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "We are surviving well but missing kill opportunities. Lowering minTradeAdvantage and targetThreatAversion to capitalize on aggressive windows, while slightly tightening kiteRangeBias to maintain better pressure on melee targets.",
+    "reasoning": "Slightly reducing kiteRangeBias to maintain better pressure against staff users, while lowering minTradeAdvantage and idleHealBelowHpFraction to engage more frequently and avoid being cornered by grapplers.",
     "source": "tuner"
   },
   "bot1:arena:kv:insights": {
     "lessons": [
-      "Sword performance has declined; return to bow for better range and win consistency.",
-      "Avoid direct melee engagements with shield users like Fortress, as they consistently punish us.",
-      "Viper (daggers) is a significant threat in close quarters; maintain distance.",
-      "Prioritize targets with lower mobility to maximize bow accuracy.",
-      "In pickup_surge rounds, focus on survival over aggressive engagement due to high weapon density."
+      "Valkyrie (spear) is the primary threat; maintain maximum distance and avoid open sightlines.",
+      "Warden (sword) is successfully closing distance; prioritize kiting and backpedaling.",
+      "Bow remains effective against sword-wielding bots; exploit their lack of range.",
+      "Avoid engaging NeuralReaper in mirror bow duels; prioritize easier targets.",
+      "Scorpion (grapple) is a high-risk threat; maintain constant movement to avoid pull mechanics.",
+      "Maintain balanced posture to preserve mobility against spear and grapple users."
     ],
     "recommendedWeapon": "bow",
-    "recommendedWeaponReason": "Historical win rates show bow significantly outperforms sword, providing necessary range to counter shield and dagger users.",
+    "recommendedWeaponReason": "The bow remains our most consistent weapon for kiting melee-focused opponents like swords and shields.",
     "dangerousOpponents": [
-      "Fortress",
-      "Viper",
-      "NeuralReaper"
-    ],
-    "weakOpponents": [
-      "Andrew-Test",
+      "Valkyrie",
+      "NeuralReaper",
       "Reaper"
     ],
+    "weakOpponents": [
+      "Fortress",
+      "Juggernaut",
+      "Scorpion"
+    ],
     "suggestedPosture": "balanced",
-    "analysedThroughRound": 25
+    "analysedThroughRound": 19
   },
   "bot2:arena:kv:insights": {
     "lessons": [
-      "Bow remains effective against sword-wielders; maintain kiting distance.",
-      "Grapple users like Hook are high-risk; prioritize distance management.",
-      "Lancer (spear) and NeuralReaper (daggers) are closing the gap; prioritize long-range chip damage.",
-      "Fortress (shield) is a hard counter to bow; disengage immediately upon sighting.",
-      "Viper, Warden, and Executioner are consistent targets; prioritize them for point accumulation.",
-      "Avoid open-field engagements against spear users to prevent being pinned."
+      "Sword users remain our primary source of kills; continue kiting them at maximum range.",
+      "Grapple users (Scorpion, Hook) are lethal in hazard storms; prioritize breaking line-of-sight when they are nearby.",
+      "Archmage (staff) consistently punishes us; maintain distance and avoid extended trades against staff users.",
+      "Bow is highly effective against shield users; exploit their lack of mobility to chip them down.",
+      "Avoid direct bow-on-bow engagements; prioritize targets distracted by other combatants.",
+      "In fast zone rounds, prioritize positioning over aggression to avoid being cornered by melee bots."
     ],
     "recommendedWeapon": null,
-    "recommendedWeaponReason": "The bow provides consistent performance against the current prevalence of sword-wielding opponents.",
+    "recommendedWeaponReason": "The bow continues to provide consistent performance across diverse matchups and modifiers.",
     "dangerousOpponents": [
+      "Scorpion",
       "Hook",
-      "Lancer",
-      "NeuralReaper",
-      "Fortress"
+      "Archmage"
     ],
     "weakOpponents": [
-      "Viper",
-      "Warden",
-      "Executioner",
-      "Ranger"
+      "NeuralReaper",
+      "Fortress",
+      "Deadeye",
+      "Juggernaut"
     ],
     "suggestedPosture": "balanced",
-    "analysedThroughRound": 25
+    "analysedThroughRound": 19
   }
 }
