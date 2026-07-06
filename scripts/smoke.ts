@@ -39,13 +39,14 @@ import { StrategistAgent } from "../src/brain/agents/strategist";
 import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../src/brain/draftEvidence";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
-import { dumpKnowledge, restoreKnowledge } from "../src/shared/knowledge";
+import { dumpKnowledge, maybeCommitAndPushKnowledge, restoreKnowledge } from "../src/shared/knowledge";
 import { OpenRouter } from "../src/brain/openrouter";
 import { ScoutAggregator } from "../src/scout/aggregator";
 import { loadScoutSnapshot, saveScoutSnapshot } from "../src/scout/store";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
 import { TacticianAgent } from "../src/brain/agents/tactician";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isServerMessageType } from "../src/arena/ws";
@@ -2263,6 +2264,48 @@ async function run(): Promise<void> {
     await dumpKnowledge(fresherBus, ["", "bot0:"], paths);
     const overKv = JSON.parse(readFileSync(join(dumpDir, "kv.json"), "utf8")) as Record<string, { aggression?: number }>;
     check("live value still overwrites its dump entry", overKv["bot0:arena:kv:policy"]?.aggression === 0.4, overKv["bot0:arena:kv:policy"]?.aggression);
+  }
+
+  console.log("\nknowledge auto-push (token-gated commit+push of the dump)");
+  {
+    // Real git plumbing against a LOCAL bare remote — no network, no GitHub.
+    const bare = mkdtempSync(join(tmpdir(), "kremote-"));
+    const work = mkdtempSync(join(tmpdir(), "kwork-"));
+    const sh = (args: string[], cwd: string) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+    sh(["init", "--bare", "--initial-branch=main", "."], bare);
+    sh(["init", "--initial-branch=main", "."], work);
+    sh(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "root"], work);
+    sh(["remote", "add", "origin", bare], work);
+    sh(["push", "-u", "origin", "main"], work);
+    mkdirSync(join(work, "data/knowledge"), { recursive: true });
+    writeFileSync(join(work, "data/knowledge/kv.json"), "{}");
+    const kpaths = { dir: "data/knowledge", brainDir: "logs/brain" };
+    const savedTok = process.env.GITHUB_TOKEN; const savedGh = process.env.GH_TOKEN; const savedAp = process.env.KNOWLEDGE_AUTOPUSH;
+
+    // Without a token (and not forced): skipped.
+    delete process.env.GITHUB_TOKEN; delete process.env.GH_TOKEN; delete process.env.KNOWLEDGE_AUTOPUSH;
+    const off = maybeCommitAndPushKnowledge(kpaths, work);
+    check("no token -> auto-push off", !off.pushed && /no GITHUB_TOKEN/.test(off.detail), off);
+
+    // Forced (ambient-credentials case — here a local bare remote): pushes.
+    process.env.KNOWLEDGE_AUTOPUSH = "1";
+    const on = maybeCommitAndPushKnowledge(kpaths, work);
+    const remoteLog = sh(["log", "--oneline", "main"], bare);
+    check("forced/with-credentials -> commits and pushes the dump", on.pushed && /automatic knowledge dump/.test(remoteLog), { on, remoteLog });
+
+    // Nothing new -> clean no-op.
+    const idem = maybeCommitAndPushKnowledge(kpaths, work);
+    check("no changes -> no-op", !idem.pushed && /no knowledge changes/.test(idem.detail), idem);
+
+    // Kill switch wins over token.
+    process.env.KNOWLEDGE_AUTOPUSH = "0"; process.env.GITHUB_TOKEN = "tok";
+    writeFileSync(join(work, "data/knowledge/kv.json"), '{"x":1}');
+    const killed = maybeCommitAndPushKnowledge(kpaths, work);
+    check("KNOWLEDGE_AUTOPUSH=0 disables despite token", !killed.pushed && killed.detail === "KNOWLEDGE_AUTOPUSH=0", killed);
+
+    if (savedTok !== undefined) process.env.GITHUB_TOKEN = savedTok; else delete process.env.GITHUB_TOKEN;
+    if (savedGh !== undefined) process.env.GH_TOKEN = savedGh; else delete process.env.GH_TOKEN;
+    if (savedAp !== undefined) process.env.KNOWLEDGE_AUTOPUSH = savedAp; else delete process.env.KNOWLEDGE_AUTOPUSH;
   }
 
   console.log("\npassive scout (spectator-stream opponent profiling)");

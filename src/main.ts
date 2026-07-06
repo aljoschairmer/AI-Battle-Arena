@@ -3,7 +3,7 @@ import { startScout } from "./scout";
 import { getBus, scoped } from "./bus";
 import { startBrain, startCoopCoordinator, type BrainHandle } from "./brain";
 import { startEngine, type EngineHandle } from "./engine";
-import { dumpKnowledge, restoreKnowledge } from "./shared/knowledge";
+import { dumpKnowledge, maybeCommitAndPushKnowledge, restoreKnowledge } from "./shared/knowledge";
 import { logger } from "./shared/logger";
 import { installFetchProxy } from "./shared/proxy";
 
@@ -143,6 +143,10 @@ async function main(): Promise<void> {
     try {
       const dumped = await dumpKnowledge(bus, knowledgeScopes);
       logger.info(dumped, "knowledge dumped to repo");
+      // With a GITHUB_TOKEN/GH_TOKEN configured the dump also commits and
+      // pushes itself — no human in the loop (KNOWLEDGE_AUTOPUSH=0 disables).
+      const pushRes = maybeCommitAndPushKnowledge();
+      if (!pushRes.pushed) logger.info({ detail: pushRes.detail }, "knowledge auto-push skipped");
     } catch (e) {
       logger.warn({ err: (e as Error).message }, "knowledge dump failed — learning stays in logs/ only");
     }

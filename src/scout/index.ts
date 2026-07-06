@@ -10,6 +10,7 @@
  */
 
 import { getSpectatorFeed } from "../arena/spectator";
+import { dumpKnowledge, maybeCommitAndPushKnowledge } from "../shared/knowledge";
 import { child } from "../shared/logger";
 import { ScoutAggregator } from "./aggregator";
 import { loadScoutSnapshot, saveScoutSnapshot, scoutFilePath } from "./store";
@@ -74,6 +75,15 @@ export async function startScout(): Promise<ScoutHandle> {
       // Keep the in-progress round: partial evidence beats losing it.
       agg.finalizeRound();
       persist();
+      // Mirror scout.json into the repo dump (no bus in a scout process —
+      // file copies only) and auto-push when a GitHub token is configured.
+      try {
+        await dumpKnowledge(null, []);
+        const pushRes = maybeCommitAndPushKnowledge();
+        if (!pushRes.pushed) log.info({ detail: pushRes.detail }, "knowledge auto-push skipped");
+      } catch (e) {
+        log.warn({ err: (e as Error).message }, "scout knowledge dump failed — profiles stay in logs/");
+      }
       log.info({ rounds: agg.finalizedRounds }, "scout stopped — profiles persisted");
     },
   };
