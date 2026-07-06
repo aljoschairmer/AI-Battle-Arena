@@ -211,7 +211,7 @@ npm run dev
 | `logs/outcomes/outcomes.jsonl` | every round: win/loss, weapon, kills, cause of death, policy version, variant tag |
 | `npx tsx scripts/analyze-outcomes.ts` | win rate, loss causes, per-weapon and per-variant (A/B) breakdowns |
 | `TELEMETRY_LOG=1` + `analyze-telemetry.ts` | per-tick decision traces: which priority rung claimed each tick and why |
-| `docker compose up redis redis-dashboard redis-dashboard-init` | **live web dashboard** — [RedisInsight](https://redis.io/insight/) on <http://localhost:5540>, pre-connected; Browser tab = current directives/policies/insights (KV mirror), Pub/Sub tab = the live Engine↔Brain traffic |
+| `docker compose up redis redis-dashboard` | **live web dashboard** — [Redis Commander](https://github.com/joeferner/redis-commander) on <http://localhost:5540>, pre-connected (multi-arch: amd64/arm64/armv7); key tree = current directives/policies/insights (KV mirror). Live pub/sub traffic: `docker compose exec redis redis-cli psubscribe '*'` |
 | `docker compose up -d redis-dashboard-tunnel` | public quick-tunnel URL for the dashboard (`docker compose logs redis-dashboard-tunnel \| grep trycloudflare`) — unauthenticated, share with care |
 | `npm run knowledge:dump` / [`data/knowledge/`](data/knowledge/) | **repo-persisted learning**: learned policies + insights (Redis KV) and brain memory (rounds, opponent profiles) snapshot into the repo — written automatically on every graceful shutdown, replayed automatically on start (missing-only, live state always wins; `KNOWLEDGE_RESTORE=0` disables). Commit the folder and a fresh clone starts with everything the fleet ever learned. |
 
@@ -292,7 +292,7 @@ The `Dockerfile` shows how to trust a corporate root CA (`NODE_EXTRA_CA_CERTS`).
 - **Blank killer name/weapon in outcomes:** the server sometimes sends empty `death` fields; the
   engine recovers them from last-seen entities, but a killer that never entered fog stays `""`
   (an honest unknown, not a bug).
-- **RedisInsight shows nothing:** the dashboard only sees `BUS=redis` traffic; a `BUS=memory`
+- **Redis dashboard shows nothing:** the dashboard only sees `BUS=redis` traffic; a `BUS=memory`
   process keeps the bus in-process. KV entries carry a ~300 s TTL — an idle bot's keys expiring
   is normal.
 
