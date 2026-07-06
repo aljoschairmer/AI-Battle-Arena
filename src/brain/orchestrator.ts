@@ -422,9 +422,20 @@ export class Orchestrator {
   private scoutedOpponents(): ScoutSummary[] {
     if (Date.now() - this.scoutCache.at > 60_000) {
       const snap = loadScoutSnapshot();
+      // The scout profiles EVERY arena bot — including our own fleet, which
+      // topped the table (GhostProtocol #1 arena-wide). Feeding those rows to
+      // the LLM as "scouted opponents" told it to counter-pick and avoid our
+      // own teammates. Fleet names are dropped HERE (prompt side), not in the
+      // scout itself: our own external stats are valuable data to keep.
+      const ours = new Set(config.arena.bots.map((b) => b.name));
       this.scoutCache = {
         at: Date.now(),
-        summaries: snap ? new ScoutAggregator(snap.profiles).summarize(10) : [],
+        summaries: snap
+          ? new ScoutAggregator(snap.profiles)
+              .summarize(10 + ours.size)
+              .filter((s) => !ours.has(s.name))
+              .slice(0, 10)
+          : [],
       };
     }
     return this.scoutCache.summaries;
