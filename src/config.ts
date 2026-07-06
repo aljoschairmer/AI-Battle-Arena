@@ -6,7 +6,7 @@ import { z } from "zod";
  * fail fast on bad input rather than discovering it deep in the tick loop.
  */
 
-const RoleSchema = z.enum(["engine", "brain", "all"]);
+const RoleSchema = z.enum(["engine", "brain", "all", "scout"]);
 const BusSchema = z.enum(["redis", "memory"]);
 
 function str(name: string, fallback?: string): string {
@@ -222,6 +222,9 @@ export const runsEngine = role === "engine" || role === "all";
 /** True when this process should run the LLM strategy brain. */
 export const runsBrain = role === "brain" || role === "all";
 
+/** True for the passive spectator scout (no keys, no bus, no LLM needed). */
+export const runsScout = role === "scout";
+
 export function assertConfigForRole(): void {
   if (runsEngine && config.arena.bots.length === 0) {
     throw new Error(
@@ -229,7 +232,9 @@ export function assertConfigForRole(): void {
         "(multiple bots in parallel). Generate keys with `npm run keygen`.",
     );
   }
-  if (role !== "all" && bus === "memory") {
+  // The scout is bus-less (it only reads the public spectator WS), so the
+  // memory-bus topology constraint doesn't apply to it.
+  if (role !== "all" && role !== "scout" && bus === "memory") {
     throw new Error(
       `BUS=memory only works with ROLE=all (engine and brain in one process). ` +
         `Current ROLE=${role}. Use BUS=redis to split the workers across processes.`,

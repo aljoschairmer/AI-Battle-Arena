@@ -41,6 +41,8 @@ import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import { dumpKnowledge, restoreKnowledge } from "../src/shared/knowledge";
 import { OpenRouter } from "../src/brain/openrouter";
+import { ScoutAggregator } from "../src/scout/aggregator";
+import { loadScoutSnapshot, saveScoutSnapshot } from "../src/scout/store";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
 import { TacticianAgent } from "../src/brain/agents/tactician";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -2261,6 +2263,55 @@ async function run(): Promise<void> {
     await dumpKnowledge(fresherBus, ["", "bot0:"], paths);
     const overKv = JSON.parse(readFileSync(join(dumpDir, "kv.json"), "utf8")) as Record<string, { aggression?: number }>;
     check("live value still overwrites its dump entry", overKv["bot0:arena:kv:policy"]?.aggression === 0.4, overKv["bot0:arena:kv:policy"]?.aggression);
+  }
+
+  console.log("\npassive scout (spectator-stream opponent profiling)");
+  {
+    const specBot = (o: Partial<import("../src/types/protocol").SpectatorBot>): import("../src/types/protocol").SpectatorBot => ({
+      id: o.id ?? "x", name: o.name ?? o.id ?? "x", avatar_color: "#fff", position: o.position ?? [1000, 1000],
+      hp: o.hp ?? 100, max_hp: 160, weapon: o.weapon ?? "sword", is_alive: o.is_alive ?? true,
+      is_dodging: o.is_dodging ?? false, is_stunned: false, kill_streak: 0, round_kills: 0,
+      cooldown_remaining: 0, facing: [0, 1], action: "move", last_action: "move",
+      target_id: o.target_id ?? "", target_position: null, grapple_charges: 0, grapple_cooldown: 0,
+      gravity_well_charge: 0, mine_count: o.mine_count ?? 3, shield_absorb: 0, is_bounty_target: false,
+      bounty_token_bonus: 0, hazard_key_active: false, hazard_key_ticks: 0, relay_battery_active: false,
+      relay_battery_ticks: 0, brace_ready: false, bow_charge_ticks: 0, bow_charge_level: 0,
+      charged_shot_ready: false, recently_disrupted_ticks: 0,
+    });
+    const frame = (roundTick: number, bots: import("../src/types/protocol").SpectatorBot[], kills: { killer: string; victim: string; tick: number }[] = []): import("../src/types/protocol").SpectatorArenaState => ({
+      type: "arena_state", tick: roundTick, round_tick: roundTick, bots,
+      kill_feed: kills.map((k) => ({ ...k, weapon: "bow" as const })),
+      safe_zone: { center: [1000, 1000], radius: 900, target_center: [1000, 1000], target_radius: 400 },
+    });
+
+    const agg = new ScoutAggregator([], () => 12345);
+    // A round: Archer (bow, kiting at ~7 tiles, locked on) kills Brawler twice; Brawler dies for good.
+    for (let t = 1; t <= 120; t++) {
+      const brawlerAlive = t < 100;
+      agg.ingest(frame(t, [
+        specBot({ id: "A", name: "Archer", weapon: "bow", position: [1000, 1000], target_id: brawlerAlive ? "B" : "", mine_count: t > 60 ? 2 : 3 }),
+        specBot({ id: "B", name: "Brawler", weapon: "sword", position: [1140, 1000], is_alive: brawlerAlive, target_id: brawlerAlive ? "A" : "" }),
+      ], t === 50 ? [{ killer: "Archer", victim: "Brawler", tick: 50 }] : []));
+    }
+    agg.ingest(frame(1, [specBot({ id: "A", name: "Archer", weapon: "bow" }), specBot({ id: "B", name: "Brawler", weapon: "sword" })])); // round_tick reset -> finalize
+    const sum = agg.summarize(5, 1);
+    const archer = sum.find((s) => s.name === "Archer");
+    const brawler = sum.find((s) => s.name === "Brawler");
+    check("scout finalizes a round on round_tick reset", agg.finalizedRounds === 1 && !!archer && !!brawler, sum);
+    check("winner + kill attribution (sole survivor)", archer!.winRate === 1 && archer!.kd >= 1 && brawler!.winRate === 0, { archer, brawler });
+    check("preferred range learned (~7 tiles kiter)", archer!.preferredRange !== null && archer!.preferredRange! > 5, archer!.preferredRange);
+    check("mine placement counted from mine_count drops", archer!.minesPerRound === 1, archer!.minesPerRound);
+    check("aggression reflects lock-on time", archer!.aggression > 0.7, archer!.aggression);
+    check("weapon tendency recorded", archer!.primaryWeapon === "bow" && brawler!.primaryWeapon === "sword");
+
+    // Persistence roundtrip through the scout store.
+    const scoutPath = join(mkdtempSync(join(tmpdir(), "scout-")), "scout.json");
+    saveScoutSnapshot({ v: 1, savedAt: 1, roundsObserved: 1, profiles: agg.snapshot() }, scoutPath);
+    const loaded = loadScoutSnapshot(scoutPath);
+    check("scout snapshot survives disk roundtrip", loaded !== null && loaded.profiles.length === 2 && loaded.roundsObserved === 1, loaded?.profiles.length);
+    // Seeded aggregator continues the counters instead of starting over.
+    const agg2 = new ScoutAggregator(loaded!.profiles);
+    check("seeded aggregator keeps prior profiles", agg2.summarize(5, 1).find((s) => s.name === "Archer")?.rounds === 1);
   }
 
   console.log("\nLLM circuit breaker (provider-outage storm protection)");

@@ -65,6 +65,10 @@ Model slow or down? The last good directive stays in force. Agents never throw.
   *and* the deterministic fallback when they try to draft a proven loser
 - 🧠 **Cross-round memory** — opponent profiles, round history and learned insights persist to
   disk and survive restarts
+- 🕵️ **Passive scout** (`ROLE=scout` / `docker compose up scout`) — watches the public spectator
+  feed 24/7 (no key, no LLM cost) and learns every arena bot's playstyle from rounds we never
+  played: win rates, K/D, aggression, preferred range, dodge/mine habits — fed into the Brain's
+  drafting and strategy prompts so the fleet counter-picks opponents **before first contact**
 - 📊 **Measured, not vibed** — persistent outcome log, per-tick telemetry, offline self-play
   sim, and a built-in A/B mechanism (`ENGINE_POLICY_OVERRIDES` + `POLICY_VARIANT`)
 

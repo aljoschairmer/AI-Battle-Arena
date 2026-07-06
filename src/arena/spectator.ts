@@ -32,8 +32,23 @@ export class SpectatorFeed {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private state: SpectatorArenaState | null = null;
   private stateTs = 0;
+  private frameHandlers: Array<(s: SpectatorArenaState) => void> = [];
 
   constructor(private readonly url: string = deriveSpectatorUrl()) {}
+
+  /**
+   * Subscribe to EVERY incoming frame (the cached `latest()` only keeps the
+   * newest one — right for live intel, useless for the Scout, which needs
+   * lossless kill-feed/movement streams). Handlers must be cheap and never
+   * throw (they run on the WS message path); throws are swallowed per call.
+   * Returns an unsubscribe function.
+   */
+  onFrame(handler: (s: SpectatorArenaState) => void): () => void {
+    this.frameHandlers.push(handler);
+    return () => {
+      this.frameHandlers = this.frameHandlers.filter((h) => h !== handler);
+    };
+  }
 
   start(): void {
     if (this.shouldRun) return;
@@ -167,6 +182,13 @@ export class SpectatorFeed {
         if (msg.type === "arena_state") {
           this.state = msg as SpectatorArenaState;
           this.stateTs = Date.now();
+          for (const h of this.frameHandlers) {
+            try {
+              h(this.state);
+            } catch {
+              /* a scout bug must never take the shared feed down */
+            }
+          }
         }
       } catch {
         /* malformed frame — keep the previous state */

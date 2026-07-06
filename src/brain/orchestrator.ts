@@ -22,6 +22,8 @@ import type {
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../types/internal";
 import type { LeaderboardEntry, Weapon } from "../types/protocol";
 import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "./draftEvidence";
+import { ScoutAggregator, type ScoutSummary } from "../scout/aggregator";
+import { loadScoutSnapshot } from "../scout/store";
 import { chooseFallbackLoadout } from "../engine/loadout";
 import { AnalystAgent } from "./agents/analyst";
 import { LoadoutAgent } from "./agents/loadout";
@@ -282,6 +284,7 @@ export class Orchestrator {
           ourStats: this.ourStats,
           insights: this.insights,
           opponentProfiles: this.opponents.forPrompt(8),
+          scoutedOpponents: this.scoutedOpponents(),
         },
         globalIntel: this.spectator?.intel(snap.self.id, snap.self.position) ?? null,
       });
@@ -322,6 +325,7 @@ export class Orchestrator {
         arenaBotsConnected: req.context.arenaBotsConnected,
         insights: this.insights,
         opponentProfiles: this.opponents.forPrompt(8),
+        scoutedOpponents: this.scoutedOpponents(),
         fleetIndex,
         fleetSize,
         weaponWinRates,
@@ -408,6 +412,22 @@ export class Orchestrator {
     await Promise.all([this.runAnalyst(outcome), this.runTuner()]);
     // And once more with the fresh insights included.
     this.persistMemory();
+  }
+
+  // Scout intel cache: the passive ROLE=scout container writes scout.json
+  // beside the brain memories; re-read at most every 60s (draft/strategy
+  // cadence, never the tick path). Missing file = no scout has run = [].
+  private scoutCache: { at: number; summaries: ScoutSummary[] } = { at: 0, summaries: [] };
+
+  private scoutedOpponents(): ScoutSummary[] {
+    if (Date.now() - this.scoutCache.at > 60_000) {
+      const snap = loadScoutSnapshot();
+      this.scoutCache = {
+        at: Date.now(),
+        summaries: snap ? new ScoutAggregator(snap.profiles).summarize(10) : [],
+      };
+    }
+    return this.scoutCache.summaries;
   }
 
   /** Merge per-weapon win/played evidence across every fleet member's disk memory. */

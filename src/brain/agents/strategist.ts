@@ -30,6 +30,8 @@ export interface StrategistInput {
       deathsVsUs: number;
       roundsFaced: number;
     }[];
+    /** Passive-scout playstyle intel on arena bots (see scout/aggregator). */
+    scoutedOpponents?: import("../../scout/aggregator").ScoutSummary[];
   };
 }
 
@@ -62,6 +64,9 @@ export class StrategistAgent extends Agent<StrategistInput, StrategyOutput> {
       "1. OPPONENT PROFILES — opponent_profiles shows (killsVsUs - deathsVsUs) net score per bot.",
       "   Positive net = they beat us → add to avoidTargetIds. Negative net = we beat them → consider primaryTargetId.",
       "   If roundsFaced=0, use ELO as proxy: ELO > ours+200 = dangerous, ELO < ours-100 = weak.",
+      "   scouted_opponents adds PASSIVE spectator intel (playstyle from rounds we never played): high winRate/kd",
+      "   scouts = avoid; low-winRate, low-aggression ones = safe prey. preferredRange >5 = kiter (close them down),",
+      "   <2 = brawler (keep distance); high minesPerRound = never chase them through corridors.",
       "2. LEARNING INSIGHTS — treat lessons as hard rules from painful experience. Always apply suggestedPosture",
       "   unless you have a strong contextual reason to override (e.g. you're the last bot standing).",
       "   dangerousOpponents: add any that appear in enemies list to avoidTargetIds.",
@@ -119,6 +124,7 @@ export class StrategistAgent extends Agent<StrategistInput, StrategyOutput> {
           suggested_posture: m.insights.suggestedPosture,
         } : null,
         opponent_profiles: m.opponentProfiles,
+        scouted_opponents: m.scoutedOpponents?.length ? m.scoutedOpponents : null,
         zone: s.zone,
         enemies: s.enemies,
         nearby_pickups: s.nearbyPickups,

@@ -21,6 +21,7 @@
     "smoke": "tsx scripts/smoke.ts",
     "sim": "tsx scripts/simulate.ts",
     "knowledge:dump": "tsx scripts/knowledge-dump.ts",
+    "dev:scout": "cross-env ROLE=scout tsx watch src/main.ts",
     "test": "tsx scripts/smoke.ts",
     "lint": "tsc --noEmit"
   },

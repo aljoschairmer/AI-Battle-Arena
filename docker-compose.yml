@@ -95,6 +95,29 @@ services:
     #   ["tunnel", "--no-autoupdate", "run", "--protocol", "http2", "--token", "${TUNNEL_TOKEN}"]
     command: ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", "http://redis-dashboard:5540"]
 
+  # Passive opponent scout: watches the PUBLIC spectator WebSocket (no API
+  # key, no account, no LLM cost) and learns every arena bot's playstyle —
+  # draft tendencies, win rates, aggression, preferred range, mine habits —
+  # from rounds we never played in. Profiles land in scout.json inside the
+  # bind-mounted logs/brain/, where the fighting fleet's Brain picks them up
+  # for its Loadout/Strategist prompts. Runs fine 24/7 with the fleet down.
+  scout:
+    build: .
+    restart: unless-stopped
+    environment:
+      ROLE: scout
+      ARENA_WS_URL: ${ARENA_WS_URL:-wss://arena.angel-serv.com/ws/bot}
+      ARENA_WS_ORIGIN: ${ARENA_WS_ORIGIN:-https://arena.angel-serv.com}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+    volumes:
+      # Shared with host-run fleets AND the knowledge dump — the whole point
+      # is that the scout's learning outlives its container.
+      - ./logs/brain:/app/logs/brain
+
   engine:
     build: .
     restart: unless-stopped

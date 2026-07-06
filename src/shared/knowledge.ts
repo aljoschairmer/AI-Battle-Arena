@@ -97,11 +97,13 @@ export async function dumpKnowledge(
   }
   writeFileSync(kvPath, JSON.stringify(kv, null, 2));
 
-  // 2. Brain memory files (round history, opponent profiles, insights).
+  // 2. Brain memory files (round history, opponent profiles, insights) plus
+  // the Scout's watched-opponent profiles (scout.json — separate file so its
+  // observed rounds never leak into our own weapon-evidence statistics).
   const memoryFiles: string[] = [];
   try {
     for (const f of readdirSync(paths.brainDir)) {
-      if (!/^memory.*\.json$/.test(f)) continue;
+      if (!/^(memory.*|scout)\.json$/.test(f)) continue;
       copyFileSync(join(paths.brainDir, f), join(paths.dir, "brain", f));
       memoryFiles.push(f);
     }
@@ -152,7 +154,7 @@ export async function restoreKnowledge(
     try {
       mkdirSync(paths.brainDir, { recursive: true });
       for (const f of readdirSync(dumpBrain)) {
-        if (!/^memory.*\.json$/.test(f)) continue;
+        if (!/^(memory.*|scout)\.json$/.test(f)) continue;
         const target = join(paths.brainDir, f);
         if (existsSync(target)) continue; // local learning wins
         copyFileSync(join(dumpBrain, f), target);
