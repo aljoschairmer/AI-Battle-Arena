@@ -1,7 +1,7 @@
 {
   "bot0:arena:kv:policy": {
-    "version": 103,
-    "ts": 1783371221460,
+    "version": 105,
+    "ts": 1783375633283,
     "dodgeEagerness": 1,
     "kiteRangeBias": 3,
     "grappleCloseMinGap": 1.5,
@@ -17,7 +17,7 @@
     "mineWhenChased": true,
     "mineChaseRange": 4,
     "mineCooldownTicks": 15,
-    "minTradeAdvantage": 0.9,
+    "minTradeAdvantage": 0.3,
     "disengageHpThreshold": 0.6,
     "retreatTradeSensitivity": 0.15,
     "disengageUseSeparation": true,
@@ -44,14 +44,14 @@
     "retreatFireWhileKiting": true,
     "idleHealBelowHpFraction": 0.85,
     "idleCapturePads": true,
-    "aggression": 0.3,
-    "posture": "retreat",
+    "aggression": 0.55,
+    "posture": "aggressive",
     "bowAlwaysCharge": true,
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Daggers are dying instantly in melee (10/10 deaths from sword/spear/bow). Posture must shift to retreat to avoid all close engagement. Increase kiteRangeBias to 4 to maximize distance from melee threats. Set flankMaxDeferTicks to 30 to force daggers to always seek backstabs — never charge head-on. R",
-    "source": "tuner"
+    "reasoning": "healed: copied GhostProtocol's healthy combat profile (passivity-spiral reset)",
+    "source": "operator-heal"
   },
   "bot0:arena:kv:insights": {
     "lessons": [
@@ -76,9 +76,9 @@
     "analysedThroughRound": 52
   },
   "bot1:arena:kv:policy": {
-    "version": 102,
-    "ts": 1783371221590,
-    "dodgeEagerness": 0.8,
+    "version": 104,
+    "ts": 1783375633286,
+    "dodgeEagerness": 1,
     "kiteRangeBias": 0,
     "grappleCloseMinGap": 1.5,
     "targetLowHpWeight": 85,
@@ -93,7 +93,7 @@
     "mineWhenChased": true,
     "mineChaseRange": 4,
     "mineCooldownTicks": 15,
-    "minTradeAdvantage": 0.85,
+    "minTradeAdvantage": 0.3,
     "disengageHpThreshold": 0.6,
     "retreatTradeSensitivity": 0.15,
     "disengageUseSeparation": true,
@@ -120,14 +120,14 @@
     "retreatFireWhileKiting": true,
     "idleHealBelowHpFraction": 0.8,
     "idleCapturePads": true,
-    "aggression": 1,
+    "aggression": 0.55,
     "posture": "aggressive",
     "bowAlwaysCharge": true,
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Shield is winning only 1/17 rounds; we're dying to grapple, sword, and bow users in open spaces. Raise dodgeEagerness to 0.8 to conserve dodge for critical grapple/bow evasions. Lower targetThreatAversion from 60→40 to aggressively prioritize high-threat bow/grapple users before they lock in. Enable",
-    "source": "tuner"
+    "reasoning": "healed: copied GhostProtocol's healthy combat profile (passivity-spiral reset)",
+    "source": "operator-heal"
   },
   "bot2:arena:kv:policy": {
     "version": 103,
