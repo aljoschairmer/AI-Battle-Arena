@@ -13,7 +13,7 @@ import { getSpectatorFeed } from "../arena/spectator";
 import { dumpKnowledge, maybeCommitAndPushKnowledge } from "../shared/knowledge";
 import { child } from "../shared/logger";
 import { ScoutAggregator } from "./aggregator";
-import { loadScoutSnapshot, saveScoutSnapshot, scoutFilePath } from "./store";
+import { loadMergedScoutSnapshot, saveScoutSnapshot, scoutFilePath } from "./store";
 
 const log = child("scout");
 
@@ -29,7 +29,12 @@ export async function startScout(): Promise<ScoutHandle> {
     throw new Error("ROLE=scout needs the spectator feed — unset ARENA_SPECTATOR=false");
   }
 
-  const prior = loadScoutSnapshot();
+  // Merges the live logs/brain/scout.json with the repo-committed
+  // data/knowledge/brain/scout.json (additive per-bot counters — see
+  // mergeScoutProfiles) instead of picking one and discarding the other, so
+  // an independent scout run never has to start blind or lose whatever it
+  // uniquely observed the moment it dumps+pushes.
+  const prior = loadMergedScoutSnapshot();
   const priorRounds = prior?.roundsObserved ?? 0;
   const agg = new ScoutAggregator(prior?.profiles ?? []);
   log.info(

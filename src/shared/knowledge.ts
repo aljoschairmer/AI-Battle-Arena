@@ -104,18 +104,61 @@ export async function dumpKnowledge(
   // 2. Brain memory files (round history, opponent profiles, insights) plus
   // the Scout's watched-opponent profiles (scout.json — separate file so its
   // observed rounds never leak into our own weapon-evidence statistics).
+  // Copied ONLY when the source is actually richer than what's already
+  // committed (isSourceRicher) — a plain unconditional copy would let ANY
+  // process with a smaller/older logs/brain/ (a fresh checkout, a container
+  // that fell behind another session's longer-running scout/fleet) silently
+  // regress shared knowledge the moment it dumps+pushes. Measured live: a
+  // scout instance sitting at ~30 observed rounds would have overwritten a
+  // sibling's already-committed 55-round snapshot on a naive copy.
   const memoryFiles: string[] = [];
   try {
     for (const f of readdirSync(paths.brainDir)) {
       if (!/^(memory.*|scout)\.json$/.test(f)) continue;
-      copyFileSync(join(paths.brainDir, f), join(paths.dir, "brain", f));
-      memoryFiles.push(f);
+      const src = join(paths.brainDir, f);
+      const dest = join(paths.dir, "brain", f);
+      if (isSourceRicher(src, dest)) {
+        copyFileSync(src, dest);
+        memoryFiles.push(f);
+      }
     }
   } catch {
     /* no brain dir yet — nothing learned on disk */
   }
 
   return { kvKeys: Object.keys(kv), kvLive, memoryFiles };
+}
+
+/**
+ * Should `src` overwrite `dest`? True when `dest` is absent/corrupt, or when
+ * `src` carries STRICTLY MORE observed history by the file's own "amount
+ * learned" metric — `roundsObserved` for scout.json, `rounds.length` for
+ * memory-*.json (BrainMemorySnapshot). `savedAt` (present on both shapes)
+ * only breaks an exact tie: on its own it is NOT a safe primary signal — a
+ * freshly (re)started process seeds a low-history file with a brand-new
+ * timestamp, which would beat a long-accumulated file on recency alone even
+ * though it holds far less information. Malformed source JSON never
+ * overwrites a valid destination (fails closed).
+ */
+export function isSourceRicher(srcPath: string, destPath: string): boolean {
+  let dest: { savedAt?: number; roundsObserved?: number; rounds?: unknown[] };
+  try {
+    dest = JSON.parse(readFileSync(destPath, "utf8")) as typeof dest;
+  } catch {
+    return true; // no valid destination to protect
+  }
+  let src: { savedAt?: number; roundsObserved?: number; rounds?: unknown[] };
+  try {
+    src = JSON.parse(readFileSync(srcPath, "utf8")) as typeof src;
+  } catch {
+    return false; // never let unreadable/corrupt source clobber a good file
+  }
+  const metric = (s: typeof src): number =>
+    typeof s.roundsObserved === "number" ? s.roundsObserved : Array.isArray(s.rounds) ? s.rounds.length : -1;
+  const srcAmount = metric(src);
+  const destAmount = metric(dest);
+  if (srcAmount !== destAmount) return srcAmount > destAmount;
+  return (src.savedAt ?? 0) > (dest.savedAt ?? 0);
 }
 
 function git(args: string[], cwd: string): string {
