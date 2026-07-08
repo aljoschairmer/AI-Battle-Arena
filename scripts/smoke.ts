@@ -2606,10 +2606,27 @@ async function run(): Promise<void> {
       recent,
     );
 
-    // The BAN side stays recency-only, deliberately: a weapon that's ACTIVELY
-    // being played and doing badly right now must be banned even if its
-    // all-time average still looks fine — an old rosy average must never
-    // shield a live decline.
+    // The BAN side prefers recency but no longer defaults to innocent when
+    // the recency window is silent. The live incident this covers: a
+    // reconnect re-drafted daggers (5.5%/384 all-time) precisely BECAUSE it
+    // had aged out of every bot's recent window — "no recent evidence" was
+    // read as "unproven" and the bot sat on a 2% weapon for 49 rounds.
+    const recentSilent = { staff: { wins: 6, played: 40 } }; // nothing on daggers
+    const allTimeDamning = { daggers: { wins: 21, played: 384 }, bow: { wins: 119, played: 620 } };
+    check(
+      "a pick with NO recent evidence is banned from its all-time record alone",
+      enforceWeaponEvidence("daggers", 0, 3, recentSilent, allTimeDamning) === "bow",
+      { recentSilent, allTimeDamning },
+    );
+    check(
+      "recent form shields: a weapon hot right now is not banned by a stale bad all-time record",
+      enforceWeaponEvidence("daggers", 0, 3, { daggers: { wins: 5, played: 20 } }, allTimeDamning) === null,
+      allTimeDamning,
+    );
+
+    // A weapon ACTIVELY being played and doing badly right now must be banned
+    // even if its all-time average still looks fine — recent evidence, when
+    // present, always outranks the old rosy average.
     const recentBad = { sword: { wins: 1, played: 30 } }; // 3.3% right now
     // sword's OWN all-time average (25%) must NOT shield it from the ban —
     // bow is the only other weapon with evidence, promoted purely off its

@@ -42,12 +42,16 @@ function rateOf(rates: WeaponWinRates, w: Weapon): number | null {
  *
  * `rates` (recency window, ~200 rounds/bot) and `allTimeRates` (unbounded
  * outcome log, see allTimeWeaponWinRatesFromDisk) are used ASYMMETRICALLY:
- *   - Whether the CURRENT pick gets BANNED is judged on `rates` alone,
- *     unchanged. This is deliberate: the recency window exists so the fleet
- *     reacts when the live meta turns against a weapon RIGHT NOW — an old,
- *     rosy all-time average must never shield a pick that's actually
- *     underwater this week. If `rates` has too little recent history to
- *     judge, the pick is simply left alone (unproven, not banned).
+ *   - Whether the CURRENT pick gets BANNED is judged on `rates` first: the
+ *     recency window exists so the fleet reacts when the live meta turns
+ *     against a weapon RIGHT NOW — an old, rosy all-time average must never
+ *     shield a pick that's actually underwater this week. But when `rates`
+ *     is SILENT on the pick (< MIN_PLAYED recent rounds), the all-time
+ *     record decides instead of defaulting to innocent. Measured live: a
+ *     reconnect re-drafted daggers (5.5%/384 all-time) precisely BECAUSE it
+ *     had aged out of everyone's recency window — "no recent evidence" was
+ *     read as "unproven" when the unbounded log had 384 rounds of proof,
+ *     and the bot then had to re-lose ~49 rounds to re-learn it.
  *   - Candidate ALTERNATIVES (in bestIn) are judged on whichever of the two
  *     sources is more favourable. A weapon can be promoted either because
  *     it's hot right now (recent) or because it has a long, proven track
@@ -67,7 +71,9 @@ export function enforceWeaponEvidence(
   allTimeRates: WeaponWinRates = {},
 ): Weapon | null {
   if (fleetSize <= 1 || fleetIndex === null) return null;
-  const pickRate = rateOf(rates, pick);
+  // Recent form wins when it exists; the all-time record only speaks when
+  // the recency window has nothing to say about the pick (see doc above).
+  const pickRate = rateOf(rates, pick) ?? rateOf(allTimeRates, pick);
   if (pickRate === null || pickRate >= BAN_RATE) return null; // unproven or fine
 
   const allWeapons = [...new Set([...Object.keys(rates), ...Object.keys(allTimeRates)])] as Weapon[];

@@ -123,6 +123,11 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   // --- Per-round telemetry accumulator (published to Brain at round_end) ---
   let roundStartTick = 0;
   let confirmedWeapon: Weapon | null = null;
+  // Last deliberate evidence-redraft reconnect (see round_end). Rate-limited:
+  // evidence moves one round at a time, so bouncing more often than this can
+  // only thrash sessions, never change the verdict.
+  let lastEvidenceBounceAt = 0;
+  const EVIDENCE_BOUNCE_COOLDOWN_MS = 10 * 60_000;
   const roundKilledBy: RoundOutcome["killedBy"] = [];
   const roundWeKilled: RoundOutcome["weKilled"] = [];
   const roundEnemyWeaponsSeen: Partial<Record<Weapon, number>> = {};
@@ -784,6 +789,40 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
             : {}),
         });
       });
+
+      // Evidence redraft: the arena locks the loadout per SESSION, so a bad
+      // draft normally survives until something happens to drop the socket.
+      // Measured live: a reconnect drafted daggers past the evidence check
+      // (it had aged out of the recency window; ban now falls back to the
+      // all-time record — draftEvidence.ts), and the bot then sat on a 2%
+      // weapon for 49 rounds/2.5h until a RANDOM network drop finally
+      // reopened the selection window — which instantly re-drafted bow.
+      // Don't wait for luck: when the round is over (the only tactically
+      // free moment) and the locked weapon is now a proven loser with a
+      // proven alternative, bounce the socket so the reconnect path runs
+      // the normal evidence-checked draft. Cooldown-limited; skipped on a
+      // win (a weapon that just won a round can wait one more for a verdict).
+      if (fleetSize > 1 && confirmedWeapon && !won && Date.now() - lastEvidenceBounceAt > EVIDENCE_BOUNCE_COOLDOWN_MS) {
+        try {
+          const better = enforceWeaponEvidence(
+            confirmedWeapon,
+            fleetIndex,
+            fleetSize,
+            fleetWeaponWinRatesFromDisk(),
+            allTimeWeaponWinRatesFromDisk(),
+          );
+          if (better) {
+            lastEvidenceBounceAt = Date.now();
+            log.info(
+              { locked: confirmedWeapon, better },
+              "locked weapon is now evidence-banned — reconnecting to redraft",
+            );
+            socket.bounce(`redraft: ${confirmedWeapon} evidence-banned, ${better} proven`);
+          }
+        } catch (e) {
+          log.debug({ err: (e as Error).message }, "evidence redraft check failed — keeping session");
+        }
+      }
     } catch (e) {
       log.error({ err: (e as Error).message, stack: (e as Error).stack }, "round_end handling threw — continuing");
     }
