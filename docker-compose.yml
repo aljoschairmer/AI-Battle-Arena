@@ -148,6 +148,17 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      volume-init:
+        condition: service_completed_successfully
+    # Shared with the brain container: memory-bot*.json (fleet-wide weapon
+    # evidence — BrainMemoryStore) and the unbounded outcomes.jsonl (the
+    # all-time weapon-evidence backstop, draftEvidence.ts). Without this
+    # mount each container reads/writes its own empty ./logs/*, so the
+    # deterministic fallback draft's evidence check ran against nothing in
+    # a split deployment even though it works in single-process ROLE=all.
+    volumes:
+      - ./logs/brain:/app/logs/brain
+      - ./logs/outcomes:/app/logs/outcomes
     environment:
       ROLE: engine
       BUS: redis
@@ -182,6 +193,14 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      volume-init:
+        condition: service_completed_successfully
+    # See the engine service's identical mount for why: this is where
+    # memory-bot*.json actually gets written (BrainMemoryStore lives in the
+    # orchestrator), and outcomes.jsonl is the all-time evidence backstop.
+    volumes:
+      - ./logs/brain:/app/logs/brain
+      - ./logs/outcomes:/app/logs/outcomes
     environment:
       ROLE: brain
       BUS: redis

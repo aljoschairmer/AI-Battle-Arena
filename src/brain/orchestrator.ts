@@ -21,7 +21,7 @@ import type {
 } from "../types/internal";
 import { DEFAULT_DIRECTIVE, DEFAULT_POLICY, mergePolicy } from "../types/internal";
 import type { LeaderboardEntry, Weapon } from "../types/protocol";
-import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "./draftEvidence";
+import { allTimeWeaponWinRatesFromDisk, enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "./draftEvidence";
 import { ScoutAggregator, type ScoutSummary } from "../scout/aggregator";
 import { loadScoutSnapshot } from "../scout/store";
 import { chooseFallbackLoadout } from "../engine/loadout";
@@ -356,8 +356,10 @@ export class Orchestrator {
       // ignoring the weapon-history authority rule and re-picking a ~2%
       // weapon over a 20%+ one. If its pick is a proven loser and the slot
       // has a proven winner available, override — stats and fallback are
-      // rebuilt for the substituted weapon.
-      const better = enforceWeaponEvidence(out.weapon, fleetIndex, fleetSize, weaponWinRates);
+      // rebuilt for the substituted weapon. The all-time backstop lets a
+      // weapon that's aged out of the recent window (but has a long, proven
+      // record) get promoted back — see enforceWeaponEvidence's doc.
+      const better = enforceWeaponEvidence(out.weapon, fleetIndex, fleetSize, weaponWinRates, allTimeWeaponWinRatesFromDisk());
       if (better) {
         const rebuilt = chooseFallbackLoadout({
           availableWeapons: [better],
@@ -447,7 +449,13 @@ export class Orchestrator {
     return this.scoutCache.summaries;
   }
 
-  /** Merge per-weapon win/played evidence across every fleet member's disk memory. */
+  /**
+   * Recent-window per-weapon win/played evidence, merged across every fleet
+   * member's disk memory — fed to the Loadout prompt AND used as the "is the
+   * current pick bad RIGHT NOW" side of enforceWeaponEvidence's ban check
+   * (see its doc for why that half stays recency-only). The promotion side
+   * additionally consults allTimeWeaponWinRatesFromDisk at the call site.
+   */
   private fleetWeaponWinRates(): Partial<Record<Weapon, { wins: number; played: number }>> {
     // Siblings' snapshots include our own persisted rounds, so disk is the
     // single source (shared with the Engine's fallback draft); fall back to

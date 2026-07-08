@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Weapon } from "../types/protocol";
+import type { OutcomeEntry } from "../engine/outcomeLog";
 import { BrainMemoryStore } from "../shared/memoryStore";
 
 /**
@@ -36,24 +39,52 @@ function rateOf(rates: WeaponWinRates, w: Weapon): number | null {
  * Returns the weapon the slot SHOULD play instead, or null when the LLM's
  * pick stands (no strong evidence against it, or no proven alternative the
  * slot may use).
+ *
+ * `rates` (recency window, ~200 rounds/bot) and `allTimeRates` (unbounded
+ * outcome log, see allTimeWeaponWinRatesFromDisk) are used ASYMMETRICALLY:
+ *   - Whether the CURRENT pick gets BANNED is judged on `rates` alone,
+ *     unchanged. This is deliberate: the recency window exists so the fleet
+ *     reacts when the live meta turns against a weapon RIGHT NOW — an old,
+ *     rosy all-time average must never shield a pick that's actually
+ *     underwater this week. If `rates` has too little recent history to
+ *     judge, the pick is simply left alone (unproven, not banned).
+ *   - Candidate ALTERNATIVES (in bestIn) are judged on whichever of the two
+ *     sources is more favourable. A weapon can be promoted either because
+ *     it's hot right now (recent) or because it has a long, proven track
+ *     record even though it hasn't been drafted in a while — recent has
+ *     nothing meaningful to say about a weapon nobody's played lately, so
+ *     the all-time number stands on its own. This is the fix for a measured
+ *     live gap: bow's 19.2%/567-round all-time record (independently
+ *     confirmed as the arena's best by the spectator scout's cross-bot
+ *     observation) had aged down to a 20-round/10% sliver in the recency
+ *     window and could no longer be promoted back on its own.
  */
 export function enforceWeaponEvidence(
   pick: Weapon,
   fleetIndex: number | null,
   fleetSize: number,
   rates: WeaponWinRates,
+  allTimeRates: WeaponWinRates = {},
 ): Weapon | null {
   if (fleetSize <= 1 || fleetIndex === null) return null;
   const pickRate = rateOf(rates, pick);
   if (pickRate === null || pickRate >= BAN_RATE) return null; // unproven or fine
 
-  const allowed = SLOT_WEAPONS[fleetIndex] ?? (Object.keys(rates) as Weapon[]);
+  const allWeapons = [...new Set([...Object.keys(rates), ...Object.keys(allTimeRates)])] as Weapon[];
+  const allowed = SLOT_WEAPONS[fleetIndex] ?? allWeapons;
+  const candidateRate = (w: Weapon): number | null => {
+    const recent = rateOf(rates, w);
+    const allTime = rateOf(allTimeRates, w);
+    if (recent === null) return allTime;
+    if (allTime === null) return recent;
+    return Math.max(recent, allTime);
+  };
   const bestIn = (set: Weapon[]): Weapon | null => {
     let best: Weapon | null = null;
     let bestRate = PROMOTE_RATE;
     for (const w of set) {
       if (w === pick) continue;
-      const r = rateOf(rates, w);
+      const r = candidateRate(w);
       if (r !== null && r >= bestRate) {
         bestRate = r;
         best = w;
@@ -67,7 +98,7 @@ export function enforceWeaponEvidence(
   // because sword (2%) and shield (unproven) were its only in-set options
   // while bow ran 20%+ in the same fleet. A banned pick beats archetype
   // purity only until the evidence is overwhelming.
-  return bestIn(allowed) ?? bestIn(Object.keys(rates) as Weapon[]);
+  return bestIn(allowed) ?? bestIn(allWeapons);
 }
 
 /**
@@ -92,6 +123,52 @@ export function fleetWeaponWinRatesFromDisk(
       if (r.won) e.wins += 1;
       merged[r.ourWeapon] = e;
     }
+  }
+  return merged;
+}
+
+/**
+ * All-time per-weapon win/played tally read from the persistent, UNBOUNDED
+ * outcome log (logs/outcomes/outcomes.jsonl — OutcomeLog in engine/, one line
+ * per completed round, never pruned). Backstops fleetWeaponWinRatesFromDisk's
+ * per-bot RoundHistory(200) ring buffer, which forgets: a weapon that stops
+ * being drafted for a while ages out of that 200-round window entirely and
+ * becomes invisible to enforceWeaponEvidence's promotion logic even when it
+ * was a proven long-run winner. Measured live: bow sat at 19.2%/567 rounds
+ * all-time (and independently confirmed as the arena's best by the spectator
+ * scout's cross-bot observation, ~8.5% vs. every other weapon) yet had aged
+ * down to a 20-round/10% sliver in the rolling window — too thin to ever be
+ * promoted back on its own.
+ *
+ * Best-effort like its sibling: a missing/unreadable file (fresh checkout, a
+ * split ROLE=engine/ROLE=brain deployment without a shared volume for
+ * logs/outcomes) returns {} and callers fall back to recency-only, exactly
+ * the behaviour before this existed. A corrupt/partial JSON line (the log can
+ * be read mid-append) is skipped, not fatal to the rest of the file.
+ */
+export function allTimeWeaponWinRatesFromDisk(path?: string): WeaponWinRates {
+  const filePath = path ?? join(process.env.OUTCOME_LOG_DIR ?? "logs/outcomes", "outcomes.jsonl");
+  const merged: WeaponWinRates = {};
+  let text: string;
+  try {
+    text = readFileSync(filePath, "utf8");
+  } catch {
+    return merged;
+  }
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: Partial<OutcomeEntry>;
+    try {
+      entry = JSON.parse(line) as Partial<OutcomeEntry>;
+    } catch {
+      continue;
+    }
+    const w = entry.ourWeapon;
+    if (!w) continue;
+    const e = merged[w] ?? { wins: 0, played: 0 };
+    e.played += 1;
+    if (entry.won) e.wins += 1;
+    merged[w] = e;
   }
   return merged;
 }
