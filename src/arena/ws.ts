@@ -117,6 +117,22 @@ export class ArenaSocket extends EventEmitter {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
+  /**
+   * Deliberately close the CURRENT connection while leaving the client
+   * running, so the normal close -> scheduleReconnect path opens a fresh
+   * arena session. The arena locks the loadout per session (loadout_confirmed
+   * is final until the socket dies), so this is the only way to reopen the
+   * selection window mid-run — used by the engine when the locked weapon has
+   * become a proven loser by fleet evidence (measured live: a bot sat on a
+   * 2%-win-rate weapon for 49 rounds because nothing ever dropped the
+   * connection). No-op unless the socket is currently open.
+   */
+  bounce(reason: string): void {
+    if (!this.shouldRun || !this.isOpen || !this.ws) return;
+    this.log.info({ reason }, "bouncing connection to reopen the arena session");
+    this.ws.close(1000, reason);
+  }
+
   private connect(): void {
     // Direct-message auth connects WITHOUT a key in the URL; query auth puts
     // the key on the upgrade request (both paths verified working live).
