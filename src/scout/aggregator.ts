@@ -247,6 +247,50 @@ function emptyProfile(name: string): ScoutProfile {
   };
 }
 
+/**
+ * Merge two independent sets of scout profiles (e.g. two sessions/containers
+ * that each watched the arena for a while) into one, summing every counter
+ * per bot name. Safe because ScoutProfile's fields are pure additive tallies
+ * — even in the unlikely case both sources observed the SAME live rounds at
+ * the same time (double-counting them), every counter inflates by roughly
+ * the same factor, so derived ratios (win rate, K/D, aggression, dodge rate)
+ * stay approximately correct; only the raw `roundsObserved`/confidence count
+ * reads higher than it should. That's a far smaller cost than the
+ * alternative (picking one source and discarding whatever the other
+ * uniquely knew about an opponent it saw more of, or a bot it saw at all).
+ */
+export function mergeScoutProfiles(a: ScoutProfile[], b: ScoutProfile[]): ScoutProfile[] {
+  const byName = new Map<string, ScoutProfile>();
+  for (const p of a) byName.set(p.name, { ...p, weaponsSeen: { ...p.weaponsSeen } });
+  for (const p of b) {
+    const existing = byName.get(p.name);
+    if (!existing) {
+      byName.set(p.name, { ...p, weaponsSeen: { ...p.weaponsSeen } });
+      continue;
+    }
+    const weaponsSeen: Partial<Record<Weapon, number>> = { ...existing.weaponsSeen };
+    for (const [w, c] of Object.entries(p.weaponsSeen) as [Weapon, number][]) {
+      weaponsSeen[w] = (weaponsSeen[w] ?? 0) + c;
+    }
+    byName.set(p.name, {
+      name: p.name,
+      weaponsSeen,
+      roundsObserved: existing.roundsObserved + p.roundsObserved,
+      wins: existing.wins + p.wins,
+      kills: existing.kills + p.kills,
+      deaths: existing.deaths + p.deaths,
+      aggressionSum: existing.aggressionSum + p.aggressionSum,
+      rangeSum: existing.rangeSum + p.rangeSum,
+      rangeSamples: existing.rangeSamples + p.rangeSamples,
+      dodgeSum: existing.dodgeSum + p.dodgeSum,
+      minesPlaced: existing.minesPlaced + p.minesPlaced,
+      zoneDeaths: existing.zoneDeaths + p.zoneDeaths,
+      lastSeenAt: Math.max(existing.lastSeenAt, p.lastSeenAt),
+    });
+  }
+  return [...byName.values()].sort((x, y) => y.roundsObserved - x.roundsObserved);
+}
+
 function primaryWeapon(p: ScoutProfile): Weapon | null {
   let best: Weapon | null = null;
   let n = 0;

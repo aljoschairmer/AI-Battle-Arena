@@ -39,10 +39,10 @@ import { StrategistAgent } from "../src/brain/agents/strategist";
 import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../src/brain/draftEvidence";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
-import { dumpKnowledge, maybeCommitAndPushKnowledge, restoreKnowledge } from "../src/shared/knowledge";
+import { dumpKnowledge, isSourceRicher, maybeCommitAndPushKnowledge, restoreKnowledge } from "../src/shared/knowledge";
 import { OpenRouter } from "../src/brain/openrouter";
-import { ScoutAggregator } from "../src/scout/aggregator";
-import { loadScoutSnapshot, saveScoutSnapshot } from "../src/scout/store";
+import { ScoutAggregator, mergeScoutProfiles, type ScoutProfile } from "../src/scout/aggregator";
+import { loadMergedScoutSnapshot, loadScoutSnapshot, saveScoutSnapshot } from "../src/scout/store";
 import type { GameSnapshot, LoadoutRequest } from "../src/types/internal";
 import { TacticianAgent } from "../src/brain/agents/tactician";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -2360,6 +2360,83 @@ async function run(): Promise<void> {
     // Seeded aggregator continues the counters instead of starting over.
     const agg2 = new ScoutAggregator(loaded!.profiles);
     check("seeded aggregator keeps prior profiles", agg2.summarize(5, 1).find((s) => s.name === "Archer")?.rounds === 1);
+  }
+
+  console.log("\nscout knowledge merge (multi-session round-count safety)");
+  {
+    // mergeScoutProfiles: additive per-bot counters, not a pick-one-source
+    // choice — two independent observation sets combine losslessly.
+    const a: ScoutProfile[] = [
+      { name: "Foe", weaponsSeen: { bow: 3 }, roundsObserved: 10, wins: 2, kills: 8, deaths: 5, aggressionSum: 1, rangeSum: 40, rangeSamples: 10, dodgeSum: 0.5, minesPlaced: 1, zoneDeaths: 0, lastSeenAt: 100 },
+    ];
+    const b: ScoutProfile[] = [
+      { name: "Foe", weaponsSeen: { bow: 2, sword: 1 }, roundsObserved: 5, wins: 1, kills: 4, deaths: 2, aggressionSum: 0.5, rangeSum: 20, rangeSamples: 5, dodgeSum: 0.2, minesPlaced: 0, zoneDeaths: 1, lastSeenAt: 200 },
+      { name: "OnlyInB", weaponsSeen: { staff: 4 }, roundsObserved: 4, wins: 0, kills: 1, deaths: 4, aggressionSum: 0.1, rangeSum: 12, rangeSamples: 4, dodgeSum: 0.1, minesPlaced: 0, zoneDeaths: 0, lastSeenAt: 150 },
+    ];
+    const merged = mergeScoutProfiles(a, b);
+    const foe = merged.find((p) => p.name === "Foe");
+    const onlyB = merged.find((p) => p.name === "OnlyInB");
+    check(
+      "merge sums counters for a bot seen by both sources",
+      foe?.roundsObserved === 15 && foe.kills === 12 && foe.weaponsSeen.bow === 5 && foe.weaponsSeen.sword === 1,
+      foe,
+    );
+    check("merge keeps a bot only one source ever saw", onlyB?.roundsObserved === 4, onlyB);
+    check("merge never drops information from either side", merged.length === 2, merged.length);
+
+    // loadMergedScoutSnapshot: live + repo-committed combine into one seed,
+    // instead of the boot process picking a winner and discarding the loser.
+    const savedBrainDir = process.env.BRAIN_MEMORY_DIR;
+    const savedKnowledgeDir = process.env.KNOWLEDGE_DIR;
+    const liveDir = mkdtempSync(join(tmpdir(), "scout-live-"));
+    const repoDir = mkdtempSync(join(tmpdir(), "scout-repo-"));
+    process.env.BRAIN_MEMORY_DIR = liveDir;
+    process.env.KNOWLEDGE_DIR = repoDir;
+    try {
+      writeFileSync(join(liveDir, "scout.json"), JSON.stringify({ v: 1, savedAt: 999, roundsObserved: 30, profiles: a }));
+      mkdirSync(join(repoDir, "brain"), { recursive: true });
+      writeFileSync(join(repoDir, "brain", "scout.json"), JSON.stringify({ v: 1, savedAt: 1, roundsObserved: 55, profiles: b }));
+      const mergedSnap = loadMergedScoutSnapshot();
+      check(
+        "boot merge sums session-level round counts from both sources (30+55, not just one)",
+        mergedSnap?.roundsObserved === 30 + 55,
+        mergedSnap?.roundsObserved,
+      );
+      check(
+        "boot merge is a superset of both opponent rosters",
+        mergedSnap?.profiles.some((p) => p.name === "OnlyInB") === true,
+        mergedSnap?.profiles.map((p) => p.name),
+      );
+
+      // Already in sync -> no merge work, returns the live snapshot as-is.
+      writeFileSync(join(repoDir, "brain", "scout.json"), JSON.stringify({ v: 1, savedAt: 1, roundsObserved: 30, profiles: a }));
+      const inSync = loadMergedScoutSnapshot();
+      check("identical round counts on both sides -> no-op", inSync?.roundsObserved === 30, inSync?.roundsObserved);
+    } finally {
+      if (savedBrainDir !== undefined) process.env.BRAIN_MEMORY_DIR = savedBrainDir; else delete process.env.BRAIN_MEMORY_DIR;
+      if (savedKnowledgeDir !== undefined) process.env.KNOWLEDGE_DIR = savedKnowledgeDir; else delete process.env.KNOWLEDGE_DIR;
+    }
+
+    // isSourceRicher: the write-side safety net in dumpKnowledge — a source
+    // file only overwrites a destination when it genuinely carries MORE
+    // history (roundsObserved / rounds.length), savedAt breaking only an
+    // exact tie so a freshly-restarted low-history file can never win on
+    // recency alone.
+    const richDir = mkdtempSync(join(tmpdir(), "richness-"));
+    const richPath = (n: string) => join(richDir, n);
+    writeFileSync(richPath("poor.json"), JSON.stringify({ savedAt: 999, roundsObserved: 2 }));
+    writeFileSync(richPath("rich.json"), JSON.stringify({ savedAt: 1, roundsObserved: 500 }));
+    check(
+      "a low-history source with a NEWER timestamp does not win",
+      !isSourceRicher(richPath("poor.json"), richPath("rich.json")),
+    );
+    check("a high-history source wins despite an OLDER timestamp", isSourceRicher(richPath("rich.json"), richPath("poor.json")));
+    writeFileSync(richPath("tieA.json"), JSON.stringify({ savedAt: 5, roundsObserved: 10 }));
+    writeFileSync(richPath("tieB.json"), JSON.stringify({ savedAt: 9, roundsObserved: 10 }));
+    check("exact tie on history falls back to savedAt", isSourceRicher(richPath("tieB.json"), richPath("tieA.json")));
+    check("no destination file yet -> source always wins", isSourceRicher(richPath("rich.json"), richPath("missing.json")));
+    writeFileSync(richPath("corrupt.json"), "{not json");
+    check("corrupt source never overwrites a valid destination", !isSourceRicher(richPath("corrupt.json"), richPath("rich.json")));
   }
 
   console.log("\nLLM circuit breaker (provider-outage storm protection)");
