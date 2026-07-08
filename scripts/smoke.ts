@@ -36,7 +36,11 @@ import { classifyCauseOfDeath, OutcomeLog } from "../src/engine/outcomeLog";
 import { TelemetryLog } from "../src/engine/telemetryLog";
 import { LoadoutAgent, type LoadoutAgentInput } from "../src/brain/agents/loadout";
 import { StrategistAgent } from "../src/brain/agents/strategist";
-import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../src/brain/draftEvidence";
+import {
+  allTimeWeaponWinRatesFromDisk,
+  enforceWeaponEvidence,
+  fleetWeaponWinRatesFromDisk,
+} from "../src/brain/draftEvidence";
 import { DEFAULT_INSIGHTS, OpponentRegistry, RoundHistory } from "../src/shared/memory";
 import { BrainMemoryStore } from "../src/shared/memoryStore";
 import { dumpKnowledge, maybeCommitAndPushKnowledge, restoreKnowledge } from "../src/shared/knowledge";
@@ -2495,6 +2499,70 @@ async function run(): Promise<void> {
     check("solo bots are never overridden", enforceWeaponEvidence("daggers", null, 1, rates) === null);
     check("unproven picks (<10 played) are never overridden", enforceWeaponEvidence("spear", 0, 3, rates) === null);
     check("healthy picks stand", enforceWeaponEvidence("bow", 1, 3, rates) === null);
+  }
+
+  console.log("\nall-time weapon evidence backstop (recency window forgets, this doesn't)");
+  {
+    // The live bug this fixes: bow had 20 RECENT rounds at 10% (just over
+    // MIN_PLAYED, so naively "trusted") but 567 ALL-TIME rounds at 19.2% —
+    // a much stronger, larger-sample record the recency window had aged out
+    // of. enforceWeaponEvidence must promote bow anyway by taking the BEST
+    // of the two sources per candidate, not recent-if-present-at-all.
+    const recent = { daggers: { wins: 2, played: 40 }, bow: { wins: 2, played: 20 } };
+    // sword: 16.7% all-time, no recent entry at all — deliberately between
+    // BAN/PROMOTE (0.15) and bow's 19.2%, so it clears promotion on its own
+    // in-archetype (slot 2) without ever outranking bow in the global fallback.
+    const allTime = { bow: { wins: 109, played: 567 }, sword: { wins: 10, played: 60 } };
+    check(
+      "a weapon promotable ONLY via its all-time record (thin, weak recent sample) still wins",
+      enforceWeaponEvidence("daggers", 0, 3, recent, allTime) === "bow",
+      { recent, allTime },
+    );
+    check(
+      "a weapon with no recent evidence at all can still be promoted from all-time alone",
+      enforceWeaponEvidence("daggers", 2, 3, recent, allTime) === "sword",
+      { recent, allTime },
+    );
+    check(
+      "without the all-time backstop (old 4-arg call), the thin recent sample blocks promotion",
+      enforceWeaponEvidence("daggers", 0, 3, recent) === null,
+      recent,
+    );
+
+    // The BAN side stays recency-only, deliberately: a weapon that's ACTIVELY
+    // being played and doing badly right now must be banned even if its
+    // all-time average still looks fine — an old rosy average must never
+    // shield a live decline.
+    const recentBad = { sword: { wins: 1, played: 30 } }; // 3.3% right now
+    // sword's OWN all-time average (25%) must NOT shield it from the ban —
+    // bow is the only other weapon with evidence, promoted purely off its
+    // all-time record, proving the override didn't just fall through to null.
+    const allTimeGood = { sword: { wins: 15, played: 60 }, bow: { wins: 100, played: 500 } };
+    check(
+      "a currently-bad pick is still banned despite a good all-time average",
+      enforceWeaponEvidence("sword", 0, 3, recentBad, allTimeGood) !== null,
+      { recentBad, allTimeGood },
+    );
+
+    // allTimeWeaponWinRatesFromDisk: reads the unbounded outcomes.jsonl.
+    const outDir = mkdtempSync(join(tmpdir(), "outcomes-"));
+    const outPath = join(outDir, "outcomes.jsonl");
+    const lines = [
+      { ourWeapon: "bow", won: true },
+      { ourWeapon: "bow", won: false },
+      { ourWeapon: "sword", won: true },
+      "{not json", // a corrupt/partial line must not break the rest of the read
+      { ourWeapon: "bow", won: true },
+      {}, // no ourWeapon -> skipped
+    ];
+    writeFileSync(outPath, lines.map((l) => (typeof l === "string" ? l : JSON.stringify(l))).join("\n") + "\n");
+    const fromDisk = allTimeWeaponWinRatesFromDisk(outPath);
+    check(
+      "all-time reader tallies wins/played and skips corrupt/empty lines",
+      fromDisk.bow?.played === 3 && fromDisk.bow.wins === 2 && fromDisk.sword?.played === 1,
+      fromDisk,
+    );
+    check("missing outcomes file degrades to {} instead of throwing", Object.keys(allTimeWeaponWinRatesFromDisk(join(outDir, "missing.jsonl"))).length === 0);
   }
 
   console.log("\nally repulsion: the pack spaces itself so splash can't form");

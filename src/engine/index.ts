@@ -21,7 +21,7 @@ import type {
   Weapon,
 } from "../types/protocol";
 import { getSpectatorFeed } from "../arena/spectator";
-import { enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../brain/draftEvidence";
+import { allTimeWeaponWinRatesFromDisk, enforceWeaponEvidence, fleetWeaponWinRatesFromDisk } from "../brain/draftEvidence";
 import { Controller } from "./controller";
 import { Coalition, onlyFleetRemains, onlyFleetRemainsByCount } from "./coop";
 import { GameState } from "./gameState";
@@ -286,6 +286,9 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     // against the 8s selection deadline below — measured live, the plan
     // landed 400ms after the fallback fired and the fleet re-drafted its
     // proven-loser weapon (daggers, ~3% over 200+ rounds) while bow ran 23%.
+    // The all-time outcome-log backstop lets a proven weapon that's aged out
+    // of the recent per-bot window still be promoted back here — see
+    // enforceWeaponEvidence's doc for why the ban check stays recency-only.
     // Off the tick path (connect/lobby time); disk read is best-effort.
     if (fleetSize > 1) {
       try {
@@ -294,6 +297,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
           fleetIndex,
           fleetSize,
           fleetWeaponWinRatesFromDisk(),
+          allTimeWeaponWinRatesFromDisk(),
         );
         if (better) {
           const from = fallbackLoadout.weapon;
