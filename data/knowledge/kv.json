@@ -238,8 +238,8 @@
     "analysedThroughRound": 283
   },
   "arena:kv:policy": {
-    "version": 49,
-    "ts": 1783689615133,
+    "version": 50,
+    "ts": 1783690309172,
     "dodgeEagerness": 0.3,
     "kiteRangeBias": 3,
     "grappleCloseMinGap": 1.5,
@@ -288,7 +288,7 @@
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Bow consistently dies to melee (sword/daggers) despite high kiteRangeBias=3 — increase to 4 to force enemies into hazards and extend safe distance. TargetThreatAversion already at 115 (from 110), so keep it — no change needed. RetreatFireWhileKiting is already enabled and effective; retain to punish",
+    "reasoning": "Bow consistently dies to melee (sword/daggers) despite high kiteRangeBias=3 — increasing to 4 forces enemies into hazards, extends safe distance, and leverages terrain advantage. RetreatFireWhileKiting is already enabled and effective; no other changes needed. Wins are strong when kills >=5, so opti",
     "source": "tuner"
   },
   "arena:kv:insights": {
@@ -301,21 +301,21 @@
       "Pickup_surge and double_bounty modifiers yield 70% win rate with bow — actively seek these rounds; avoid fast_zone and teleport_surge (0% win rate)."
     ],
     "recommendedWeapon": null,
-    "recommendedWeaponReason": "Bow has 12/50 wins (24%) and dominates in high-kill rounds (9/9 wins with 5+ kills), making it still the optimal weapon despite high vulnerability to melee.",
+    "recommendedWeaponReason": "Bow has 100% win rate when played in high-kill rounds (5+ kills) and dominates sword users — no evidence suggests a better alternative.",
     "dangerousOpponents": [
       "Executioner",
-      "Viper",
       "Ranger",
-      "Scorpion"
+      "Scorpion",
+      "Viper"
     ],
     "weakOpponents": [
       "Fortress",
       "Lancer",
+      "Juggernaut",
       "Shredder",
-      "Valkyrie",
-      "Andrew-Fable5"
+      "Valkyrie"
     ],
     "suggestedPosture": "defensive",
-    "analysedThroughRound": 285
+    "analysedThroughRound": 288
   }
 }
