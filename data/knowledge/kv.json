@@ -238,8 +238,8 @@
     "analysedThroughRound": 283
   },
   "arena:kv:policy": {
-    "version": 48,
-    "ts": 1783688296371,
+    "version": 49,
+    "ts": 1783689615133,
     "dodgeEagerness": 0.3,
     "kiteRangeBias": 3,
     "grappleCloseMinGap": 1.5,
@@ -288,7 +288,34 @@
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Bow consistently dies to sword/daggers despite high kiteRangeBias=3 — increase to 4 to force enemies into hazards and extend safe distance. Raise targetThreatAversion from 110 to 115 to further avoid high-threat melee, even at cost of kills. Retain retreatFireWhileKiting to punish closing enemies. S",
+    "reasoning": "Bow consistently dies to melee (sword/daggers) despite high kiteRangeBias=3 — increase to 4 to force enemies into hazards and extend safe distance. TargetThreatAversion already at 115 (from 110), so keep it — no change needed. RetreatFireWhileKiting is already enabled and effective; retain to punish",
     "source": "tuner"
+  },
+  "arena:kv:insights": {
+    "lessons": [
+      "Bow wins 9/9 rounds with 5+ kills but dies 9/10 times to sword/daggers users — never engage sword/daggers users in open ground; always use cover or chokepoints.",
+      "Executioner (sword) killed us 4 times in last 5 rounds — they close distance faster than bow reload; retreat immediately on sight, even if they’re not aiming.",
+      "Ranger (bow) has 6 kills vs us — avoid direct bow-vs-bow duels; use terrain to break line-of-sight or lure them into narrow corridors where your reload speed is less critical.",
+      "Sword users (Viper, Valkyrie, Fortress, Juggernaut, Shredder, Lancer, Andrew-Fable5) were killed 15+ times in last 6 rounds — prioritize them when isolated and no shield or staff is nearby.",
+      "Daggers users (Viper, Executioner) killed us 4 times in last 10 rounds — if they enter 10m range, assume instant death unless you have wall cover or can instantly reposition.",
+      "Pickup_surge and double_bounty modifiers yield 70% win rate with bow — actively seek these rounds; avoid fast_zone and teleport_surge (0% win rate)."
+    ],
+    "recommendedWeapon": null,
+    "recommendedWeaponReason": "Bow has 12/50 wins (24%) and dominates in high-kill rounds (9/9 wins with 5+ kills), making it still the optimal weapon despite high vulnerability to melee.",
+    "dangerousOpponents": [
+      "Executioner",
+      "Viper",
+      "Ranger",
+      "Scorpion"
+    ],
+    "weakOpponents": [
+      "Fortress",
+      "Lancer",
+      "Shredder",
+      "Valkyrie",
+      "Andrew-Fable5"
+    ],
+    "suggestedPosture": "defensive",
+    "analysedThroughRound": 285
   }
 }
