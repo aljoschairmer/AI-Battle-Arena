@@ -70,14 +70,19 @@ export function enforceWeaponEvidence(
   rates: WeaponWinRates,
   allTimeRates: WeaponWinRates = {},
 ): Weapon | null {
-  if (fleetSize <= 1 || fleetIndex === null) return null;
+  // Solo bots (fleetSize <= 1 / no fleetIndex) get the SAME evidence gate,
+  // just without a slot archetype (any weapon may be promoted). They were
+  // originally exempt ("don't second-guess a lone experiment"), which
+  // backfired the first time a lone bot was run to WIN: with the LLM race
+  // lost at boot, the deterministic fallback drafted daggers (5.5%/384
+  // all-time) and nothing was allowed to stop it.
   // Recent form wins when it exists; the all-time record only speaks when
   // the recency window has nothing to say about the pick (see doc above).
   const pickRate = rateOf(rates, pick) ?? rateOf(allTimeRates, pick);
   if (pickRate === null || pickRate >= BAN_RATE) return null; // unproven or fine
 
   const allWeapons = [...new Set([...Object.keys(rates), ...Object.keys(allTimeRates)])] as Weapon[];
-  const allowed = SLOT_WEAPONS[fleetIndex] ?? allWeapons;
+  const allowed = (fleetIndex !== null ? SLOT_WEAPONS[fleetIndex] : undefined) ?? allWeapons;
   const candidateRate = (w: Weapon): number | null => {
     const recent = rateOf(rates, w);
     const allTime = rateOf(allTimeRates, w);

@@ -294,32 +294,33 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
     // The all-time outcome-log backstop lets a proven weapon that's aged out
     // of the recent per-bot window still be promoted back here — see
     // enforceWeaponEvidence's doc for why the ban check stays recency-only.
+    // Solo bots included (no fleetSize gate): a lone bot's fallback drafted
+    // daggers (5.5%/384 all-time) with the LLM race lost, and the old
+    // fleet-only gate let it stand for a whole session.
     // Off the tick path (connect/lobby time); disk read is best-effort.
-    if (fleetSize > 1) {
-      try {
-        const better = enforceWeaponEvidence(
-          fallbackLoadout.weapon,
-          fleetIndex,
-          fleetSize,
-          fleetWeaponWinRatesFromDisk(),
-          allTimeWeaponWinRatesFromDisk(),
-        );
-        if (better) {
-          const from = fallbackLoadout.weapon;
-          fallbackLoadout = chooseFallbackLoadout({
-            availableWeapons: [better],
-            modifier,
-            budget: gs.statBudget,
-            min: gs.statMin,
-            max: gs.statMax,
-            lobbyWeapons: gs.lobbyWeapons,
-            fleetIndex: fleetIndex ?? undefined,
-          });
-          log.info({ from, to: better }, "fallback draft overridden by fleet weapon evidence");
-        }
-      } catch (e) {
-        log.debug({ err: (e as Error).message }, "fallback evidence check failed — keeping ranked pick");
+    try {
+      const better = enforceWeaponEvidence(
+        fallbackLoadout.weapon,
+        fleetIndex,
+        fleetSize,
+        fleetWeaponWinRatesFromDisk(),
+        allTimeWeaponWinRatesFromDisk(),
+      );
+      if (better) {
+        const from = fallbackLoadout.weapon;
+        fallbackLoadout = chooseFallbackLoadout({
+          availableWeapons: [better],
+          modifier,
+          budget: gs.statBudget,
+          min: gs.statMin,
+          max: gs.statMax,
+          lobbyWeapons: gs.lobbyWeapons,
+          fleetIndex: fleetIndex ?? undefined,
+        });
+        log.info({ from, to: better }, "fallback draft overridden by fleet weapon evidence");
       }
+    } catch (e) {
+      log.debug({ err: (e as Error).message }, "fallback evidence check failed — keeping ranked pick");
     }
 
     if (!publishToBrain) {
@@ -802,7 +803,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       // proven alternative, bounce the socket so the reconnect path runs
       // the normal evidence-checked draft. Cooldown-limited; skipped on a
       // win (a weapon that just won a round can wait one more for a verdict).
-      if (fleetSize > 1 && confirmedWeapon && !won && Date.now() - lastEvidenceBounceAt > EVIDENCE_BOUNCE_COOLDOWN_MS) {
+      if (confirmedWeapon && !won && Date.now() - lastEvidenceBounceAt > EVIDENCE_BOUNCE_COOLDOWN_MS) {
         try {
           const better = enforceWeaponEvidence(
             confirmedWeapon,

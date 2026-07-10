@@ -2573,7 +2573,11 @@ async function run(): Promise<void> {
       enforceWeaponEvidence("sword", 2, 3, rates) === "bow",
     );
     check("slot 1 loser pick promotes to bow (in its archetype)", enforceWeaponEvidence("staff", 1, 3, { ...rates, staff: { wins: 1, played: 20 } }) === "bow");
-    check("solo bots are never overridden", enforceWeaponEvidence("daggers", null, 1, rates) === null);
+    // Solo bots get the same gate with the GLOBAL candidate set (no slot
+    // archetype). The old exemption ("never overridden") let a lone bot lock
+    // daggers (5.5%/384 all-time) for a whole session when the LLM lost the
+    // boot race — measured live the day a single bot was first run to win.
+    check("solo bots are evidence-protected too (global promote set)", enforceWeaponEvidence("daggers", null, 1, rates) === "bow");
     check("unproven picks (<10 played) are never overridden", enforceWeaponEvidence("spear", 0, 3, rates) === null);
     check("healthy picks stand", enforceWeaponEvidence("bow", 1, 3, rates) === null);
   }
