@@ -1,13 +1,13 @@
 {
   "bot0:arena:kv:policy": {
-    "version": 576,
-    "ts": 1783675839410,
-    "dodgeEagerness": 0.75,
-    "kiteRangeBias": -1,
+    "version": 579,
+    "ts": 1783689147775,
+    "dodgeEagerness": 0.5,
+    "kiteRangeBias": -2,
     "grappleCloseMinGap": 8,
     "targetLowHpWeight": 70,
     "targetCloseWeight": 2,
-    "targetThreatAversion": 45,
+    "targetThreatAversion": 90,
     "targetSwitchHysteresis": 30,
     "targetMatchupWeight": 12,
     "pickupDetourMax": 1,
@@ -46,42 +46,43 @@
     "idleCapturePads": true,
     "aggression": 0.85,
     "posture": "aggressive",
-    "bowAlwaysCharge": false,
+    "bowAlwaysCharge": true,
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Bow is dying to shields and daggers in open areas — increasing dodgeEagerness to 0.75 improves escape from burst combos. Reducing kiteRangeBias to -1 forces tighter terrain engagement to avoid open-range dominance by shields. Lowering targetThreatAversion from 60→45 reduces excessive fleeing from sh",
+    "reasoning": "Bow is dying to shields and daggers in open areas — lowering dodgeEagerness to 0.5 prevents wasted dodges when out of position; reducing kiteRangeBias to -2 increases pressure to close into cover instead of lingering in open range. Raising targetThreatAversion to 90 avoids suicidal engagements again",
     "source": "tuner"
   },
   "bot0:arena:kv:insights": {
     "lessons": [
       "Bow is ineffective against shield users (Fortress, Juggernaut) — they caused 5 of last 6 deaths; avoid open ground and flank from cover.",
       "Daggers users (Shredder) killed us in 2 of last 3 rounds — retreat immediately on sight; their mobility bypasses bow range.",
-      "Sword users (Reaper, Warden, Deadeye, GhostProtocol) are our top killers — prioritize them when visible in open areas where bow can land shots.",
+      "Sword users (Warden, Reaper, Deadeye, GhostProtocol) are our top killers — prioritize them when visible in open areas where bow can land shots.",
+      "GhostProtocol (high-elo bow user) killed us 3 times in last 10 rounds — avoid direct bow-vs-bow duels; use terrain to break line of sight.",
       "Hazard_storm is our most successful modifier (3-0 record in round 216) — actively seek and hold hazard zones to exploit bow’s range against clustered enemies.",
-      "GhostProtocol and Reaper, both high-elo bow users, have killed us 87 and 68 times respectively — avoid direct bow-vs-bow duels; use terrain to break line of sight.",
       "Staff users (Reaper, HexMind) are rare but lethal — maintain distance and avoid predictable movement; they killed us twice in last 3 rounds despite low sightings."
     ],
     "recommendedWeapon": null,
-    "recommendedWeaponReason": "Bow has the highest win rate among played weapons (20/122 wins) and remains effective against sword users in open areas, despite being countered by shields and high-elo bow users.",
+    "recommendedWeaponReason": "Bow has a 17.2% win rate (21/122) and achieved 3 kills in 2 of last 3 rounds — still the most effective weapon in our arsenal despite high death count against shields and bows.",
     "dangerousOpponents": [
       "GhostProtocol",
-      "Juggernaut",
       "Fortress",
-      "Shredder",
-      "Reaper"
+      "Juggernaut",
+      "Reaper",
+      "Shredder"
     ],
     "weakOpponents": [
-      "Lancer",
       "Warden",
-      "Deadeye"
+      "Lancer",
+      "Jakob-Bot",
+      "Daniel"
     ],
     "suggestedPosture": "defensive",
-    "analysedThroughRound": 225
+    "analysedThroughRound": 283
   },
   "bot1:arena:kv:policy": {
-    "version": 578,
-    "ts": 1783675838091,
+    "version": 581,
+    "ts": 1783689149622,
     "dodgeEagerness": 0.9,
     "kiteRangeBias": 3,
     "grappleCloseMinGap": 3,
@@ -121,7 +122,7 @@
     "pathfindDangerWeight": 3,
     "friendlySplashGuard": true,
     "flankMaxDeferTicks": 5,
-    "retreatFireWhileKiting": false,
+    "retreatFireWhileKiting": true,
     "idleHealBelowHpFraction": 0.8,
     "idleCapturePads": true,
     "aggression": 0.7,
@@ -130,18 +131,18 @@
     "daggerFlank": true,
     "spearBraceWait": false,
     "staffGravityWell": true,
-    "reasoning": "Bow users are dying consistently to melee grapples and swords closing in — increasing kiteRangeBias to 4 maximizes distance. minTradeAdvantage raised to 0.45 to avoid risky trades against high-damage melee (8/10 recent deaths from swords). targetThreatAversion increased to 125 to further avoid high-",
+    "reasoning": "Bow users are dying consistently to melee closes (7/10 deaths from sword/spear). Increasing kiteRangeBias to 4 maximizes distance to counter closing threats. minTradeAdvantage raised to 0.45 to avoid risky trades against high-damage melee. targetThreatAversion increased to 125 to further avoid ganks",
     "source": "tuner"
   },
   "bot2:arena:kv:policy": {
-    "version": 564,
-    "ts": 1783675838340,
+    "version": 567,
+    "ts": 1783689149431,
     "dodgeEagerness": 0.7,
-    "kiteRangeBias": 3,
+    "kiteRangeBias": 2,
     "grappleCloseMinGap": 0.5,
     "targetLowHpWeight": 80,
     "targetCloseWeight": 2,
-    "targetThreatAversion": 75,
+    "targetThreatAversion": 50,
     "targetSwitchHysteresis": 30,
     "targetMatchupWeight": 12,
     "pickupDetourMax": 6,
@@ -175,67 +176,66 @@
     "pathfindDangerWeight": 2,
     "friendlySplashGuard": true,
     "flankMaxDeferTicks": 5,
-    "retreatFireWhileKiting": true,
+    "retreatFireWhileKiting": false,
     "idleHealBelowHpFraction": 0.8,
     "idleCapturePads": true,
-    "aggression": 0.08,
+    "aggression": 0.2,
     "posture": "defensive",
     "bowAlwaysCharge": true,
     "daggerFlank": true,
     "spearBraceWait": true,
     "staffGravityWell": true,
-    "reasoning": "Still dying to bows despite high kiteRangeBias — pushing to 3.5 maximizes distance. Lowering targetThreatAversion from 80→75 reduces over-caution against melee we can out-range. Slight aggression bump (0.07→0.08) to counter passivity. Enable retreatFireWhileKiting: bow users are killing us on retrea",
+    "reasoning": "Bow deaths persist from close-range melee (sword/staff) despite high kiteRangeBias — lowering to 2.0 reduces over-extension while preserving safe distance. Reducing targetThreatAversion from 60→50 encourages engaging low-elo sword bots (13 kills recently) instead of avoiding all melee. Disable retre",
     "source": "tuner"
   },
   "bot1:arena:kv:insights": {
     "lessons": [
-      "Bow users (Viper, Ranger, GhostProtocol, Deadeye) killed us 5 times in last 10 rounds — retreat from open areas and avoid prolonged range fights; they out-damage us with sustained fire.",
+      "Bow users (Deadeye, GhostProtocol, NeuralReaper) killed us 5 times in last 10 rounds — retreat from open areas and avoid prolonged range fights; they out-damage us with sustained fire.",
       "Sword users caused 7 of our 10 recent deaths — prioritize eliminating isolated sword users at 30m+ with bow, but immediately disengage if they close to <20m.",
-      "Grapple users (Hook) and spear users (Lancer) killed us in last 3 rounds — avoid narrow corridors and mid-range engagements; use terrain to break line-of-sight and never engage head-on.",
+      "Grapple users (Hook) and spear users (Lancer, Valkyrie) killed us in last 3 rounds — avoid narrow corridors and mid-range engagements; use terrain to break line-of-sight and never engage head-on.",
       "Shield users spiked to 534 sightings in hazard_storm — avoid open areas during hazard rounds; prioritize flanking or waiting for shield users to deplete energy.",
       "We killed 4 sword users in a single round (213) and 3 in teleport_surge (214) — bow is effective against sword users at range if we maintain distance and avoid close combat.",
       "Bow win rate is 11.5% (7/61) vs staff’s 13% (18/139) — staff remains superior despite recent losses; bow is unreliable in sustained engagements."
     ],
     "recommendedWeapon": "staff",
-    "recommendedWeaponReason": "Staff has the highest win rate (13%) and dominates in high-kill modifier rounds like hazard_storm and teleport_surge, where mobility and AoE control outperform bow's reliance on precise long-range shots.",
+    "recommendedWeaponReason": "Staff has the highest win rate (13%) and dominates in teleport_surge and fast_zone modifiers, where mobility and burst damage outperform bow's reliance on distance.",
     "dangerousOpponents": [
-      "Viper",
-      "Ranger",
-      "Hook",
       "Lancer",
-      "Executioner"
+      "Valkyrie",
+      "Hook",
+      "Executioner",
+      "Deadeye"
     ],
     "weakOpponents": [],
     "suggestedPosture": "defensive",
-    "analysedThroughRound": 225
+    "analysedThroughRound": 283
   },
   "bot2:arena:kv:insights": {
     "lessons": [
-      "Bow users (Ranger, NeuralReaper) killed us 3 times in last 10 rounds — avoid open areas and high-ground duels; use narrow corridors or cover to break line-of-sight.",
-      "Sword users (Reaper, Executioner, Viper, Ranger, Valkyrie, Warden, Juggernaut) were killed 12 times in last 10 rounds — prioritize low-elo sword bots (e.g., Andrew-Test, Ranger) over high-elo targets.",
+      "Bow users (Ranger, NeuralReaper, Deadeye) killed us 4 times in last 10 rounds — avoid open areas and high-ground duels; use narrow corridors or cover to break line-of-sight.",
+      "Sword users (Executioner, Juggernaut, NeuralReaper, Jakob-Bot) were killed 5 times in last 10 rounds — prioritize low-elo sword bots like Jakob-Bot and Executioner over high-elo targets like Reaper.",
       "Daggers (Viper) and unidentifiable melee attacks killed us in close range — retreat immediately upon detecting melee rushers; bow is lethal only at range.",
-      "Shield users (Fortress) appear frequently but we’ve never killed one with bow — disengage on sight; no evidence bow can penetrate shield defense.",
-      "Under teleport_surge and hazard_storm, we lost despite high kills — avoid engagements; farm edge zones or wait for modifier decay.",
+      "Shield users appear frequently (1,100+ sightings total) but we’ve never killed one with bow — disengage on sight; no evidence bow can penetrate shield defense.",
+      "Under teleport_surge and hazard_storm, we lost despite kills — avoid engagements; farm edge zones or wait for modifier decay.",
       "We won round 217 with 7 kills using bow — success occurred when sword users were clustered and no high-elo bow users were present; replicate by targeting low-elo sword bots in groups."
     ],
     "recommendedWeapon": null,
-    "recommendedWeaponReason": "Bow has 31/182 win rate (17%) — highest among all weapons in history, and recent rounds show it can dominate when sword users are clustered and bow users are absent.",
+    "recommendedWeaponReason": "Bow remains our highest win-rate weapon (31/186 wins) and we have no evidence another weapon performs better under current meta.",
     "dangerousOpponents": [
       "Ranger",
       "NeuralReaper",
-      "Reaper",
-      "Archmage",
-      "Viper"
+      "Deadeye",
+      "Viper",
+      "Hook"
     ],
     "weakOpponents": [
-      "Andrew-Test",
+      "Jakob-Bot",
       "Executioner",
-      "Valkyrie",
       "Juggernaut",
-      "Warden"
+      "Andrew-Test"
     ],
-    "suggestedPosture": "balanced",
-    "analysedThroughRound": 224
+    "suggestedPosture": "defensive",
+    "analysedThroughRound": 283
   },
   "arena:kv:policy": {
     "version": 48,
