@@ -70,6 +70,12 @@ export function buildSnapshot(gs: GameState): GameSnapshot | null {
     roundTick: gs.roundTick,
     roundModifier: gs.roundModifier,
     suddenDeath: gs.suddenDeath,
+    suddenDeathStall: gs.suddenDeathStall,
+    gameMode: gs.gameMode,
+    // Team-mode context: omitted entirely in FFA so prompts stay lean.
+    ...(gs.myTeam > 0
+      ? { myTeam: gs.myTeam, teamScores: gs.teamScores, flags: gs.flagsGrid() }
+      : {}),
     bountyBeacon: gs.bountyBeacon,
     self: {
       id: self.bot_id,

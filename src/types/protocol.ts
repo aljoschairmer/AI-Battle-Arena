@@ -24,6 +24,26 @@ export type Weapon =
   | "staff"
   | "grapple";
 
+/** Active game mode, echoed in every tick. FFA is the classic battle royale;
+ * team_battle is last-team-standing; ctf is first-to-3-captures. */
+export type GameMode = "ffa" | "team_battle" | "ctf";
+
+/**
+ * One team flag in CTF (one entry per team; empty array in team_battle).
+ * IMPORTANT: `position` and `base_position` are WORLD coordinates (÷ cell_size
+ * for grid tiles) — unlike every other position in bot tick messages. Flags
+ * are a global objective and are NOT fog-limited.
+ */
+export interface FlagState {
+  id: string;
+  team: number;
+  position: WorldVec;
+  base_position: WorldVec;
+  status: "at_base" | "carried" | "dropped";
+  /** bot_id of the carrier when status is "carried", else "". */
+  carrier_id: string;
+}
+
 // Server-side autonomous behaviour applied when the bot sends no action for a
 // tick. These are the exact values the arena accepts in select_loadout.
 export type FallbackBehavior =
@@ -57,6 +77,37 @@ export interface ConnectedMsg {
   stat_max: number;
   timeout_seconds: number;
   last_loadout: LoadoutSelection | null;
+  /** Snapshot of the current operator broadcast / maintenance state. */
+  service_status?: ServiceStatusMsg;
+}
+
+/**
+ * Operator broadcast / scheduled-maintenance status. Sent as a standalone
+ * frame when published/cleared, snapshotted in `connected`, and repeated in
+ * `tick.service_status` while maintenance is active. Treat each snapshot as a
+ * full replacement; ignore snapshots whose `revision` is lower than the last
+ * one processed. When `maintenance` is non-null, honour `retry_after_seconds`
+ * as the minimum reconnect delay (planned restarts close with WS code 1012).
+ */
+export interface ServiceStatusMsg {
+  type: "service_status";
+  revision: number;
+  server_time?: string;
+  broadcast: {
+    id?: number;
+    severity?: string;
+    message?: string;
+    published_at?: string;
+  } | null;
+  maintenance: {
+    id?: number;
+    severity?: string;
+    message?: string;
+    phase?: string;
+    estimated_downtime_seconds?: number;
+    retry_after_seconds?: number;
+    published_at?: string;
+  } | null;
 }
 
 export interface LoadoutConfirmedMsg {
@@ -85,7 +136,7 @@ export interface LobbyMsg {
   type: "lobby";
   bots_connected: number;
   bots_needed: number;
-  countdown: number;
+  countdown: number | null;
   players: LobbyPlayer[];
 }
 
@@ -135,6 +186,8 @@ export interface KillFeedEntry {
 /** The bot's own full state, only present in `tick` messages. */
 export interface SelfState {
   bot_id: string;
+  /** Team number in team modes (1, 2, ...); 0 in FFA / unassigned. */
+  team?: number;
   position: GridVec;
   hp: number;
   max_hp: number;
@@ -188,6 +241,9 @@ export interface NearbyBot {
   type: "bot";
   bot_id: string;
   name: string;
+  /** Team number in team modes; 0 in FFA. Same-team bots are allies — never
+   * attack them (friendly fire is off by default: the hit deals no damage). */
+  team?: number;
   position: GridVec;
   hp: number;
   max_hp: number;
@@ -350,6 +406,22 @@ export interface TickMsg {
   round_modifier?: string;
   /** True once random tiles start becoming instant-death void (min zone radius). */
   sudden_death?: boolean;
+  /** True while the sudden-death stall punisher runs: nobody has dealt damage
+   * for the stall window and EVERY living bot takes ramping environmental
+   * damage until combat resumes. Passivity is lethal — go fight. */
+  sudden_death_stall?: boolean;
+  /** Instant-death void tiles within our fog radius (only present during
+   * sudden death). [col, row] grid coords. */
+  void_tiles?: GridVec[];
+  /** Active game mode — always present on live ticks; optional here so replays
+   * of older captured frames stay parseable. */
+  game_mode?: GameMode;
+  /** Team modes only: string-keyed team number -> score (CTF: flag captures). */
+  team_scores?: Record<string, number>;
+  /** CTF only: every team flag, global (not fog-limited), WORLD coordinates. */
+  flags?: FlagState[];
+  /** Repeated maintenance/broadcast snapshot while one is active. */
+  service_status?: ServiceStatusMsg;
   /** bot_id of the current bounty target, or "" — see NearbyBountyTarget. */
   bounty_target?: string;
   fog_radius: number;
@@ -417,7 +489,8 @@ export type ServerMessage =
   | RespawnMsg
   | RoundEndMsg
   | ErrorMsg
-  | KickMsg;
+  | KickMsg
+  | ServiceStatusMsg;
 
 // ---------------------------------------------------------------------------
 // Bot -> Server messages
@@ -597,6 +670,13 @@ export interface ArenaMapResponse {
   capture_pads?: (CapturePadState & { type?: string })[];
   teleport_pads?: (TeleportPadState & { type?: string })[];
   hazard_zones?: (HazardZoneState & { type?: string })[];
+  /** Active mode — OMITTED during intermission (features_pending: true). */
+  game_mode?: GameMode;
+  /** This round's carved playable outline (square, circle, caves, ...). */
+  map_shape?: string;
+  /** True during intermission: terrain/shape are final for the NEXT round but
+   * pads/hazards/game_mode arrive only after round_start — fetch again then. */
+  features_pending?: boolean;
   status?: string;
   message?: string;
 }
@@ -609,6 +689,45 @@ export interface BotConfig {
   avatar_color: string;
   default_loadout: LoadoutSelection;
 }
+
+/**
+ * Presentation-only cosmetics (skins, weapon finishes, attachments) — zero
+ * gameplay effect by design ("no-pay-to-win"). Shapes typed loosely: the
+ * catalog carries display metadata we don't act on; only slot/id matter for
+ * equipping.
+ */
+export interface CosmeticItem {
+  id: string;
+  slot?: string;
+  name?: string;
+  rarity?: string;
+  [extra: string]: unknown;
+}
+
+/** GET /api/v1/cosmetics/catalog (public). */
+export interface CosmeticsCatalogResponse {
+  items?: CosmeticItem[];
+  entries?: CosmeticItem[];
+  [extra: string]: unknown;
+}
+
+/** GET /api/v1/bot/cosmetics (auth): owned/locked/equipped per slot. */
+export interface BotCosmeticsResponse {
+  owned?: CosmeticItem[];
+  locked?: CosmeticItem[];
+  equipped?: Record<string, string | CosmeticItem | null>;
+  [extra: string]: unknown;
+}
+
+/** PUT /api/v1/bot/cosmetics body: equip one owned cosmetic by slot. */
+export interface EquipCosmeticRequest {
+  slot: string;
+  cosmetic_id: string;
+}
+
+/** GET /api/v1/service-status (public, Cache-Control: no-store) — same
+ * broadcast/maintenance payload as the WS frame, minus the `type` field. */
+export type ServiceStatusRest = Omit<ServiceStatusMsg, "type"> & { type?: string };
 
 // ---------------------------------------------------------------------------
 // Spectator feed (WS /ws/spectator) — public, no auth, one `arena_state` frame
@@ -626,6 +745,8 @@ export interface SpectatorBot {
   id: string;
   bot_id?: string;
   name: string;
+  /** Team number in team modes; 0 in FFA. */
+  team?: number;
   avatar_color: string;
   position: GridVec;
   hp: number;
@@ -675,6 +796,12 @@ export interface SpectatorArenaState {
   tick: number;
   round_tick: number;
   sudden_death?: boolean;
+  game_mode?: GameMode;
+  map_shape?: string;
+  /** Team modes: string-keyed team number -> score. */
+  team_scores?: Record<string, number>;
+  /** CTF: every team flag (WORLD coordinates, like all spectator positions). */
+  flags?: FlagState[];
   bots?: SpectatorBot[];
   pickups?: (NearbyPickup & { id?: string })[];
   landmines?: SpectatorLandmine[];

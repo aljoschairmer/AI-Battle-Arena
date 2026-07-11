@@ -145,6 +145,18 @@ export function defaultReposition(ctx: DecisionContext): ClientAction {
   const zoneCenter =
     self.zone_target_radius < self.zone_radius ? self.zone_target_center : self.zone_center;
 
+  // CTF: with no target/pickup claiming the tick, play the flags — return our
+  // dropped flag (touch = instant return) or move on the stealable enemy flag.
+  // Captures win CTF rounds, not kills; rounds don't even end by elimination.
+  // (Carrying is handled higher up in the controller — a live carry must not
+  // be diverted by combat/loot at all.)
+  if (gs.gameMode === "ctf") {
+    const goal = gs.ctfObjectiveGoal();
+    if (goal && (goal.pos[0] !== gs.position[0] || goal.pos[1] !== gs.position[1])) {
+      return moveTo(tick, goal.pos);
+    }
+  }
+
   // control_center objective: head toward the capture pad — but only one the
   // live pad state says is worth standing on (capturePadGoal encapsulates the
   // ready/contested/owner state machine), BOUNDED by capturePadMove's local

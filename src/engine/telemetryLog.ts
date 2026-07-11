@@ -87,6 +87,7 @@ export type PriorityName =
   | "cant_act"
   | "survive_zone_hazards"
   | "emergency_dodge"
+  | "ctf_objective"
   | "retreat_heal_mine"
   | "gravity_well"
   | "engage_target"

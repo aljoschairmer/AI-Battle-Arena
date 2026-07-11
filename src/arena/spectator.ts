@@ -155,6 +155,9 @@ export class SpectatorFeed {
         pos: toGrid(b.position),
         hp: Math.round(b.hp),
         targetId: b.target_id || null,
+        // Server team (0 in FFA): lets GameState exclude teammates from the
+        // hunter/aggro sets in team modes.
+        team: b.team ?? 0,
       }));
     return { tick: s.tick, mines, bots };
   }
@@ -180,7 +183,13 @@ export class SpectatorFeed {
       try {
         const msg = JSON.parse(data.toString()) as { type?: string };
         if (msg.type === "arena_state") {
-          this.state = msg as SpectatorArenaState;
+          const frame = msg as SpectatorArenaState;
+          // Keyframe rule (bot guide): `obstacles` is only included on every
+          // 10th broadcast (and right after connect) — between keyframes the
+          // field is OMITTED. Carry the last received copy forward instead of
+          // clearing the map for 9 of every 10 frames.
+          if (!frame.obstacles && this.state?.obstacles) frame.obstacles = this.state.obstacles;
+          this.state = frame;
           this.stateTs = Date.now();
           for (const h of this.frameHandlers) {
             try {
@@ -189,7 +198,19 @@ export class SpectatorFeed {
               /* a scout bug must never take the shared feed down */
             }
           }
+        } else if (msg.type === "heartbeat") {
+          // ~10s application-level heartbeat, sent even while a paused game
+          // produces no arena snapshots. No gameplay state — connection
+          // health only. Deliberately does NOT refresh stateTs: a paused
+          // game's stale positions must still expire out of latest().
+          log.debug({ paused: (msg as { paused?: boolean }).paused === true }, "spectator heartbeat");
+        } else if (msg.type === "service_status") {
+          // Operator broadcast / maintenance control frame — routed separately
+          // from render state per the guide; the bot socket handles reconnect
+          // timing, so the spectator feed just surfaces it at debug.
+          log.debug("spectator service_status frame");
         }
+        // Other unknown types: ignore silently (forward compatibility).
       } catch {
         /* malformed frame — keep the previous state */
       }
@@ -245,7 +266,7 @@ export interface EngineGlobalIntel {
   /** Every armed mine on the field that isn't ours, with its owner's bot_id. */
   mines: { pos: GridVec; ownerId: string }[];
   /** Every other living bot: live position, weapon, and who it's locked onto. */
-  bots: { id: string; weapon: string; pos: GridVec; hp: number; targetId: string | null }[];
+  bots: { id: string; weapon: string; pos: GridVec; hp: number; targetId: string | null; team?: number }[];
 }
 
 function deriveSpectatorUrl(): string {

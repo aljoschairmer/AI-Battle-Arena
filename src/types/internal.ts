@@ -646,6 +646,17 @@ export interface GameSnapshot {
   roundModifier: string;
   /** Server sudden-death flag: random tiles are becoming instant-death void. */
   suddenDeath?: boolean;
+  /** Stall punisher active: EVERYONE takes ramping damage until someone deals
+   * damage — passivity is lethal, the engine already forces aggression. */
+  suddenDeathStall?: boolean;
+  /** Active game mode ("ffa" | "team_battle" | "ctf"). */
+  gameMode?: string;
+  /** Our server-assigned team in team modes (1, 2, ...); 0 in FFA. */
+  myTeam?: number;
+  /** Team modes: team number -> score (CTF: flag captures). */
+  teamScores?: Record<string, number>;
+  /** CTF flags in GRID coordinates (converted from the wire's world coords). */
+  flags?: { id: string; team: number; position: GridVec; basePosition: GridVec; status: string; carrierId: string }[];
   /** Live global bounty beacon (fog-exempt target position), if not us. */
   bountyBeacon?: { botId: string; name: string; position: GridVec } | null;
   self: {

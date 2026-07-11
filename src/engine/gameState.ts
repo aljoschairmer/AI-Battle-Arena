@@ -3,6 +3,8 @@ import type {
   CapturePadState,
   ClientAction,
   ConnectedMsg,
+  FlagState,
+  GameMode,
   GridVec,
   HazardZoneState,
   LobbyMsg,
@@ -20,6 +22,7 @@ import type {
   TeleportPadState,
   TickMsg,
   Weapon,
+  WorldVec,
 } from "../types/protocol";
 import { chebyshev, dist, stepAwayFrom, stepToward } from "../shared/geometry";
 import { nextStep } from "./pathfinding";
@@ -63,6 +66,23 @@ export class GameState {
 
   /** True once the server flags sudden death (random tiles become lethal void). */
   suddenDeath = false;
+  /** True while the sudden-death stall punisher runs: EVERYONE takes ramping
+   * environmental damage until someone deals damage. Passivity is lethal. */
+  suddenDeathStall = false;
+
+  /** Active game mode, echoed on every tick ("ffa" until the first tick). */
+  gameMode: GameMode = "ffa";
+  /** Our server-assigned team in team modes (1, 2, ...); 0 in FFA. */
+  myTeam = 0;
+  /** Team modes: team number (string key) -> score. Empty in FFA. */
+  teamScores: Record<string, number> = {};
+  /** CTF: every team flag, global (never fog-limited), WORLD coordinates. */
+  flags: FlagState[] = [];
+
+  /** Accumulated instant-death void tiles (sudden death), keyed row*1000+col.
+   * The tick's `void_tiles` only lists tiles inside our fog, so we accumulate:
+   * void never reverts within a round. */
+  private voidTileSet = new Set<number>();
 
   /**
    * The global bounty beacon: live position of the current bounty target,
@@ -237,6 +257,13 @@ export class GameState {
     this.lastDamageTick = -1000;
     this.lastPadStandTick = -1000;
     this.padStandStreak = 0;
+    // Team assignment, flags and void tiles are strictly per-round state
+    // (teams re-roll at round start; void only grows within one sudden death).
+    this.myTeam = 0;
+    this.teamScores = {};
+    this.flags = [];
+    this.suddenDeathStall = false;
+    this.voidTileSet.clear();
     this.padIgnoreUntil.clear();
   }
 
@@ -477,6 +504,18 @@ export class GameState {
     this.nearbyMines = msg.nearby_mines ?? 0;
     this.hints = msg.hints ?? [];
     this.suddenDeath = msg.sudden_death ?? this.suddenDeath;
+    this.suddenDeathStall = msg.sudden_death_stall === true;
+    // Game mode + team context (team_battle/ctf): echoed on every tick, so a
+    // mid-round (re)connect is immediately mode- and team-aware.
+    if (msg.game_mode) this.gameMode = msg.game_mode;
+    this.myTeam = msg.your_state.team ?? 0;
+    if (msg.team_scores) this.teamScores = msg.team_scores;
+    if (msg.flags) this.flags = msg.flags;
+    // Void tiles accumulate: the tick only lists the ones inside our fog and
+    // void never reverts within a round (cleared on round start / reconnect).
+    if (msg.void_tiles) {
+      for (const [c, r] of msg.void_tiles) this.voidTileSet.add(r * 1000 + c);
+    }
     // The modifier is echoed on every tick — a mid-round (re)connect learns it
     // here instead of waiting for the next round_start.
     if (msg.round_modifier) this.roundModifier = msg.round_modifier;
@@ -525,10 +564,25 @@ export class GameState {
     this.friendlies = ids;
   }
 
+  /**
+   * Is this bot on our side? Two independent sources, either suffices:
+   *  - our own coalition (Redis coop bus, bot_ids we control), and
+   *  - the SERVER-assigned team in team_battle/ctf (friendly fire is off, so
+   *    attacking a teammate deals zero damage — pure wasted actions, and
+   *    projectiles/splash aimed near them are wasted too).
+   * In FFA (myTeam 0) the team clause never matches, and the coalition
+   * truce-break (setFriendlies(∅)) keeps working: server teams are never
+   * "truce-broken" because the server's win condition is per-team.
+   */
+  isFriendlyBot(b: Pick<NearbyBot, "bot_id" | "team">): boolean {
+    if (this.friendlies.has(b.bot_id)) return true;
+    return this.myTeam > 0 && (b.team ?? 0) === this.myTeam;
+  }
+
   enemies(): NearbyBot[] {
     return this.entities.filter(
       (e): e is NearbyBot =>
-        e.type === "bot" && e.bot_id !== this.selfId && !this.friendlies.has(e.bot_id) && e.is_alive,
+        e.type === "bot" && e.bot_id !== this.selfId && !this.isFriendlyBot(e) && e.is_alive,
     );
   }
 
@@ -588,6 +642,11 @@ export class GameState {
     // hard-block treatment. These were pure invisible killers before —
     // nothing in the bot protocol ever reveals another bot's armed mine.
     for (const m of this.spectatorMines) out.push(m);
+    // Sudden-death void tiles: instant death, no off-phase, only ever grows.
+    // (Also blocked outright in isPassable — listing them here additionally
+    // feeds the threat field and the isSafeStep halo so we never path-plan
+    // ADJACENT to one either.)
+    for (const k of this.voidTileSet) out.push([k % 1000, Math.floor(k / 1000)]);
     return out;
   }
 
@@ -637,9 +696,11 @@ export class GameState {
   }
 
   /** Is a grid cell walkable given terrain (if known) and grid bounds?
-   *  '#' wall, 'V' void and '~' water are impassable (bot-setup spec). */
+   *  '#' wall, 'V' void and '~' water are impassable (bot-setup spec), as are
+   *  tiles the live tick reported as sudden-death void (instant death). */
   isPassable(col: number, row: number): boolean {
     if (col < 0 || row < 0 || col >= this.gridSize || row >= this.gridSize) return false;
+    if (this.voidTileSet.has(row * 1000 + col)) return false;
     if (!this.terrain) return true; // no map loaded -> assume open
     const r = this.terrain[row];
     if (!r) return true;
@@ -821,7 +882,7 @@ export class GameState {
    * own over the coop bus (allyMines) and double-counting a tile would double
    * its threat-field cost. Friendly bots never join the hunter/aggro sets.
    */
-  setGlobalIntel(intel: { mines: { pos: GridVec; ownerId: string }[]; bots: { id: string; weapon: string; pos: GridVec; hp: number; targetId: string | null }[] } | null): void {
+  setGlobalIntel(intel: { mines: { pos: GridVec; ownerId: string }[]; bots: { id: string; weapon: string; pos: GridVec; hp: number; targetId: string | null; team?: number }[] } | null): void {
     this.spectatorMines = [];
     this.spectatorHunterList = [];
     this.spectatorTargets.clear();
@@ -831,7 +892,7 @@ export class GameState {
         this.spectatorMines.push(m.pos);
       }
       for (const b of intel.bots) {
-        if (this.friendlies.has(b.id)) continue;
+        if (this.isFriendlyBot({ bot_id: b.id, team: b.team })) continue;
         if (!b.targetId) continue;
         this.spectatorTargets.set(b.id, b.targetId);
         if (this.selfId && b.targetId === this.selfId) {
@@ -854,13 +915,13 @@ export class GameState {
     return this.spectatorTargets.get(botId) ?? null;
   }
 
-  /** Positions of coalition allies currently inside our fog. */
+  /** Positions of allies (coalition + server teammates) inside our fog. */
   allyTiles(): GridVec[] {
     const out: GridVec[] = [];
     for (const e of this.entities) {
       if (e.type !== "bot") continue;
       const b = e as NearbyBot;
-      if (b.is_alive && this.friendlies.has(b.bot_id)) out.push(b.position);
+      if (b.is_alive && b.bot_id !== this.selfId && this.isFriendlyBot(b)) out.push(b.position);
     }
     return out;
   }
@@ -916,15 +977,79 @@ export class GameState {
     return false;
   }
 
-  /** Is a coalition ally within `r` (chebyshev) of the given tile? Fog-local. */
+  /** Is an ally (coalition or server teammate) within `r` (chebyshev)? Fog-local. */
   allyNear(pos: GridVec, r: number): boolean {
     for (const e of this.entities) {
       if (e.type !== "bot") continue;
       const b = e as NearbyBot;
-      if (!b.is_alive || !this.friendlies.has(b.bot_id)) continue;
+      if (!b.is_alive || b.bot_id === this.selfId || !this.isFriendlyBot(b)) continue;
       if (Math.max(Math.abs(b.position[0] - pos[0]), Math.abs(b.position[1] - pos[1])) <= r) return true;
     }
     return false;
+  }
+
+  // --- CTF (capture the flag) -----------------------------------------------
+  // Flags are a GLOBAL objective: every flag's live position/status arrives on
+  // every team-mode tick, never fog-limited — but in WORLD coordinates (the
+  // one place bot messages use them; ÷ cell_size for grid tiles).
+
+  /** Convert a flag's world position to a clamped, passable-agnostic grid tile. */
+  private worldToGrid(p: WorldVec): GridVec {
+    const clamp = (n: number): number => Math.max(0, Math.min(this.gridSize - 1, Math.floor(n / this.cellSize)));
+    return [clamp(p[0]), clamp(p[1])];
+  }
+
+  /** The flag WE are currently carrying, or null. */
+  carriedFlag(): FlagState | null {
+    if (this.gameMode !== "ctf" || !this.selfId) return null;
+    return this.flags.find((f) => f.status === "carried" && f.carrier_id === this.selfId) ?? null;
+  }
+
+  /**
+   * Where to run while carrying an enemy flag. Scoring requires our OWN flag
+   * to be at home: if it is, head for our base (the capture point); if it is
+   * NOT at home, head for our flag itself — touching a dropped own flag
+   * returns it instantly, and shadowing its carrier is the fastest route to
+   * getting it back so our carry can score at all.
+   */
+  ctfCarryGoal(): GridVec | null {
+    if (!this.carriedFlag()) return null;
+    const ownFlag = this.flags.find((f) => f.team === this.myTeam);
+    if (!ownFlag) return null;
+    if (ownFlag.status === "at_base") return this.worldToGrid(ownFlag.base_position);
+    return this.worldToGrid(ownFlag.position);
+  }
+
+  /**
+   * The current CTF objective when we are NOT carrying: return our own
+   * dropped flag (touch = instant return), else steal the enemy flag when it
+   * is stealable (at base or dropped — "carried" means a teammate has it;
+   * an enemy can't carry their own flag). Null in FFA/team_battle, or when
+   * there is nothing actionable (e.g. teammate carrying, our flag home).
+   */
+  ctfObjectiveGoal(): { pos: GridVec; why: "return_own_flag" | "steal_enemy_flag" } | null {
+    if (this.gameMode !== "ctf" || this.myTeam <= 0) return null;
+    const ownFlag = this.flags.find((f) => f.team === this.myTeam);
+    if (ownFlag && ownFlag.status === "dropped") {
+      return { pos: this.worldToGrid(ownFlag.position), why: "return_own_flag" };
+    }
+    const enemyFlag = this.flags.find((f) => f.team !== this.myTeam && f.status !== "carried");
+    if (enemyFlag) {
+      return { pos: this.worldToGrid(enemyFlag.position), why: "steal_enemy_flag" };
+    }
+    return null;
+  }
+
+  /** Flags with positions converted to grid tiles — for snapshots/prompts. */
+  flagsGrid(): { id: string; team: number; position: GridVec; basePosition: GridVec; status: string; carrierId: string }[] {
+    return this.flags.map((f) => ({
+      id: f.id,
+      team: f.team,
+      position: this.worldToGrid(f.position),
+      basePosition: this.worldToGrid(f.base_position),
+      status: f.status,
+      carrierId: f.carrier_id,
+    }));
   }
 
   /** Replace the known bounty board (out-of-band REST refresh). */

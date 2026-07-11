@@ -5,7 +5,7 @@ import { dist } from "../shared/geometry";
 import type { GameState } from "./gameState";
 import { combatBehavior, gravityWellBehavior } from "./behaviors/combat";
 import { tradeAdvantage } from "./combatMath";
-import { idle, isEndgame, placeMine } from "./behaviors/context";
+import { idle, isEndgame, moveTo, placeMine } from "./behaviors/context";
 import { defaultReposition, grabPickup, positionForCombat } from "./behaviors/movement";
 import { selectTarget } from "./behaviors/targeting";
 import {
@@ -138,6 +138,14 @@ export class Controller {
         aggression: Math.max(0, directive.aggression - 0.1),
       };
     }
+    // Sudden-death stall: the server is dealing EVERYONE ramping environmental
+    // damage until someone lands a hit ("passivity is lethal" — bot guide).
+    // Retreating or kiting just converts our HP into nothing; force full
+    // commitment until combat resumes. Engine-side so a deterministic-only
+    // deployment reacts too.
+    if (gs.suddenDeathStall) {
+      directive = { ...directive, aggression: 1, hpRetreatFraction: 0, posture: "aggressive" };
+    }
     const ctx = { gs, directive, policy: this.policy, tick };
     const fellThrough: PriorityName[] = [];
     const logTick = (priority: PriorityName, reason: string): void => {
@@ -184,6 +192,19 @@ export class Controller {
       return dodgeAction;
     }
     fellThrough.push("emergency_dodge");
+
+    // 3.5 CTF: we carry the enemy flag — the capture IS the win condition,
+    // so delivering beats fighting (kills don't score in ctf; captures do).
+    // Survival and dodge above still preempt this; everything below
+    // (retreat/engage/loot) must not divert a live flag run.
+    if (gs.gameMode === "ctf") {
+      const carryGoal = gs.ctfCarryGoal();
+      if (carryGoal) {
+        logTick("ctf_objective", "carrying_flag_deliver");
+        return moveTo(tick, carryGoal);
+      }
+      fellThrough.push("ctf_objective");
+    }
 
     // 4. Retreat / heal.
     const retreat = retreatAndHeal(ctx);

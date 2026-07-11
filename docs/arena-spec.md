@@ -95,3 +95,52 @@ dies to daggers. Grapple isn't rated (universal ability) → treated as even.
 The site's suggested *starter* splits are close to 5/5/5/5; we instead run
 fight-power-optimal builds (see [`derived.ts`](../src/shared/derived.ts) — HP+attack
 heavy, low defense) which beat the neutral split by ~9%.
+
+---
+
+## Game modes, service status & sudden-death additions (guide sync 2026-07-11)
+
+Synced against BOT-GUIDE.md (github.com/ablac/Arena) + live `GET /api/v1/bot-setup`.
+
+### Game modes (`game_mode` on every tick)
+
+| Mode | Win condition | Our handling |
+| --- | --- | --- |
+| `ffa` | Last bot alive | Unchanged (default) |
+| `team_battle` | Last team with a living bot | `your_state.team`/entity `team` parsed; same-team bots are allies (never targeted, splash/fire-lane guards apply) |
+| `ctf` | First team to 3 flag captures | Flag logic: return own dropped flag, steal enemy flag, deliver carried flag home (`ctf_objective` priority rung) |
+
+- Teams re-roll each round; friendly fire is off (attacks on teammates deal 0 —
+  pure wasted actions). `team_scores` and `flags` only present in team modes.
+- **Flags/base positions are WORLD coordinates** (÷ `cell_size` = 20 for grid) —
+  the only world-unit fields in bot tick messages. Flags are never fog-limited.
+- CTF rounds do NOT end by elimination — dead teams' flags remain stealable.
+
+### Sudden death (extended)
+
+- `tick.void_tiles` — instant-death tiles inside our fog, **accumulated**
+  per round in `GameState` (impassable + hazard-haloed).
+- `tick.sudden_death_stall` — nobody dealt damage for the stall window (20s):
+  EVERYONE takes ramping damage until combat resumes. Engine forces
+  aggression=1 / no HP-retreat while active.
+
+### `service_status` (WS frame + `connected`/`tick` snapshot + REST)
+
+- Whitelisted as a server frame; revision-guarded (ignore lower revisions).
+- `maintenance.retry_after_seconds` = MINIMUM reconnect delay (transport floor
+  in `ws.ts`); planned restarts close with WS code **1012** (logged as such).
+- REST twin: `GET /api/v1/service-status` (`rest.getServiceStatus`).
+
+### Spectator feed additions
+
+- App-level `heartbeat` (~10s, also while paused) — connection health only,
+  no gameplay state; deliberately does not refresh frame freshness.
+- **Keyframe rule:** `obstacles` only arrives on every 10th broadcast — the
+  feed carries the last copy forward instead of clearing between keyframes.
+- Bot entries carry `team`; frames carry `game_mode`/`team_scores`/`flags`.
+
+### Cosmetics (presentation-only, no gameplay effect)
+
+`GET /api/v1/cosmetics/catalog` (public), `GET/PUT /api/v1/bot/cosmetics`
+(auth) — implemented in `rest.ts` (`getCosmeticsCatalog`, `getBotCosmetics`,
+`putBotCosmetics`). Not called anywhere by default.

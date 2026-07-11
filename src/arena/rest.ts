@@ -4,10 +4,15 @@ import type {
   ArenaMapResponse,
   ArenaStatus,
   BotConfig,
+  BotCosmeticsResponse,
+  BotLiveState,
   BotStats,
   BountyResponse,
+  CosmeticsCatalogResponse,
+  EquipCosmeticRequest,
   GenerateKeyResponse,
   LeaderboardResponse,
+  ServiceStatusRest,
   WeaponStatsResponse,
 } from "../types/protocol";
 
@@ -101,6 +106,21 @@ export class ArenaRest {
     return this.request<unknown>("/api/v1/bot-setup");
   }
 
+  /** Health check: {"status": "ok", "bots_online": N}. */
+  getHealth(): Promise<{ status: string; bots_online?: number }> {
+    return this.request<{ status: string; bots_online?: number }>("/api/v1/health");
+  }
+
+  /** Current operator broadcast / scheduled-maintenance status (no-store). */
+  getServiceStatus(): Promise<ServiceStatusRest> {
+    return this.request<ServiceStatusRest>("/api/v1/service-status");
+  }
+
+  /** Public presentation-only cosmetics catalog (no gameplay effect). */
+  getCosmeticsCatalog(): Promise<CosmeticsCatalogResponse> {
+    return this.request<CosmeticsCatalogResponse>("/api/v1/cosmetics/catalog");
+  }
+
   // --- authenticated ---
   putConfig(cfg: BotConfig): Promise<unknown> {
     return this.request("/api/v1/bot/config", { method: "PUT", body: cfg, auth: true });
@@ -112,6 +132,22 @@ export class ArenaRest {
 
   getBotStats(): Promise<BotStats> {
     return this.request<BotStats>("/api/v1/bot/stats", { auth: true });
+  }
+
+  /** Real-time in-game state incl. the server's per-action histogram
+   * (action_counts) — a self-check that intended actions actually register. */
+  getBotLive(): Promise<BotLiveState> {
+    return this.request<BotLiveState>("/api/v1/bot/live", { auth: true });
+  }
+
+  /** Our free + account-assigned cosmetics (owned/locked/equipped). */
+  getBotCosmetics(): Promise<BotCosmeticsResponse> {
+    return this.request<BotCosmeticsResponse>("/api/v1/bot/cosmetics", { auth: true });
+  }
+
+  /** Equip one owned cosmetic by slot — presentation only, never gameplay. */
+  putBotCosmetics(req: EquipCosmeticRequest): Promise<unknown> {
+    return this.request("/api/v1/bot/cosmetics", { method: "PUT", body: req, auth: true });
   }
 
   /** Best-effort: returns null on any failure so callers never crash on telemetry. */

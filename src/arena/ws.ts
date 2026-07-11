@@ -18,6 +18,7 @@ export interface ArenaSocketEvents {
   round_end: [import("../types/protocol").RoundEndMsg];
   error: [import("../types/protocol").ErrorMsg];
   kick: [import("../types/protocol").KickMsg];
+  service_status: [import("../types/protocol").ServiceStatusMsg];
   open: [];
   close: [number, string];
 }
@@ -39,7 +40,12 @@ const SERVER_MESSAGE_TYPES = new Set<string>([
   "round_end",
   "error",
   "kick",
+  "service_status",
 ]);
+
+/** WebSocket close code for a planned server restart (RFC 6455 "Service
+ * Restart") — the arena uses it for scheduled maintenance restarts. */
+const CLOSE_SERVICE_RESTART = 1012;
 
 export function isServerMessageType(t: string): t is ServerMessage["type"] {
   return SERVER_MESSAGE_TYPES.has(t);
@@ -81,6 +87,14 @@ export class ArenaSocket extends EventEmitter {
   private authSentThisConn = false;
   private gotServerMessage = false;
   private warnedBackendDown = false;
+  /**
+   * Maintenance floor for the next reconnect delay, from the last
+   * service_status frame with a non-null `maintenance` (retry_after_seconds).
+   * Cleared once a connection opens; a cleared maintenance (null) also resets
+   * it. Revision-guarded: stale snapshots must not override a newer state.
+   */
+  private minReconnectDelayMs = 0;
+  private serviceStatusRevision = -1;
   private readonly log: Logger;
 
   constructor(
@@ -164,6 +178,9 @@ export class ArenaSocket extends EventEmitter {
 
     ws.on("open", () => {
       this.reconnectAttempts = 0;
+      // A live connection means whatever maintenance window forced the floor
+      // is over (an ongoing one re-announces itself via tick.service_status).
+      this.minReconnectDelayMs = 0;
       this.log.info("websocket open");
       // Authenticate immediately via the working direct-message path. Sent
       // outside the rate limiter — this one frame must land before anything else.
@@ -179,7 +196,16 @@ export class ArenaSocket extends EventEmitter {
 
     ws.on("close", (code: number, reasonBuf: Buffer) => {
       const reason = reasonBuf.toString();
-      this.log.warn({ code, reason }, "websocket closed");
+      if (code === CLOSE_SERVICE_RESTART) {
+        // Planned restart (matches an active maintenance service_status):
+        // expected, not an error — reconnect honours the retry_after floor.
+        this.log.info(
+          { code, reason, retryFloorMs: this.minReconnectDelayMs },
+          "arena closed for a planned service restart — reconnecting after the announced delay",
+        );
+      } else {
+        this.log.warn({ code, reason }, "websocket closed");
+      }
       // We upgraded and sent a correctly-formatted auth frame, but the arena
       // dropped the socket without ever replying (no `connected`, no error).
       // The transport + auth are correct, so this is the arena's bot backend
@@ -225,9 +251,13 @@ export class ArenaSocket extends EventEmitter {
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
     this.reconnectAttempts += 1;
-    const delay = Math.min(1000 * 2 ** Math.min(this.reconnectAttempts, 5), 30_000);
+    const backoff = Math.min(1000 * 2 ** Math.min(this.reconnectAttempts, 5), 30_000);
+    // Announced maintenance (service_status.maintenance.retry_after_seconds)
+    // is the FLOOR: reconnecting earlier just burns the 3-per-minute
+    // connection budget against a server that told us when to come back.
+    const delay = Math.max(backoff, this.minReconnectDelayMs);
     const jitter = Math.floor(Math.random() * 500);
-    this.log.info({ delayMs: delay + jitter }, "scheduling reconnect");
+    this.log.info({ delayMs: delay + jitter, maintenanceFloorMs: this.minReconnectDelayMs || undefined }, "scheduling reconnect");
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.shouldRun) this.connect();
@@ -248,6 +278,18 @@ export class ArenaSocket extends EventEmitter {
     if (!isServerMessageType(type)) {
       this.log.debug({ type }, "ignoring unknown server frame type");
       return;
+    }
+    // Transport-level maintenance handling: capture the reconnect floor from
+    // every service_status snapshot (standalone frames here; the tick-embedded
+    // copies are consumed by the engine). Revision-guarded per the spec —
+    // never let a stale snapshot resurrect or clear a newer state.
+    if (type === "service_status") {
+      const ss = msg as import("../types/protocol").ServiceStatusMsg;
+      if (typeof ss.revision === "number" && ss.revision >= this.serviceStatusRevision) {
+        this.serviceStatusRevision = ss.revision;
+        const retry = ss.maintenance?.retry_after_seconds;
+        this.minReconnectDelayMs = ss.maintenance && typeof retry === "number" ? retry * 1000 : 0;
+      }
     }
     // Re-emit as a typed, per-type event. Listeners attach via on('tick', ...).
     // Use the base emitter directly: the discriminant is only known at runtime,

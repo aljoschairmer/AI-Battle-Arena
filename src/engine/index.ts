@@ -17,6 +17,7 @@ import type {
   RoundEndMsg,
   RoundStartMsg,
   SelectLoadoutMsg,
+  ServiceStatusMsg,
   TickMsg,
   Weapon,
 } from "../types/protocol";
@@ -842,6 +843,34 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       log.warn({ reason: msg.reason }, "kicked by server");
     } catch (e) {
       log.error({ err: (e as Error).message, stack: (e as Error).stack }, "kick handling threw — continuing");
+    }
+  });
+
+  // Operator broadcasts / scheduled maintenance. The TRANSPORT already honours
+  // maintenance.retry_after_seconds as the reconnect floor (ws.ts); here we
+  // just surface the announcement once per revision so operators see it.
+  let serviceStatusRevision = -1;
+  socket.on("service_status", (msg: ServiceStatusMsg) => {
+    try {
+      if (typeof msg.revision === "number" && msg.revision <= serviceStatusRevision) return;
+      serviceStatusRevision = msg.revision ?? serviceStatusRevision;
+      if (msg.maintenance) {
+        log.warn(
+          {
+            phase: msg.maintenance.phase,
+            message: msg.maintenance.message,
+            downtimeS: msg.maintenance.estimated_downtime_seconds,
+            retryAfterS: msg.maintenance.retry_after_seconds,
+          },
+          "arena maintenance announced — reconnect will honour the announced delay",
+        );
+      } else if (msg.broadcast) {
+        log.info({ severity: msg.broadcast.severity, message: msg.broadcast.message }, "arena broadcast");
+      } else {
+        log.info({ revision: msg.revision }, "arena service status cleared");
+      }
+    } catch (e) {
+      log.error({ err: (e as Error).message, stack: (e as Error).stack }, "service_status handling threw — continuing");
     }
   });
 
