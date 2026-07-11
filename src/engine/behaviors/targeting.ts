@@ -146,6 +146,11 @@ function scoreEnemy(ctx: DecisionContext, e: NearbyBot, distance: number): numbe
   if (aggroTarget) {
     if (aggroTarget === gs.selfId) score -= policy.targetThreatAversion * 0.2;
     else score += policy.targetDistractedBonus;
+    // Peel: this enemy is hunting one of our LOW-HP allies (assassin-strategy
+    // demo bots always chase the weakest bot in sight). Killing the hunter off
+    // our wounded teammate beats an even fight elsewhere — the ally survives
+    // AND the hunter is distracted (stacks with targetDistractedBonus above).
+    if (gs.isProtectedAlly(aggroTarget)) score += policy.peelLowHpAllyBonus;
   }
 
   // Objective overrides.

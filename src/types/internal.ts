@@ -292,6 +292,33 @@ export interface EnginePolicy {
   daggerFlank: boolean; // daggers: reposition behind targets for the backstab bonus
   spearBraceWait: boolean; // spear: wait out a braced enemy instead of charging in
   staffGravityWell: boolean; // staff/grapple: deploy gravity wells to cluster enemies
+  /**
+   * Focus-break dodge (demo-bot source read, go-arena/internal/demobots):
+   * their bestTarget() SKIPS bots that are currently dodging, so when 2+
+   * enemies are server-confirmed locked onto us, a dodge doesn't just avoid
+   * one hit — it drops us out of every demo bot's target pick for the invuln
+   * burst and forces a retarget. Adds a dodge trigger for exactly that
+   * situation (gated on dodgeEagerness like every lesser trigger).
+   */
+  dodgeFocusBreak: boolean;
+  /**
+   * Charged-shot timing (same source read): demo bots sidestep a telegraphed
+   * charged shot (they see our charged_shot_ready flag) — but only when they
+   * can't land their own hit that tick AND their dodge is off cooldown. When
+   * a sidestep is likely, fire UNCHARGED instead (no telegraph, flag resets);
+   * spend the charge when they're forced to trade or their dodge is spent.
+   * Refines bowAlwaysCharge rather than replacing it (both must be true for
+   * a charged shot to fire).
+   */
+  bowSmartCharge: boolean;
+  /**
+   * Peel bonus: extra target score for an enemy whose live target is one of
+   * our LOW-HP coalition allies. Assassin-strategy demo bots (Hook, Viper,
+   * Shredder) always hunt the weakest visible bot — our wounded allies pull
+   * them in; killing the hunter off our ally is worth more than an even fight
+   * elsewhere. 0 disables.
+   */
+  peelLowHpAllyBonus: number;
   reasoning: string;
   source: string;
 }
@@ -356,6 +383,9 @@ export const DEFAULT_POLICY: EnginePolicy = {
   daggerFlank: true,
   spearBraceWait: true,
   staffGravityWell: true,
+  dodgeFocusBreak: true,
+  bowSmartCharge: true,
+  peelLowHpAllyBonus: 25,
   reasoning: "default tuning",
   source: "default",
 };
@@ -431,6 +461,9 @@ export function mergePolicy(base: EnginePolicy, patch: Partial<EnginePolicy>): E
     daggerFlank: asBool(patch.daggerFlank, base.daggerFlank),
     spearBraceWait: asBool(patch.spearBraceWait, base.spearBraceWait),
     staffGravityWell: asBool(patch.staffGravityWell, base.staffGravityWell),
+    dodgeFocusBreak: asBool(patch.dodgeFocusBreak, base.dodgeFocusBreak),
+    bowSmartCharge: asBool(patch.bowSmartCharge, base.bowSmartCharge),
+    peelLowHpAllyBonus: clampNum(patch.peelLowHpAllyBonus, 0, 60, base.peelLowHpAllyBonus),
     reasoning: typeof patch.reasoning === "string" ? patch.reasoning.slice(0, 300) : base.reasoning,
     source: typeof patch.source === "string" ? patch.source : "tuner",
   };
@@ -525,6 +558,11 @@ export interface CoopMessage {
   weapon: Weapon;
   pos: GridVec;
   hp: number;
+  /** Our max HP — lets allies judge "low HP" as a fraction instead of an
+   * absolute guess (max HP ranges 110-200 by build). Optional for backward
+   * compatibility with older peers; absent → receivers fall back to an
+   * absolute threshold. */
+  maxHp?: number;
   /** Enemies we currently see (never includes friendlies). */
   enemies: { id: string; hp: number; pos: GridVec }[];
   // (focusVote was removed as dead: Coalition.focus() recomputes lowest-HP

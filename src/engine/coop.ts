@@ -69,7 +69,7 @@ export class Coalition {
   private readonly everMembers = new Set<string>();
   private readonly enemies = new Map<string, { hp: number; ts: number }>(); // enemyId -> latest
   /** Latest reported HP per ally — liveness data, TTL'd unlike membership. */
-  private readonly memberHp = new Map<string, { hp: number; ts: number }>();
+  private readonly memberHp = new Map<string, { hp: number; maxHp?: number; ts: number }>();
   /** Latest broadcast mine tiles per ally (mines are invisible to non-owners). */
   private readonly memberMines = new Map<string, { tiles: [number, number][]; ts: number }>();
   private coopDirective: CoopDirective = { ...DEFAULT_COOP_DIRECTIVE };
@@ -88,8 +88,12 @@ export class Coalition {
       this.members.set(m.botId, now);
       this.everMembers.add(m.botId);
       // Live HP per ally (reports flow even while dead, hp 0) — feeds the
-      // count-based truce-break fallback (aliveAllies).
-      this.memberHp.set(m.botId, { hp: typeof m.hp === "number" ? m.hp : 0, ts: now });
+      // count-based truce-break fallback (aliveAllies) and the low-HP peel set.
+      this.memberHp.set(m.botId, {
+        hp: typeof m.hp === "number" ? m.hp : 0,
+        maxHp: typeof m.maxHp === "number" && m.maxHp > 0 ? m.maxHp : undefined,
+        ts: now,
+      });
       // Latest report wins wholesale: an ally with no live mines broadcasts
       // an empty list, clearing its previous tiles.
       this.memberMines.set(m.botId, { tiles: Array.isArray(m.mines) ? m.mines : [], ts: now });
@@ -152,6 +156,24 @@ export class Coalition {
       if (now - s.ts <= maxAgeMs && s.hp > 0) n++;
     }
     return n;
+  }
+
+  /**
+   * Allies currently ALIVE but LOW on HP (< 40% of their reported max, or
+   * < 55 absolute when an older peer doesn't send maxHp). These are assassin
+   * bait — the arena's assassin-strategy demo bots always hunt the weakest
+   * visible bot — so targeting pays a peel bonus for enemies locked onto
+   * them. Fresh reports only: a silent ally ages out with the TTL.
+   */
+  lowHpAllies(maxAgeMs = 4000): Set<string> {
+    const now = Date.now();
+    const out = new Set<string>();
+    for (const [id, s] of this.memberHp) {
+      if (now - s.ts > maxAgeMs || s.hp <= 0) continue;
+      const low = s.maxHp ? s.hp / s.maxHp < 0.4 : s.hp < 55;
+      if (low) out.add(id);
+    }
+    return out;
   }
 
   /**

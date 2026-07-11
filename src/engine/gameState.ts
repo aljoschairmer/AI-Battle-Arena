@@ -144,6 +144,18 @@ export class GameState {
   /** Per-enemy velocity estimate [dCol, dRow] per tick, for prediction/leading. */
   private enemyVel: Record<string, GridVec> = {};
 
+  /**
+   * Last tick each enemy was seen mid-dodge (is_dodging). Dodge has a 30-tick
+   * cooldown, so "dodged recently" ⇒ they CANNOT sidestep again yet — the
+   * window where a telegraphed charged shot is safe against demo-bot juking
+   * (their anti-charged sidestep is dodge-gated; go-arena demobots source).
+   */
+  private enemyLastDodgeTick: Record<string, number> = {};
+
+  /** Coalition allies currently reporting LOW HP — assassin bait; targeting
+   * pays a peel bonus for enemies hunting them. */
+  private protectAllies: Set<string> = new Set();
+
   /** Arena bot_ids of our own coalition — never treated as enemies (BOT_COOP). */
   private friendlies: Set<string> = new Set();
 
@@ -264,6 +276,12 @@ export class GameState {
     this.flags = [];
     this.suddenDeathStall = false;
     this.voidTileSet.clear();
+    // Everyone's dodge state resets with the round; stale entries would fake
+    // "dodge on cooldown" reads next round.
+    this.enemyLastDodgeTick = {};
+    // Allies respawn at full HP each round — stale low-HP peel flags would
+    // misprice targets until the first fresh coop report lands.
+    this.protectAllies = new Set();
     this.padIgnoreUntil.clear();
   }
 
@@ -536,6 +554,7 @@ export class GameState {
   private updateSeenEnemies(): void {
     const now = this.tick;
     for (const enemy of this.enemies()) {
+      if (enemy.is_dodging) this.enemyLastDodgeTick[enemy.bot_id] = now;
       const prev = this.lastSeenEnemies[enemy.bot_id];
       if (prev && now > prev.tick) {
         const dt = now - prev.tick;
@@ -1050,6 +1069,45 @@ export class GameState {
       status: f.status,
       carrierId: f.carrier_id,
     }));
+  }
+
+  /**
+   * Can this enemy plausibly dodge RIGHT NOW? False only while we've seen it
+   * dodge within the 30-tick cooldown window. Unknown enemies default to true
+   * (assume the sidestep is loaded). Powers bowSmartCharge: a telegraphed
+   * charged shot into a ready sidestep is a wasted charge; into a spent one
+   * it's free damage.
+   */
+  enemyDodgeReady(botId: string): boolean {
+    const last = this.enemyLastDodgeTick[botId];
+    if (last === undefined) return true;
+    return this.tick - last >= 30;
+  }
+
+  /**
+   * How many living enemies are server-confirmed locked onto US right now —
+   * fog target_id merged with the spectator aggro graph (fog-free), deduped.
+   * 2+ means we're being focused; the demo bots' target picker skips dodging
+   * bots entirely, so a dodge then breaks EVERY hunter's lock at once.
+   */
+  huntersOnUs(): number {
+    if (!this.selfId) return 0;
+    const ids = new Set<string>();
+    for (const e of this.enemies()) {
+      if ((e.target_id || this.spectatorTargets.get(e.bot_id)) === this.selfId) ids.add(e.bot_id);
+    }
+    for (const h of this.spectatorHunterList) ids.add(h.id);
+    return ids.size;
+  }
+
+  /** Replace the set of low-HP coalition allies to peel for (coop reports). */
+  setProtectAllies(ids: Set<string>): void {
+    this.protectAllies = ids;
+  }
+
+  /** Is this bot_id a low-HP coalition ally worth peeling hunters off? */
+  isProtectedAlly(botId: string): boolean {
+    return this.protectAllies.has(botId);
   }
 
   /** Replace the known bounty board (out-of-band REST refresh). */

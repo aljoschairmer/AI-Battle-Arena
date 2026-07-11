@@ -215,12 +215,26 @@ export function emergencyDodge(ctx: DecisionContext): ClientAction | null {
   // when the enemy has more HP or is part of a cluster.
   const meleePressure = enemies.some((e) => e.can_attack && dist(me, e.position) <= 1.6);
 
+  // Focus-break (demo-bot source read, go-arena/internal/demobots): their
+  // target picker SKIPS dodging bots outright, so with 2+ hunters locked onto
+  // us a dodge doesn't just avoid one hit — it drops us from every demo bot's
+  // pick for the invuln burst and forces a retarget. Only worth the 30-tick
+  // cooldown when someone can actually threaten us right now.
+  const focusBreak =
+    ctx.policy.dodgeFocusBreak &&
+    gs.huntersOnUs() >= 2 &&
+    enemies.some((e) => {
+      const range = e.attack_range || profileFor(e.weapon).baseRange;
+      return e.has_los && dist(me, e.position) <= range + 1;
+    });
+
   // dodgeEagerness (0..1, LLM-tunable) gates how twitchy we are. A charged shot
   // is always worth dodging; lesser threats only trip the dodge as eagerness rises.
   const eager = ctx.policy.dodgeEagerness;
   let trigger = false;
   if (chargedIncoming) trigger = true;
   else if (highChargeBow && eager >= 0.3) trigger = true;
+  else if (focusBreak && eager >= 0.35) trigger = true;
   else if ((justHit || meleePressure) && eager >= 0.5) trigger = true;
   if (!trigger) return null;
 

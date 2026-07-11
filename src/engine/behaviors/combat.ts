@@ -74,8 +74,26 @@ export function combatBehavior(ctx: DecisionContext, target: NearbyBot): ClientA
 
   if (inRange) {
     if (self.weapon_ready) {
+      // Mid-dodge targets are invulnerable for the dash's 3 invuln ticks — any
+      // attack committed now lands nothing (demo-bot targeting skips dodging
+      // bots for exactly this reason). Hold the shot: fall through to the
+      // movement layer's strafe and swing next tick when they're hittable.
+      if (target.is_dodging) return null;
+
       // Bow: fire charged shot whenever ready (Tuner can disable to fire faster/uncharged).
-      const charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
+      let charged = profile.usesCharge && self.charged_shot_ready && ctx.policy.bowAlwaysCharge;
+      // Smart-charge timing (demo-bot source read): enemies see our
+      // charged_shot_ready flag and sidestep the telegraphed shot — but only
+      // when they can't land their own hit this tick AND their dodge is off
+      // cooldown ("trading beats juking" in their code). If a sidestep is
+      // likely, fire UNCHARGED instead: no telegraph, and the reset flag stops
+      // their pre-dodge loop. Spend the charge when they're forced to trade or
+      // we've seen their dodge inside its 30-tick cooldown.
+      if (charged && ctx.policy.bowSmartCharge) {
+        const targetRange = target.attack_range || profileFor(target.weapon).baseRange;
+        const forcedToTrade = target.can_attack && d <= targetRange + 0.5;
+        if (!forcedToTrade && gs.enemyDodgeReady(target.bot_id)) charged = false;
+      }
 
       // Staff: if we can hit multiple enemies, try gravity well first to cluster them
       if (self.weapon === "staff") {

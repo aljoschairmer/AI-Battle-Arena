@@ -479,6 +479,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
           weapon: gs.self?.weapon ?? "sword",
           pos: gs.position,
           hp: gs.self?.hp ?? 0,
+          maxHp: gs.self?.max_hp,
           enemies: [],
           mines: [],
         });
@@ -625,6 +626,10 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
           );
         }
         gs.setFriendlies(truceOver ? new Set() : friendlyIds);
+        // Low-HP allies attract the arena's assassin bots (they always hunt
+        // the weakest) — targeting pays a peel bonus for their hunters. Off
+        // once the truce breaks: ex-allies protect themselves.
+        gs.setProtectAllies(truceOver ? new Set() : coop.lowHpAllies());
         // Allies' mines are invisible to us server-side; their broadcast
         // tiles become threat-field hazards so we route around them instead
         // of dying to our own squad's area denial. Kept even after the truce
@@ -641,6 +646,7 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
             weapon: gs.self?.weapon ?? "sword",
             pos: gs.position,
             hp: gs.self?.hp ?? 0,
+            maxHp: gs.self?.max_hp,
             enemies: seen,
             mines: gs.ownMinePositions(),
           });
