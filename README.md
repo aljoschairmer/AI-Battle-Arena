@@ -287,7 +287,8 @@ bot defaults to the third documented method — direct-message auth (connect bar
 `{"type":"auth","api_key":"…"}`) — which works (`ARENA_WS_AUTH=message`). If message mode also
 fails you're behind a WebSocket-blocking proxy: exempt `arena.angel-serv.com` from SSL
 inspection, run off the inspected network, or point `HTTPS_PROXY` at a CONNECT-tunneling proxy.
-The `Dockerfile` shows how to trust a corporate root CA (`NODE_EXTRA_CA_CERTS`).
+If your proxy TLS-inspects, point `NODE_EXTRA_CA_CERTS` at your CA file at runtime — corporate
+certificates are deliberately not part of this repo or its Docker image.
 
 </details>
 

@@ -3,9 +3,10 @@
 ## 1. Corporate certificate purge — action required by a maintainer
 
 `ZscalerRootCertificate-2048-SHA256.crt` has been **deleted from the working
-tree** and the Docker build now takes optional CA certs from the gitignored
-`certs/` directory instead. However, the certificate **still exists in every
-past commit**. Rewriting published history and force-pushing is a destructive,
+tree**, and all certificate handling has been removed from the Docker build —
+if a TLS-inspecting proxy requires a custom CA, supply it at runtime via
+`NODE_EXTRA_CA_CERTS` outside the repo. However, the certificate **still
+exists in every past commit**. Rewriting published history and force-pushing is a destructive,
 repo-wide operation that must be run by a human maintainer:
 
 ```bash

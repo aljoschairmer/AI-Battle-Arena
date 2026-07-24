@@ -11,8 +11,6 @@ coverage/
 .vscode/
 logs/
 
-# Corporate/proxy certificates — build-time drop-ins, never committed.
+# Certificates must never land in the repository.
 *.crt
 *.pem
-certs/*
-!certs/README.md
