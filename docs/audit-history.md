@@ -61,7 +61,7 @@ steps, full `/arena/map` objective ingest.
 ## Pass 5 — external review ("the roast") remediation
 
 Security and hygiene pass driven by an external code review: corporate cert
-removed from the tree (history scrub documented in `SECURITY.md`), git push
+and all CA handling removed from the repo and Docker build, git push
 moved out of the shutdown path onto a background schedule, crash handlers
 changed from log-and-continue to graceful shutdown + supervisor restart,
 telemetry integrity fixes (`ticksSurvived` round-relative + clamped, real
