@@ -43,10 +43,6 @@ const NEIGHBORS: ReadonlyArray<[number, number, number]> = [
   [-1, -1, 1.4142],
 ];
 
-function key(col: number, row: number): number {
-  return row * 1000 + col;
-}
-
 /**
  * Returns the full path from `start` to `goal` (inclusive) or null if none was
  * found within the expansion budget. Octile-distance heuristic.
@@ -59,6 +55,10 @@ export function findPath(
   tileCost?: TileCost,
 ): GridVec[] | null {
   if (start[0] === goal[0] && start[1] === goal[1]) return [start];
+
+  // Tile key derived from the actual grid size (cols are 0..size-1), so a
+  // bigger arena can never alias two tiles onto one key.
+  const key = (col: number, row: number): number => row * size + col;
 
   const open: Node[] = [];
   const gScore = new Map<number, number>();

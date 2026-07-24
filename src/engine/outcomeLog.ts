@@ -42,6 +42,18 @@ export type CauseOfDeath =
 const ENV_KILLER = /zone|hazard|void|storm|environment|world|arena|sudden/i;
 
 /**
+ * True when a killedBy entry credits the environment (zone/hazard/void — or
+ * nothing at all) rather than a bot. Shared with the Brain so environmental
+ * deaths never pollute opponent profiles.
+ */
+export function isEnvironmentKiller(k: { botId: string; name: string }): boolean {
+  // A death frame with no bot credited at all (empty killed_by) is the
+  // environment: zone tick, hazard, void — the server names bots, not walls.
+  if (!k.botId && !k.name) return true;
+  return ENV_KILLER.test(k.botId) || ENV_KILLER.test(k.name);
+}
+
+/**
  * Classify why the round ended the way it did from the raw outcome record.
  * Exported for the smoke suite and analyze-outcomes tooling.
  */
@@ -49,10 +61,7 @@ export function classifyCauseOfDeath(o: Pick<RoundOutcome, "won" | "killedBy">):
   if (o.won) return "won";
   const last = o.killedBy[o.killedBy.length - 1];
   if (!last) return "no_death_recorded";
-  if (ENV_KILLER.test(last.botId) || ENV_KILLER.test(last.name)) return "environment";
-  // A death frame with no bot credited at all (empty killed_by) is the
-  // environment: zone tick, hazard, void — the server names bots, not walls.
-  if (!last.botId && !last.name) return "environment";
+  if (isEnvironmentKiller(last)) return "environment";
   return "bot_kill";
 }
 

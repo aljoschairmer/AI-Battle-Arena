@@ -175,6 +175,10 @@ export class GameState {
     this.statMax = msg.stat_max || 10;
     this.lobbyWeapons = {};
     this.isRespawning = false;
+    // Restart the round-age counter: a (re)connect can land mid-round where
+    // no round_start will arrive; without this the fallback increment in
+    // applyTick keeps counting from the previous connection's value.
+    this.roundTick = 0;
     // A (re)connect may land us in a different round than the one we
     // disconnected from — everything observed on the old connection is void.
     this.resetTransientObservations();
@@ -195,6 +199,10 @@ export class GameState {
     this.roundModifier = msg.round_modifier;
     this.isRespawning = false;
     this.suddenDeath = false;
+    // Round-relative tick counter restarts with the round (the applyTick
+    // fallback `roundTick + 1` otherwise accumulates across rounds forever —
+    // the source of the 500k-tick "rounds" in old telemetry).
+    this.roundTick = 0;
     // Terrain AND the objective layout are per-round; invalidate until we
     // (optionally) fetch the new map.
     this.terrain = null;

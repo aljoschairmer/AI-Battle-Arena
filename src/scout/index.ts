@@ -10,7 +10,7 @@
  */
 
 import { getSpectatorFeed } from "../arena/spectator";
-import { dumpKnowledge, maybeCommitAndPushKnowledge } from "../shared/knowledge";
+import { dumpKnowledge, startKnowledgeAutoPush } from "../shared/knowledge";
 import { child } from "../shared/logger";
 import { ScoutAggregator } from "./aggregator";
 import { loadMergedScoutSnapshot, saveScoutSnapshot, scoutFilePath } from "./store";
@@ -73,19 +73,23 @@ export async function startScout(): Promise<ScoutHandle> {
   // moment the socket had nothing pending (observed live: scout died 9 min
   // in, no error, mid-reconnect gap). Shutdown goes through SIGINT/SIGTERM.
 
+  // Scheduled commit+push of the knowledge dump (no bus in a scout process —
+  // file copies only). Deliberately not in stop(): git belongs to a healthy
+  // process, not a dying one.
+  const autoPush = startKnowledgeAutoPush(null, []);
+
   return {
     async stop() {
       unsub();
       clearInterval(timer);
+      autoPush.stop();
       // Keep the in-progress round: partial evidence beats losing it.
       agg.finalizeRound();
       persist();
-      // Mirror scout.json into the repo dump (no bus in a scout process —
-      // file copies only) and auto-push when a GitHub token is configured.
+      // Mirror scout.json into the repo dump; the scheduled auto-push (or a
+      // human) commits it from a live process.
       try {
         await dumpKnowledge(null, []);
-        const pushRes = maybeCommitAndPushKnowledge();
-        if (!pushRes.pushed) log.info({ detail: pushRes.detail }, "knowledge auto-push skipped");
       } catch (e) {
         log.warn({ err: (e as Error).message }, "scout knowledge dump failed — profiles stay in logs/");
       }

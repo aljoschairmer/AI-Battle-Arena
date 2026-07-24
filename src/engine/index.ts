@@ -35,6 +35,10 @@ import { outcomeLog } from "./outcomeLog";
 const SNAPSHOT_EVERY_TICKS = 5;
 // Broadcast to the coalition ~2x/sec.
 const COOP_EVERY_TICKS = 5;
+// Sanity ceiling for a round's recorded duration: no arena round plausibly
+// runs an hour at 10 Hz. Anything above this is a tick-counter glitch, and
+// clamping keeps it from poisoning ticksSurvived-based learning.
+const MAX_ROUND_TICKS = 36_000;
 
 export interface EngineHandle {
   stop(): Promise<void>;
@@ -121,7 +125,6 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   let lastStatusPollTick = -1000;
 
   // --- Per-round telemetry accumulator (published to Brain at round_end) ---
-  let roundStartTick = 0;
   let confirmedWeapon: Weapon | null = null;
   // Last deliberate evidence-redraft reconnect (see round_end). Rate-limited:
   // evidence moves one round at a time, so bouncing more often than this can
@@ -133,7 +136,6 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
   const roundEnemyWeaponsSeen: Partial<Record<Weapon, number>> = {};
 
   function resetRoundTracking(): void {
-    roundStartTick = gs.tick;
     roundKilledBy.length = 0;
     roundWeKilled.length = 0;
     for (const k of Object.keys(roundEnemyWeaponsSeen) as Weapon[]) {
@@ -709,7 +711,15 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       // friendly-fire investigation chasing a phantom sword.)
       const killerWeapon: Weapon | "" = msg.weapon_used || killerEntity?.weapon || "";
       log.info({ by: killerName || msg.killed_by, weapon: killerWeapon, respawn: msg.respawn }, "died");
-      roundKilledBy.push({ botId: msg.killed_by, name: killerName, weapon: killerWeapon });
+      if (!msg.killed_by && !killerName && !killerWeapon) {
+        // Nothing identifies a killer — the environment (zone/void/hazard)
+        // got us. Say so explicitly rather than pushing an all-empty ghost
+        // record that reads like dropped data on the killboard; the empty
+        // botId keeps it out of opponent profiles (orchestrator skips it).
+        roundKilledBy.push({ botId: "", name: "environment", weapon: "" });
+      } else {
+        roundKilledBy.push({ botId: msg.killed_by, name: killerName, weapon: killerWeapon });
+      }
       if (msg.respawn) gs.isRespawning = true;
     } catch (e) {
       log.error({ err: (e as Error).message, stack: (e as Error).stack }, "death handling threw — continuing");
@@ -732,9 +742,19 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       // false`) is exactly the case most likely to get a short/partial final
       // frame from the server — never trust it's there.
       const yourStats = msg.your_stats ?? { kills: 0, deaths: 0, damage: 0 };
-      const ticksSurvived = gs.tick - roundStartTick;
+      // Round duration from the ROUND-RELATIVE tick counter (server round_tick
+      // when sent, else ticks since round_start/connect). The old
+      // `gs.tick - roundStartTick` math used the session-global counter, and a
+      // mid-round (re)connect never sees round_start — telemetry recorded
+      // 500k+ tick "rounds" (14-18h at 10 Hz). Clamped as a final guard so a
+      // server counter glitch can never poison the learning data again.
+      const ticksSurvived = Math.max(0, Math.min(gs.roundTick, MAX_ROUND_TICKS));
       const won = msg.round_winner === botName || msg.round_winner === gs.selfId;
-      const hpAtDeath = roundKilledBy.length > 0 ? (gs.self?.hp ?? 0) : 0;
+      const aliveAtEnd = (gs.self?.hp ?? 0) > 0 && !gs.isRespawning;
+      // HP we finished the round with — the old expression had the branches
+      // inverted (0 on wins, post-respawn HP on deaths), which zeroed the
+      // signal exactly where it was interesting.
+      const hpAtDeath = aliveAtEnd ? (gs.self?.hp ?? 0) : 0;
       telemetryLog.setActiveBot(gs.selfId ?? "unknown");
       telemetryLog.roundEnd(String(msg.round_number), won ? "win" : "loss");
 
@@ -766,7 +786,6 @@ export async function startEngine(bus: Bus, opts: EngineOptions = {}): Promise<E
       // the outcome line lands even when the REST API is slow/down; the ~2.5s
       // wait is fine — next_round_in gives us a lobby gap and this is not the
       // tick path.
-      const aliveAtEnd = (gs.self?.hp ?? 0) > 0 && !gs.isRespawning;
       void Promise.race([
         rest.tryGetBotStats(),
         new Promise<null>((r) => setTimeout(() => r(null), 2500)),

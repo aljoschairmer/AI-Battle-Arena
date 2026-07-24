@@ -10,3 +10,9 @@ coverage/
 .idea/
 .vscode/
 logs/
+
+# Corporate/proxy certificates — build-time drop-ins, never committed.
+*.crt
+*.pem
+certs/*
+!certs/README.md

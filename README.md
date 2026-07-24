@@ -6,7 +6,8 @@
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522-339933?logo=node.js&logoColor=white)](package.json)
-[![Tests](https://img.shields.io/badge/smoke-310%20assertions-brightgreen)](scripts/smoke.ts)
+[![CI](https://github.com/aljoschairmer/AI-Battle-Arena/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-vitest%20%2B%20smoke-brightgreen)](test/)
 [![Built by AI](https://img.shields.io/badge/built%20by-AI%20agents%2C%20100%25-blueviolet)](#-disclaimer)
 [![Arena](https://img.shields.io/badge/plays%20on-arena.angel--serv.com-orange)](https://arena.angel-serv.com/)
 
@@ -42,7 +43,10 @@ every frame. An LLM can't do that, so LLMs must **never sit in the control loop*
   stall combat.
 
 Every layer degrades gracefully. No Redis? Single process. No LLM key? Pure deterministic bot.
-Model slow or down? The last good directive stays in force. Agents never throw.
+Model slow or down? The last good directive stays in force. LLM agents fail soft into
+deterministic fallbacks; a truly unexpected process error (uncaught exception / unhandled
+rejection) shuts down cleanly and lets the container supervisor restart a known-good process
+instead of fighting on in an undefined state.
 
 ## ✨ Features
 
@@ -94,7 +98,8 @@ npm run dev:brain & npm run dev:engine     # .env: BUS=redis
 docker compose up --build
 
 # Verify a change before shipping:
-npm run smoke        # 310 offline assertions across engine + brain + bus
+npm test             # vitest unit suite (pathfinding, combat math, controller, config)
+npm run smoke        # 310+ offline integration assertions across engine + brain + bus
 npm run sim          # self-play policy sweep vs scripted opponents
 npm run typecheck    # strict tsc
 ```
@@ -213,7 +218,7 @@ npm run dev
 | `TELEMETRY_LOG=1` + `analyze-telemetry.ts` | per-tick decision traces: which priority rung claimed each tick and why |
 | `docker compose up redis redis-dashboard` | **live web dashboard** — [Redis Commander](https://github.com/joeferner/redis-commander) on <http://localhost:5540>, pre-connected (multi-arch: amd64/arm64/armv7); key tree = current directives/policies/insights (KV mirror). Live pub/sub traffic: `docker compose exec redis redis-cli psubscribe '*'` |
 | `docker compose up -d redis-dashboard-tunnel` | public quick-tunnel URL for the dashboard (`docker compose logs redis-dashboard-tunnel \| grep trycloudflare`) — unauthenticated, share with care |
-| `npm run knowledge:dump` / [`data/knowledge/`](data/knowledge/) | **repo-persisted learning**: learned policies + insights (Redis KV) and brain memory (rounds, opponent profiles) snapshot into the repo — written automatically on every graceful shutdown, replayed automatically on start (missing-only, live state always wins; `KNOWLEDGE_RESTORE=0` disables). Commit the folder and a fresh clone starts with everything the fleet ever learned. |
+| `npm run knowledge:dump` / [`data/knowledge/`](data/knowledge/) | **repo-persisted learning**: learned policies + insights (Redis KV) and brain memory (rounds, opponent profiles) snapshot into the repo — written automatically on every graceful shutdown, replayed automatically on start (missing-only, live state always wins; `KNOWLEDGE_RESTORE=0` disables). With a repo-scoped `GITHUB_TOKEN` a background job commits+pushes the dump on a schedule (`KNOWLEDGE_PUSH_INTERVAL_MS`; the shutdown path never runs git). Commit the folder and a fresh clone starts with everything the fleet ever learned. |
 
 ## ⚙️ Configuration
 
@@ -250,15 +255,17 @@ src/
 ├── brain/                     Orchestrator · OpenRouter client · draft evidence
 │   └── agents/                loadout · strategist · tactician · analyst · tuner · coordinator
 └── shared/                    derived stats · geometry · memory stores · logger · proxy
-scripts/                       keygen · smoke (310 asserts) · simulate · analyze-{outcomes,telemetry}
-docs/                          arena-spec.md · fight-summary.md · audit/ (all improvement passes)
+test/                          vitest unit suite (pathfinding · combat math · controller · config)
+scripts/                       keygen · smoke (integration, 310+ asserts) · simulate · analyze-{outcomes,telemetry}
+docs/                          arena-spec.md · fight-summary.md · audit-history.md (condensed passes)
 ```
 
 ## 📈 Measured results
 
 Tuning combat behaviour by reading code stops working fast — this repo measures instead
 (full history: [`docs/fight-summary.md`](docs/fight-summary.md), method:
-[`docs/audit/`](docs/audit/)):
+[`docs/audit-history.md`](docs/audit-history.md) — the full pass-by-pass
+documents live in git history):
 
 - **629 logged rounds** against the production arena's house bots (some with 39,000+ rounds of
   play): fleet win rate grew from ~6% to **20% over the latest window** (15-bot FFA ⇒ uniform

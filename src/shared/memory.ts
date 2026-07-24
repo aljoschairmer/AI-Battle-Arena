@@ -19,9 +19,9 @@ export interface RoundOutcome {
   enemyWeaponsSeen: Partial<Record<Weapon, number>>;
   /** Did we win (last bot alive)? */
   won: boolean;
-  /** Duration in ticks */
+  /** Duration in ticks (round-relative, clamped to a sane ceiling) */
   ticksSurvived: number;
-  /** Our HP at death (0 if we survived) */
+  /** HP we finished the round with (0 when we were dead at round end) */
   hpAtDeath: number;
 }
 

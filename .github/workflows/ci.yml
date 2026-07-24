@@ -1,0 +1,37 @@
+# Gates every push and PR — including the bot's own scheduled knowledge
+# auto-commits to data/knowledge/ — on typecheck + unit tests + smoke + build.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: Smoke suite (offline integration)
+        run: npm run smoke
+
+      - name: Build
+        run: npm run build

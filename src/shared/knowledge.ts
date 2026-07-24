@@ -22,9 +22,10 @@
  * long-running deployment is unaffected. Disable with KNOWLEDGE_RESTORE=0.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { Bus } from "../bus";
 import { Keys } from "../bus";
 import { child } from "./logger";
@@ -161,13 +162,20 @@ export function isSourceRicher(srcPath: string, destPath: string): boolean {
   return (src.savedAt ?? 0) > (dest.savedAt ?? 0);
 }
 
-function git(args: string[], cwd: string): string {
-  return execFileSync("git", args, { encoding: "utf8", timeout: 20_000, cwd }).trim();
+const execFileAsync = promisify(execFile);
+
+async function git(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { encoding: "utf8", timeout: 20_000, cwd });
+  return stdout.trim();
 }
 
 /**
  * Auto-commit + push the knowledge dump when credentials allow it — so the
- * learning reaches the repo WITHOUT a human in the loop.
+ * learning reaches the repo WITHOUT a human in the loop. Runs on the
+ * startKnowledgeAutoPush schedule, NOT in the shutdown path: a dying process
+ * only writes the dump to disk; the next scheduled run (or a human) pushes it.
+ * Async on purpose — it shares a process with the 10 Hz engine, and a
+ * synchronous git push would stall the tick loop for its full duration.
  *
  * Gating: runs when GITHUB_TOKEN or GH_TOKEN is set (or when forced with
  * KNOWLEDGE_AUTOPUSH=1, e.g. where the git remote already has ambient
@@ -178,10 +186,10 @@ function git(args: string[], cwd: string): string {
  * and the token is scrubbed from any error detail so it can never leak into
  * logs.
  */
-export function maybeCommitAndPushKnowledge(
+export async function maybeCommitAndPushKnowledge(
   paths: KnowledgePaths = knowledgePaths(),
   cwd: string = process.cwd(),
-): { pushed: boolean; detail: string } {
+): Promise<{ pushed: boolean; detail: string }> {
   const flag = (process.env.KNOWLEDGE_AUTOPUSH ?? "").toLowerCase();
   if (flag === "0" || flag === "false") return { pushed: false, detail: "KNOWLEDGE_AUTOPUSH=0" };
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
@@ -190,36 +198,36 @@ export function maybeCommitAndPushKnowledge(
 
   const scrub = (s: string): string => (token ? s.split(token).join("***") : s);
   try {
-    if (git(["rev-parse", "--is-inside-work-tree"], cwd) !== "true") {
+    if ((await git(["rev-parse", "--is-inside-work-tree"], cwd)) !== "true") {
       return { pushed: false, detail: "not inside a git work tree" };
     }
-    if (!git(["status", "--porcelain", "--", paths.dir], cwd)) {
+    if (!(await git(["status", "--porcelain", "--", paths.dir], cwd))) {
       return { pushed: false, detail: "no knowledge changes to commit" };
     }
-    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+    const branch = await git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
     if (branch === "HEAD") return { pushed: false, detail: "detached HEAD — not pushing" };
 
-    git(["add", "--", paths.dir], cwd);
-    git(
+    await git(["add", "--", paths.dir], cwd);
+    await git(
       [
         // Claude-session identity, not a bot identity: repo tooling (stop-hook
         // git check) flags any other committer email as Unverified and demands
         // a manual --reset-author amend on every automatic dump.
         "-c", "user.name=Claude",
         "-c", "user.email=noreply@anthropic.com",
-        "commit", "-m", "data: automatic knowledge dump (bot shutdown)",
+        "commit", "-m", "data: automatic knowledge dump",
       ],
       cwd,
     );
     try {
-      git(["push", "origin", `HEAD:${branch}`], cwd);
+      await git(["push", "origin", `HEAD:${branch}`], cwd);
     } catch (e) {
       // Remote refused with its own credentials — retry via the token for
       // GitHub https remotes (URL used ad hoc, never written to git config).
-      const url = git(["remote", "get-url", "origin"], cwd);
+      const url = await git(["remote", "get-url", "origin"], cwd);
       const m = url.match(/^https:\/\/(?:[^@]+@)?github\.com\/(.+?)(?:\.git)?$/);
       if (!token || !m) throw e;
-      git(["push", `https://x-access-token:${token}@github.com/${m[1]}.git`, `HEAD:${branch}`], cwd);
+      await git(["push", `https://x-access-token:${token}@github.com/${m[1]}.git`, `HEAD:${branch}`], cwd);
     }
     log.info({ branch }, "knowledge dump auto-committed and pushed");
     return { pushed: true, detail: `pushed to ${branch}` };
@@ -228,6 +236,55 @@ export function maybeCommitAndPushKnowledge(
     log.warn({ detail }, "knowledge auto-push failed — dump stays local");
     return { pushed: false, detail };
   }
+}
+
+/**
+ * Background schedule for the knowledge commit+push: every intervalMs
+ * (KNOWLEDGE_PUSH_INTERVAL_MS, default 15 min) snapshot the learned state and
+ * let maybeCommitAndPushKnowledge's own gating decide whether it may commit
+ * and push. This replaces the old push-on-SIGTERM behavior — the shutdown
+ * path still writes the dump, but git runs only here, in a healthy process.
+ * The timer is unref'd so it never keeps a stopping process alive; runs never
+ * overlap (a slow push just skips the next slot).
+ */
+export function startKnowledgeAutoPush(
+  bus: Bus | null,
+  scopes: string[],
+  opts: { intervalMs?: number; paths?: KnowledgePaths; cwd?: string } = {},
+): { stop(): void } {
+  const flag = (process.env.KNOWLEDGE_AUTOPUSH ?? "").toLowerCase();
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+  const forced = flag === "1" || flag === "true";
+  if (flag === "0" || flag === "false" || (!token && !forced)) {
+    log.info("knowledge auto-push scheduler off (disabled or no GITHUB_TOKEN/GH_TOKEN)");
+    return { stop() {} };
+  }
+  const envInterval = Number.parseInt(process.env.KNOWLEDGE_PUSH_INTERVAL_MS ?? "", 10);
+  const intervalMs = Math.max(
+    60_000, // floor: a typo'd env must not turn this into a busy git loop
+    opts.intervalMs ?? (Number.isFinite(envInterval) ? envInterval : 15 * 60_000),
+  );
+  let running = false;
+  const run = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      await dumpKnowledge(bus, scopes, opts.paths ?? knowledgePaths());
+      await maybeCommitAndPushKnowledge(opts.paths, opts.cwd);
+    } catch (e) {
+      log.warn({ err: (e as Error).message }, "scheduled knowledge push failed — retrying next interval");
+    } finally {
+      running = false;
+    }
+  };
+  const timer = setInterval(() => void run(), intervalMs);
+  timer.unref();
+  log.info({ intervalMs }, "knowledge auto-push scheduled");
+  return {
+    stop() {
+      clearInterval(timer);
+    },
+  };
 }
 
 /**

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "High-performance multi-agent TypeScript bot for AI Battle Arena (arena.angel-serv.com). Deterministic real-time engine + LLM strategy brain, decoupled over Redis.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",
@@ -22,7 +22,8 @@
     "sim": "tsx scripts/simulate.ts",
     "knowledge:dump": "tsx scripts/knowledge-dump.ts",
     "dev:scout": "cross-env ROLE=scout tsx watch src/main.ts",
-    "test": "tsx scripts/smoke.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -41,7 +42,8 @@
     "cross-env": "^7.0.3",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "esbuild": "^0.28.1"

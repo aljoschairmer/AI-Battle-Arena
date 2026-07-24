@@ -3,21 +3,27 @@ import { startScout } from "./scout";
 import { getBus, scoped } from "./bus";
 import { startBrain, startCoopCoordinator, type BrainHandle } from "./brain";
 import { startEngine, type EngineHandle } from "./engine";
-import { dumpKnowledge, maybeCommitAndPushKnowledge, restoreKnowledge } from "./shared/knowledge";
+import { dumpKnowledge, restoreKnowledge, startKnowledgeAutoPush } from "./shared/knowledge";
 import { logger } from "./shared/logger";
 import { installFetchProxy } from "./shared/proxy";
 
-// Last-resort safety net: a single unexpected error (a malformed server frame,
-// a rejected bus.publish, ...) must never silently kill the whole match. Every
-// call site we know of already guards itself, but log-and-continue here beats
-// a hard crash (which leaves the bot frozen in the arena until the container
-// restarts and reconnects).
-process.on("uncaughtException", (err) => {
-  logger.error({ err: err.message, stack: err.stack }, "uncaughtException — continuing");
-});
-process.on("unhandledRejection", (reason) => {
-  logger.error({ err: reason instanceof Error ? reason.message : String(reason) }, "unhandledRejection — continuing");
-});
+// Last-resort safety net: an error that reaches here escaped every local
+// guard, so the process state is no longer trustworthy — log it, run the
+// normal graceful shutdown (flush knowledge, stop handles), and exit non-zero
+// so the supervisor (docker-compose `restart: unless-stopped` / systemd)
+// brings up a clean replacement. Log-and-continue was tried first and traded
+// a visible crash for an undefined-state bot that kept fighting.
+let crashing = false;
+let fatalShutdown: ((reason: string) => void) | null = null;
+function onFatal(kind: string, err: unknown): void {
+  const e = err instanceof Error ? err : new Error(String(err));
+  logger.fatal({ err: e.message, stack: e.stack }, `${kind} — shutting down for supervisor restart`);
+  if (crashing || !fatalShutdown) process.exit(1); // crashed while crashing, or before startup wired shutdown
+  crashing = true;
+  fatalShutdown(kind);
+}
+process.on("uncaughtException", (err) => onFatal("uncaughtException", err));
+process.on("unhandledRejection", (reason) => onFatal("unhandledRejection", reason));
 
 /**
  * Process entrypoint. ROLE decides which workers run:
@@ -37,11 +43,14 @@ async function main(): Promise<void> {
   // Own early branch so a scout container never trips engine/brain plumbing.
   if (runsScout) {
     const scout = await startScout();
-    const stopScout = async (signal: string): Promise<void> => {
+    const stopScout = async (signal: string, code = 0): Promise<void> => {
       logger.info({ signal }, "scout shutting down");
+      const hardExit = setTimeout(() => process.exit(code || 1), 15_000);
+      hardExit.unref();
       await scout.stop();
-      process.exit(0);
+      process.exit(code);
     };
+    fatalShutdown = (reason) => void stopScout(reason, 1);
     process.on("SIGINT", () => void stopScout("SIGINT"));
     process.on("SIGTERM", () => void stopScout("SIGTERM"));
     return;
@@ -124,11 +133,21 @@ async function main(): Promise<void> {
     handles.push(await startCoopCoordinator(bus));
   }
 
+  // Commit+push of data/knowledge/ happens on a background schedule in a
+  // healthy process — never in the shutdown path (a dying process should not
+  // be doing DevOps). Gated inside on GITHUB_TOKEN/GH_TOKEN + KNOWLEDGE_AUTOPUSH.
+  const autoPush = startKnowledgeAutoPush(bus, knowledgeScopes);
+
   let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
+  const shutdown = async (signal: string, code = 0): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, "shutting down");
+    // A wedged handle/bus must not keep a dying process alive past its
+    // supervisor's patience (docker stop grace is typically 10-30s).
+    const hardExit = setTimeout(() => process.exit(code || 1), 15_000);
+    hardExit.unref();
+    autoPush.stop();
     for (const h of handles) {
       try {
         await h.stop();
@@ -138,22 +157,19 @@ async function main(): Promise<void> {
     }
     // Snapshot everything learned into the repo dump on every stop — AFTER
     // the handles stopped (orchestrator.stop() flushes brain memory to disk)
-    // and BEFORE the bus closes (the KV mirror is still readable). Commit
-    // data/knowledge/ to carry the learning to the next clone/container.
+    // and BEFORE the bus closes (the KV mirror is still readable). The dump
+    // stays local here; the scheduled auto-push (or a human) commits it.
     try {
       const dumped = await dumpKnowledge(bus, knowledgeScopes);
       logger.info(dumped, "knowledge dumped to repo");
-      // With a GITHUB_TOKEN/GH_TOKEN configured the dump also commits and
-      // pushes itself — no human in the loop (KNOWLEDGE_AUTOPUSH=0 disables).
-      const pushRes = maybeCommitAndPushKnowledge();
-      if (!pushRes.pushed) logger.info({ detail: pushRes.detail }, "knowledge auto-push skipped");
     } catch (e) {
       logger.warn({ err: (e as Error).message }, "knowledge dump failed — learning stays in logs/ only");
     }
     await bus.close();
-    process.exit(0);
+    process.exit(code);
   };
 
+  fatalShutdown = (reason) => void shutdown(reason, 1);
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
