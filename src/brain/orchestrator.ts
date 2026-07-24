@@ -25,6 +25,7 @@ import { allTimeWeaponWinRatesFromDisk, enforceWeaponEvidence, fleetWeaponWinRat
 import { ScoutAggregator, type ScoutSummary } from "../scout/aggregator";
 import { loadScoutSnapshot } from "../scout/store";
 import { chooseFallbackLoadout } from "../engine/loadout";
+import { isEnvironmentKiller } from "../engine/outcomeLog";
 import { AnalystAgent } from "./agents/analyst";
 import { LoadoutAgent } from "./agents/loadout";
 import { StrategistAgent } from "./agents/strategist";
@@ -397,6 +398,10 @@ export class Orchestrator {
     // Record into history and opponent registry.
     this.roundHistory.push(outcome);
     for (const k of outcome.killedBy) {
+      // Environmental deaths (zone/void/hazard, or an unattributed death
+      // frame) carry no bot to profile — skipping them keeps ghost killers
+      // (botId "" / name "environment") off the opponent registry.
+      if (!k.botId || isEnvironmentKiller(k)) continue;
       this.opponents.recordKilledUs(k.botId, k.name, k.weapon, outcome.round);
     }
     for (const k of outcome.weKilled) {

@@ -2293,23 +2293,23 @@ async function run(): Promise<void> {
 
     // Without a token (and not forced): skipped.
     delete process.env.GITHUB_TOKEN; delete process.env.GH_TOKEN; delete process.env.KNOWLEDGE_AUTOPUSH;
-    const off = maybeCommitAndPushKnowledge(kpaths, work);
+    const off = await maybeCommitAndPushKnowledge(kpaths, work);
     check("no token -> auto-push off", !off.pushed && /no GITHUB_TOKEN/.test(off.detail), off);
 
     // Forced (ambient-credentials case — here a local bare remote): pushes.
     process.env.KNOWLEDGE_AUTOPUSH = "1";
-    const on = maybeCommitAndPushKnowledge(kpaths, work);
+    const on = await maybeCommitAndPushKnowledge(kpaths, work);
     const remoteLog = sh(["log", "--oneline", "main"], bare);
     check("forced/with-credentials -> commits and pushes the dump", on.pushed && /automatic knowledge dump/.test(remoteLog), { on, remoteLog });
 
     // Nothing new -> clean no-op.
-    const idem = maybeCommitAndPushKnowledge(kpaths, work);
+    const idem = await maybeCommitAndPushKnowledge(kpaths, work);
     check("no changes -> no-op", !idem.pushed && /no knowledge changes/.test(idem.detail), idem);
 
     // Kill switch wins over token.
     process.env.KNOWLEDGE_AUTOPUSH = "0"; process.env.GITHUB_TOKEN = "tok";
     writeFileSync(join(work, "data/knowledge/kv.json"), '{"x":1}');
-    const killed = maybeCommitAndPushKnowledge(kpaths, work);
+    const killed = await maybeCommitAndPushKnowledge(kpaths, work);
     check("KNOWLEDGE_AUTOPUSH=0 disables despite token", !killed.pushed && killed.detail === "KNOWLEDGE_AUTOPUSH=0", killed);
 
     if (savedTok !== undefined) process.env.GITHUB_TOKEN = savedTok; else delete process.env.GITHUB_TOKEN;

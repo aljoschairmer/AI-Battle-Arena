@@ -6,7 +6,7 @@ export default defineConfig({
     "scripts/generate-key": "scripts/generate-key.ts",
   },
   format: ["esm"],
-  target: "node20",
+  target: "node22",
   platform: "node",
   clean: true,
   sourcemap: true,
